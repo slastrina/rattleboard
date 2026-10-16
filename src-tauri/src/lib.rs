@@ -820,7 +820,16 @@ fn finish_setup(app: AppHandle, st: State<AppState>) {
 
 #[tauri::command]
 fn quit(app: AppHandle) {
+    for w in app.webview_windows().values() {
+        let _ = w.hide();
+    }
+    drop(app.state::<AppState>().server.lock().unwrap().take());
     app.exit(0);
+    // Backstop: if the event loop doesn't wind down (seen on Windows), leave anyway.
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(1500));
+        std::process::exit(0);
+    });
 }
 
 #[tauri::command]
@@ -983,11 +992,31 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { rect, button, button_state: MouseButtonState::Up, .. } = event {
-                        if matches!(button, MouseButton::Left | MouseButton::Right) {
+                        // On Windows a right-click opens the native menu instead (the usual convention).
+                        if button == MouseButton::Left || (OS == "mac" && button == MouseButton::Right) {
                             toggle_tray(tray.app_handle(), rect);
                         }
                     }
                 });
+            #[cfg(not(target_os = "macos"))]
+            {
+                use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+                let menu = Menu::with_items(
+                    app,
+                    &[
+                        &MenuItem::with_id(app, "show", "Show board", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &MenuItem::with_id(app, "quit", "Quit Rattleboard", true, None::<&str>)?,
+                    ],
+                )?;
+                tray = tray.menu(&menu).on_menu_event(|app, e| match e.id().as_ref() {
+                    "show" => present_board(app, true),
+                    "settings" => open_panel(app, "settings"),
+                    "quit" => quit(app.clone()),
+                    _ => {}
+                });
+            }
             if let Some(img) = tray_image(false) {
                 tray = tray.icon(img).icon_as_template(OS == "mac");
             }

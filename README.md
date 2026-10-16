@@ -19,7 +19,13 @@ Free and open source under the MIT license. Not affiliated with or endorsed by V
 
 ## Install
 
-Download the latest installer from [Releases](https://github.com/slastrina/rattleboard/releases).
+On macOS, install with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask slastrina/tap/rattleboard
+```
+
+Or download the latest installer from [Releases](https://github.com/slastrina/rattleboard/releases).
 
 | Platform | File | First launch |
 | --- | --- | --- |

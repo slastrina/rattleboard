@@ -102,3 +102,36 @@ jobs:
             src-tauri/target/**/release/bundle/msi/*.msi
             src-tauri/target/**/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+  # Bumps the cask in slastrina/homebrew-tap once the release has its DMG.
+  # Needs a HOMEBREW_TAP_PAT secret with write access to that repo; skipped without it.
+  homebrew:
+    name: Update Homebrew tap
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bump cask
+        env:
+          HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_PAT" ]; then
+            echo "::warning::HOMEBREW_TAP_PAT not set; skipping the tap update."; exit 0
+          fi
+          VERSION="${TAG#v}"
+          DMG="Rattleboard_${VERSION}_universal.dmg"
+          gh release download "$TAG" --pattern "$DMG" --dir "$RUNNER_TEMP"
+          SHA=$(sha256sum "$RUNNER_TEMP/$DMG" | awk '{print $1}')
+          TAP_DIR="$RUNNER_TEMP/homebrew-tap"
+          git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_PAT}@github.com/slastrina/homebrew-tap.git" "$TAP_DIR"
+          mkdir -p "$TAP_DIR/Casks"
+          sed -e "s/__VERSION__/${VERSION}/" -e "s/__SHA256__/${SHA}/" packaging/homebrew/rattleboard.rb.template > "$TAP_DIR/Casks/rattleboard.rb"
+          cd "$TAP_DIR"
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add Casks/rattleboard.rb
+          git commit -m "rattleboard ${VERSION}" || { echo "cask unchanged"; exit 0; }
+          git push origin HEAD
