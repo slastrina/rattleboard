@@ -1,6 +1,6 @@
 [package]
 name = "rattleboard"
-version = "0.1.2"
+version = "0.1.3"
 description = "A split-flap desktop mirror for your Vestaboard"
 authors = ["Rattleboard contributors"]
 license = "MIT"

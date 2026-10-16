@@ -256,6 +256,9 @@ fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str) {
         }
         s.setup_done
     };
+    // Ask the window system first: on macOS that call waits for the main thread, which may
+    // itself be waiting for `rt`, so it must never happen while a lock is held.
+    let tray_open = app.get_webview_window("tray").and_then(|w| w.is_visible().ok()).unwrap_or(false);
     {
         let mut rt = st.rt.lock().unwrap();
         let first = rt.layout.is_none();
@@ -275,7 +278,6 @@ fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str) {
             rt.history.insert(0, HistoryEntry { id: at, at, src: src.into(), layout });
             rt.history.truncate(HISTORY_MAX);
         }
-        let tray_open = app.get_webview_window("tray").and_then(|w| w.is_visible().ok()).unwrap_or(false);
         rt.unread = !tray_open;
     }
     save_history(&st);
@@ -634,16 +636,16 @@ fn get_state(st: State<AppState>) -> Snapshot {
 
 #[tauri::command]
 fn update_settings(app: AppHandle, st: State<AppState>, patch: serde_json::Value) -> Result<(), String> {
+    // Window queries happen before any lock is taken (see show_message).
+    let board_pos = board(&app).filter(|w| w.is_visible().unwrap_or(false)).and_then(|w| w.outer_position().ok());
     let (old, new) = {
         let mut s = st.settings.lock().unwrap();
         let old = s.clone();
         let mut new = s.merge(patch)?;
         if !old.floating() && new.floating() {
             // Pinning a visible toast keeps it right where it is.
-            if let Some(w) = board(&app).filter(|w| w.is_visible().unwrap_or(false)) {
-                if let Ok(p) = w.outer_position() {
-                    new.custom = Point { x: p.x as f64, y: p.y as f64 };
-                }
+            if let Some(p) = board_pos {
+                new.custom = Point { x: p.x as f64, y: p.y as f64 };
             }
         }
         *s = new.clone();
