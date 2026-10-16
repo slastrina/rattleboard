@@ -7,7 +7,7 @@ cask "rattleboard" do
   desc "Split-flap desktop mirror and virtual board for Vestaboard"
   homepage "https://github.com/slastrina/rattleboard"
 
-  depends_on macos: ">= :big_sur"
+  depends_on macos: :big_sur
 
   app "Rattleboard.app"
 
