@@ -8,7 +8,7 @@ name: Release
 # only ad-hoc signed:
 #   DEVELOPER_ID_CERT_P12 (base64 .p12 holding only the Developer ID Application identity),
 #   DEVELOPER_ID_CERT_PASSWORD, APPLE_SIGNING_IDENTITY ("Developer ID Application: … (TEAMID)"),
-#   APPLE_ID, APPLE_APP_PASSWORD (app-specific password), APPLE_TEAM_ID,
+#   APPLE_ID, APPLE_APP_PASSWORD (app-specific password),
 #   APPLE_ORG_NAME (not used by Tauri; referenced only so the log masks it).
 on:
   push:
@@ -63,7 +63,8 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Not secret: the team ID is embedded in every app it signs.
+          APPLE_TEAM_ID: LN23P43535
         run: |
           if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_SIGNING_IDENTITY" ]; then
             echo "::warning::Developer ID secrets not set; the macOS build will be ad-hoc signed and not notarized."
