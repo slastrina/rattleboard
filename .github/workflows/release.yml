@@ -1,0 +1,72 @@
+name: Release
+
+# Push a tag like v0.1.0 to build installers and publish a GitHub Release.
+# Run it by hand from the Actions tab to get the installers as build artifacts only.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS universal
+            os: macos-latest
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - name: Windows x64
+            os: windows-latest
+            args: ''
+            rust-targets: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ matrix.args }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: Rattleboard ${{ github.ref_name }}
+          releaseBody: |
+            Download the installer for your platform below.
+
+            **macOS:** open the `.dmg` and drag Rattleboard to Applications. The app isn't notarized, so the first time, right-click it and choose **Open** (or run `xattr -dr com.apple.quarantine /Applications/Rattleboard.app`).
+            **Windows:** run the `-setup.exe` (or the `.msi`). If SmartScreen warns you, choose **More info → Run anyway**.
+          releaseDraft: false
+          prerelease: false
+
+      - name: Upload installers as artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rattleboard-${{ matrix.os }}
+          path: |
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/msi/*.msi
+            src-tauri/target/**/release/bundle/nsis/*.exe
+          if-no-files-found: error

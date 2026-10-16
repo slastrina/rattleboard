@@ -1,0 +1,13 @@
+@font-face { font-family: 'Barlow Semi Condensed'; font-weight: 500; font-display: block; src: url(../fonts/barlow-semi-condensed-500.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Semi Condensed'; font-weight: 600; font-display: block; src: url(../fonts/barlow-semi-condensed-600.woff2) format('woff2'); }
+
+html, body { margin: 0; }
+body { -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none; cursor: default; }
+input { -webkit-user-select: text; user-select: text; }
+input:focus { outline: 2px solid oklch(0.6 0.16 255 / .5); outline-offset: 0; }
+button { -webkit-tap-highlight-color: transparent; }
+
+.mac { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; }
+.win { font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; }
+.flap-font { font-family: 'Barlow Semi Condensed', sans-serif; font-weight: 600; }
+.mono { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Rattleboard</title>
+<link rel="stylesheet" href="shared/base.css">
+<style>
+  html, body { background: transparent; overflow: hidden; }
+  body { padding: 14px; }
+  #menu { box-sizing: border-box; color: #1b1b1d; font-size: 13px; }
+  .mac #menu { width: 300px; border-radius: 10px; background: rgba(246,246,246,.97); padding: 5px; box-shadow: 0 10px 30px rgba(0,0,0,.28), 0 0 0 .5px rgba(0,0,0,.25); }
+  .win #menu { width: 336px; border-radius: 8px; background: rgba(249,249,249,.99); padding: 6px; box-shadow: 0 16px 40px rgba(0,0,0,.24), 0 0 0 1px rgba(0,0,0,.07); }
+  .group { border-top: 1px solid rgba(0,0,0,.09); }
+  .mac .group { padding: 4px 0; }
+  .win .group { padding: 6px 0; }
+  .item { display: grid; grid-template-columns: 16px 1fr auto; align-items: center; gap: 4px; cursor: default; }
+  .mac .item { padding: 3px 8px; border-radius: 5px; }
+  .win .item { padding: 8px 10px; border-radius: 4px; }
+  .mac .item:hover { background: oklch(0.58 0.17 255); color: #fff; }
+  .win .item:hover { background: rgba(0,0,0,.05); color: #1b1b1d; }
+  .item .chk { font-size: 12px; }
+  .item .key { opacity: .55; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="menu"></div>
+<script src="shared/common.js"></script>
+<script src="tray.js"></script>
+</body>
+</html>

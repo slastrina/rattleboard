@@ -1,0 +1,9 @@
+title = "Rattleboard gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "vestaboard-key-literal"
+description = "Something that looks like a Vestaboard key assigned in code"
+regex = '''(?i)(vestaboard[-_ ]?(local[-_ ]?api[-_ ]?key|token)|x-vestaboard-(local-api-key|token))["']?\s*[:=,]\s*["'][A-Za-z0-9_\-]{12,}["']'''

@@ -1,0 +1,16 @@
+{
+  "name": "rattleboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A split-flap desktop mirror for your Vestaboard",
+  "license": "MIT",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icons": "python3 scripts/make_icons.py && tauri icon assets/app-icon.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.3"
+  }
+}

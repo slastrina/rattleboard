@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Rattleboard</title>
+<link rel="stylesheet" href="shared/base.css">
+<style>
+  html, body { background: transparent; overflow: hidden; }
+  body { padding: 36px; width: max-content; }
+  #stage { position: relative; width: max-content; touch-action: none; cursor: grab;
+    opacity: 0; transform: translateY(14px) scale(.97); pointer-events: none;
+    transition: opacity .4s ease, transform .4s cubic-bezier(.2,.8,.2,1); }
+  #stage.top { transform: translateY(-14px) scale(.97); }
+  #stage.on { opacity: 1; transform: none; pointer-events: auto; }
+  #stage.dragging { cursor: grabbing; }
+  #chrome { position: absolute; left: var(--pad); right: var(--pad); top: 0; height: var(--pad); display: flex; align-items: center;
+    justify-content: space-between; gap: 8px; opacity: 0; transition: opacity .2s; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; }
+  #status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--band); white-space: nowrap; }
+  #dot { width: 6px; height: 6px; border-radius: 50%; }
+  #btns { display: flex; gap: 4px; }
+  #btns button { border: none; font: inherit; font-size: 10.5px; height: 18px; padding: 0 8px; border-radius: 9px; cursor: pointer; color: var(--band); background: var(--bb); }
+  #btns button.on { background: var(--bb-on); }
+  #bar { position: absolute; left: var(--pad); right: var(--pad); bottom: var(--bar-bottom); height: 2px; border-radius: 2px; background: var(--track); opacity: 0; transition: opacity .2s; }
+  #fill { height: 100%; width: 0; background: var(--band); border-radius: 2px; transition: width .1s linear; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <split-flap-board id="sfb"></split-flap-board>
+  <div id="chrome">
+    <div id="status"><div id="dot"></div><span id="statusText"></span></div>
+    <div id="btns" data-nodrag="1">
+      <button data-act="pin" id="pinBtn">Pin</button>
+      <button data-act="replay">Replay</button>
+      <button data-act="hide">Hide</button>
+    </div>
+  </div>
+  <div id="bar"><div id="fill"></div></div>
+</div>
+<script src="shared/common.js"></script>
+<script src="shared/split-flap.js"></script>
+<script src="board.js"></script>
+</body>
+</html>

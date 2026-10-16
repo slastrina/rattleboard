@@ -1,0 +1,23 @@
+# build output
+node_modules/
+src-tauri/target/
+src-tauri/gen/schemas/
+dist/
+
+# never commit secrets or local config
+.env
+.env.*
+*.pem
+*.p12
+*.key
+*.keystore
+*.jks
+*.mobileprovision
+settings.json
+history.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
