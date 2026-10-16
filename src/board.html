@@ -21,6 +21,12 @@
   #btns button { border: none; font: inherit; font-size: 10.5px; height: 18px; padding: 0 8px; border-radius: 9px; cursor: pointer; color: var(--band); background: var(--bb); }
   #btns button.on { background: var(--bb-on); }
   #bar { position: absolute; left: var(--pad); right: var(--pad); bottom: var(--bar-bottom); height: 2px; border-radius: 2px; background: var(--track); opacity: 0; transition: opacity .2s; }
+  #grip { position: absolute; width: 22px; height: 22px; z-index: 5; opacity: 0; transition: opacity .2s; touch-action: none; }
+  #grip::before { content: ''; position: absolute; inset: 5px; border: 2px solid var(--band); border-radius: 2px; border-top: 0; border-left: 0; }
+  #grip.br { right: 2px; bottom: 2px; cursor: nwse-resize; }
+  #grip.tl { left: 2px; top: 2px; cursor: nwse-resize; transform: rotate(180deg); }
+  #grip.tr { right: 2px; top: 2px; cursor: nesw-resize; transform: rotate(-90deg); }
+  #grip.bl { left: 2px; bottom: 2px; cursor: nesw-resize; transform: rotate(90deg); }
   #fill { height: 100%; width: 0; background: var(--band); border-radius: 2px; transition: width .1s linear; }
 </style>
 </head>
@@ -36,6 +42,7 @@
     </div>
   </div>
   <div id="bar"><div id="fill"></div></div>
+  <div id="grip" data-nodrag="1" title="Drag to resize"></div>
 </div>
 <script src="shared/common.js"></script>
 <script src="shared/split-flap.js"></script>

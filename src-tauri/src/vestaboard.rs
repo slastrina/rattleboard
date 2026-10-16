@@ -200,7 +200,13 @@ fn parse(line: &str) -> Vec<u8> {
     let mut out = vec![];
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '{' && i + 2 < chars.len() {
+        let close = chars[i..].iter().position(|&c| c == '}').map(|p| i + p);
+        let num: Option<u8> = close.and_then(|e| chars[i + 1..e].iter().collect::<String>().parse().ok());
+        if let (Some(e), Some(n)) = (close, num) {
+            // "{63}": a raw character code, as accepted by Vestaboard's own text endpoints
+            out.push(if n <= 71 { n } else { 0 });
+            i = e + 1;
+        } else if chars[i] == '{' && i + 2 < chars.len() && chars[i + 2] == '}' {
             out.push(match chars[i + 1] {
                 'R' => 63, 'O' => 64, 'Y' => 65, 'G' => 66, 'B' => 67, 'V' => 68, 'W' => 69, 'K' => 70, _ => 0,
             });
@@ -211,6 +217,70 @@ fn parse(line: &str) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Lays plain text out like Vestaboard's text endpoints: upper-cased, word-wrapped,
+/// centred both ways. Explicit newlines start a new row; `{63}` inserts a raw code.
+pub fn text_layout(text: &str, rows: usize, cols: usize) -> Grid {
+    let mut lines: Vec<Vec<u8>> = vec![];
+    for para in text.split('\n') {
+        let mut cur: Vec<u8> = vec![];
+        for word in para.split_whitespace() {
+            let mut w = parse(word);
+            while w.len() > cols {
+                if !cur.is_empty() {
+                    lines.push(std::mem::take(&mut cur));
+                }
+                lines.push(w.drain(..cols).collect());
+            }
+            if w.is_empty() {
+                continue;
+            }
+            if !cur.is_empty() && cur.len() + 1 + w.len() > cols {
+                lines.push(std::mem::take(&mut cur));
+            }
+            if !cur.is_empty() {
+                cur.push(0);
+            }
+            cur.extend(w);
+        }
+        lines.push(cur);
+    }
+    while lines.len() > 1 && lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.truncate(rows);
+    let mut g = vec![vec![0u8; cols]; rows];
+    let top = (rows - lines.len()) / 2;
+    for (i, ln) in lines.into_iter().enumerate() {
+        let st = (cols - ln.len()) / 2;
+        for (j, v) in ln.into_iter().enumerate() {
+            g[top + i][st + j] = v;
+        }
+    }
+    g
+}
+
+/// Validates a layout posted by an app: a rows×cols grid of codes 0–71.
+pub fn posted_grid(v: &Value) -> Result<Grid, String> {
+    let rows = v.as_array().ok_or("Expected an array of rows")?;
+    let mut g: Grid = vec![];
+    for r in rows {
+        let cells = r.as_array().ok_or("Each row must be an array")?;
+        let mut row = vec![];
+        for c in cells {
+            let n = c.as_u64().ok_or("Character codes must be numbers")?;
+            if n > 71 {
+                return Err(format!("Unknown character code {n}"));
+            }
+            row.push(n as u8);
+        }
+        g.push(row);
+    }
+    match (g.len(), g.first().map(|r| r.len())) {
+        (6, Some(22)) | (3, Some(15)) if g.iter().all(|r| r.len() == g[0].len()) => Ok(g),
+        _ => Err("Layout must be 6 rows of 22 (Flagship) or 3 rows of 15 (Note)".into()),
+    }
 }
 
 pub fn demo(model: &str, idx: usize) -> Reading {
@@ -258,5 +328,21 @@ mod demo_tests {
         assert_eq!((n.layout.len(), n.layout[0].len()), (3, 15));
         assert_eq!(n.layout[0][0], 63);
         assert_eq!(parse("{g}A°"), vec![66, 1, 62]);
+        assert_eq!(parse("{63}B{7}"), vec![63, 2, 7]);
+    }
+
+    #[test]
+    fn text() {
+        let g = text_layout("hello world", 3, 15);
+        assert_eq!(g[1][2..13], parse("HELLO WORLD")[..]);
+        assert_eq!(g[0], vec![0; 15]);
+        let g = text_layout("the quick brown fox jumps over", 3, 15);
+        assert_eq!(g[0], parse("THE QUICK BROWN"));
+        assert_eq!(g[1][..14], parse("FOX JUMPS OVER")[..]);
+        let g = text_layout("A\n\nB", 6, 22);
+        assert_eq!((g[1][10], g[3][10]), (1, 2));
+        assert!(posted_grid(&serde_json::to_value(vec![vec![0u8; 15]; 3]).unwrap()).is_ok());
+        assert!(posted_grid(&serde_json::to_value(vec![vec![0u8; 15]; 2]).unwrap()).is_err());
+        assert!(posted_grid(&serde_json::to_value(vec![vec![99u8; 15]; 3]).unwrap()).is_err());
     }
 }

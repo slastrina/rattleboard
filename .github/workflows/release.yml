@@ -2,6 +2,14 @@ name: Release
 
 # Push a tag like v0.1.0 to build installers and publish a GitHub Release.
 # Run it by hand from the Actions tab to get the installers as build artifacts only.
+#
+# macOS builds are signed with a Developer ID and notarized when these repository
+# secrets are set (same names as the other slastrina apps); without them the app is
+# only ad-hoc signed:
+#   DEVELOPER_ID_CERT_P12 (base64 .p12 holding only the Developer ID Application identity),
+#   DEVELOPER_ID_CERT_PASSWORD, APPLE_SIGNING_IDENTITY ("Developer ID Application: … (TEAMID)"),
+#   APPLE_ID, APPLE_APP_PASSWORD (app-specific password), APPLE_TEAM_ID,
+#   APPLE_ORG_NAME (not used by Tauri; referenced only so the log masks it).
 on:
   push:
     tags: ['v*']
@@ -48,6 +56,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.DEVELOPER_ID_CERT_P12 || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.DEVELOPER_ID_CERT_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_APP_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_ORG_NAME: ${{ secrets.APPLE_ORG_NAME }}
         with:
           args: ${{ matrix.args }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
@@ -55,7 +70,7 @@ jobs:
           releaseBody: |
             Download the installer for your platform below.
 
-            **macOS:** open the `.dmg` and drag Rattleboard to Applications. The app isn't notarized, so the first time, right-click it and choose **Open** (or run `xattr -dr com.apple.quarantine /Applications/Rattleboard.app`).
+            **macOS 11+ (Apple Silicon and Intel):** open the `.dmg` and drag Rattleboard to Applications. It's signed with a Developer ID and notarized by Apple.
             **Windows:** run the `-setup.exe` (or the `.msi`). If SmartScreen warns you, choose **More info → Run anyway**.
           releaseDraft: false
           prerelease: false

@@ -7,3 +7,8 @@ useDefault = true
 id = "vestaboard-key-literal"
 description = "Something that looks like a Vestaboard key assigned in code"
 regex = '''(?i)(vestaboard[-_ ]?(local[-_ ]?api[-_ ]?key|token)|x-vestaboard-(local-api-key|token))["']?\s*[:=,]\s*["'][A-Za-z0-9_\-]{12,}["']'''
+
+# A list of header names ("x-vestaboard-local-api-key", "x-vestaboard-token") isn't a key.
+[rules.allowlist]
+regexTarget = "match"
+regexes = ['''["']\s*,\s*["']x-vestaboard-''']

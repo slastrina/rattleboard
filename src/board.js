@@ -5,12 +5,21 @@ const sfb = document.getElementById('sfb');
 const $ = id => document.getElementById(id);
 
 let S = null;
-const ui = { visible: false, flipping: false, remaining: 0, total: 0, hover: false, dragging: false };
+const ui = { visible: false, flipping: false, remaining: 0, total: 0, hover: false, dragging: false, resizing: null };
 let lastSize = '';
 
+const floating = () => !!S && S.settings.mode === 'float';
+const MIN_SCALE = 0.4, MAX_SCALE = 3;
+
 function tileSize(s) {
-  const flag = s.model !== 'note';
-  return (flag ? { s: 18, m: 24, l: 30 } : { s: 26, m: 34, l: 42 })[s.size] || 24;
+  const scale = ui.resizing ? ui.resizing.scale : s.scale || 1;
+  return Math.max(7, Math.round((s.model === 'note' ? 34 : 24) * scale));
+}
+
+// The resize grip sits on the corner facing away from the screen edge the board is parked against.
+function gripCorner(s) {
+  if (s.mode === 'float') return 'br';
+  return { tl: 'br', tr: 'bl', bl: 'tr', br: 'tl' }[s.position] || 'tl';
 }
 
 function render() {
@@ -29,23 +38,29 @@ function render() {
   st.setProperty('--bb', blk ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.07)');
   st.setProperty('--bb-on', blk ? 'rgba(255,255,255,.24)' : 'rgba(0,0,0,.16)');
 
-  const topish = s.position === 'custom' ? s.custom.y < screen.availHeight * 0.375 * devicePixelRatio : s.position[0] === 't';
+  const float = s.mode === 'float';
+  const topish = float ? s.custom.y < screen.availHeight * 0.375 * devicePixelRatio : s.position[0] === 't';
+  const g = gripCorner(s), grip = $('grip');
+  grip.className = g;
+  grip.style.opacity = ui.hover || ui.resizing ? 1 : 0;
   stage.classList.toggle('top', topish);
   stage.classList.toggle('on', ui.visible);
   stage.classList.toggle('dragging', ui.dragging);
 
-  const counting = ui.visible && !s.pinned && !ui.flipping && ui.remaining > 0;
+  const counting = ui.visible && !float && !ui.flipping && ui.remaining > 0;
   const paused = counting && s.pauseOnHover && ui.hover;
   const name = s.boardName || 'Vestaboard';
-  $('statusText').textContent = ui.dragging ? 'Release near a corner to snap'
+  $('statusText').textContent = ui.resizing ? `${Math.round(ui.resizing.scale * 100)}%`
+    : ui.dragging ? (float ? 'Release to place it here' : 'Release to snap to the nearest corner')
     : ui.flipping ? `${name} · updating`
-    : s.pinned ? `${name} · pinned`
+    : float ? `${name} · pinned`
     : counting ? `${name} · hides in ${Math.ceil(ui.remaining / 1000)}s${paused ? ' · paused' : ''}`
     : S.conn === 'error' ? `${name} · offline` : name;
   $('dot').style.background = ui.flipping ? '#f2c230' : S.conn === 'error' ? '#e0553f' : '#3fbf6a';
-  $('chrome').style.opacity = ui.hover || ui.dragging ? 1 : s.pinned ? 0.8 : 0;
-  $('pinBtn').textContent = s.pinned ? 'Unpin' : 'Pin';
-  $('pinBtn').classList.toggle('on', s.pinned);
+  $('chrome').style.opacity = ui.hover || ui.dragging || ui.resizing ? 1 : 0;
+  $('pinBtn').textContent = float ? 'Unpin' : 'Pin';
+  $('pinBtn').title = float ? 'Go back to popping up in a corner' : 'Keep it on screen, wherever you put it';
+  $('pinBtn').classList.toggle('on', float);
   $('bar').style.opacity = counting ? 1 : 0;
   $('fill').style.width = (ui.total ? (ui.remaining / ui.total) * 100 : 0) + '%';
 }
@@ -59,9 +74,9 @@ function measure() {
   });
 }
 
-function startCountdown(pinned = S && S.settings.pinned) {
+function startCountdown(float = floating()) {
   if (!ui.visible) return;
-  if (pinned) { ui.remaining = 0; ui.total = 0; }
+  if (float) { ui.remaining = 0; ui.total = 0; }
   else { const t = (S ? S.settings.hideSec : 10) * 1000; ui.remaining = t; ui.total = t; }
   render();
 }
@@ -71,7 +86,13 @@ function hide() {
   setTimeout(() => { if (!ui.visible) RB.invoke('board_hidden'); }, 420);
 }
 
-RB.onState(snap => { S = snap; render(); });
+RB.onState(snap => {
+  const wasFloat = floating();
+  S = snap;
+  // Unpinned: the toast starts counting down from where it is now.
+  if (wasFloat && !floating() && ui.visible && !ui.flipping) startCountdown(false);
+  render();
+});
 RB.listen('rb://present', e => {
   ui.visible = true; ui.remaining = 0; render();
   if (e.payload) startCountdown();
@@ -87,7 +108,7 @@ stage.addEventListener('mouseleave', () => { ui.hover = false; render(); });
 setInterval(() => {
   if (!S) return;
   const s = S.settings;
-  if (ui.visible && !s.pinned && !ui.flipping && ui.remaining > 0 && !(s.pauseOnHover && ui.hover) && !ui.dragging) {
+  if (ui.visible && s.mode !== 'float' && !ui.flipping && ui.remaining > 0 && !(s.pauseOnHover && ui.hover) && !ui.dragging && !ui.resizing) {
     ui.remaining -= 100;
     if (ui.remaining <= 0) return hide();
     render();
@@ -96,9 +117,9 @@ setInterval(() => {
 
 RB.delegate(document.body, 'click', {
   pin: () => {
-    const pinned = !S.settings.pinned;
-    RB.invoke('update_settings', { patch: { pinned } });
-    ui.visible = true; startCountdown(pinned);
+    const float = !floating();
+    RB.invoke('update_settings', { patch: { mode: float ? 'float' : 'toast' } });
+    ui.visible = true; startCountdown(float);
   },
   replay: () => RB.invoke('replay'),
   hide
@@ -107,7 +128,7 @@ RB.delegate(document.body, 'click', {
 // Dragging: move the native window with the pointer; the backend snaps on release.
 let drag = null, pending = null;
 stage.addEventListener('pointerdown', e => {
-  if (e.button !== 0 || e.target.closest('[data-nodrag]')) return;
+  if (e.button !== 0 || e.target.closest('[data-nodrag]') || ui.resizing) return;
   drag = { sx: e.screenX, sy: e.screenY, moved: false };
   stage.setPointerCapture(e.pointerId);
 });
@@ -130,3 +151,31 @@ const endDrag = () => {
 };
 stage.addEventListener('pointerup', endDrag);
 stage.addEventListener('pointercancel', endDrag);
+
+// Resizing: drag the grip to scale the whole board; the window follows its size.
+const grip = $('grip');
+grip.addEventListener('pointerdown', e => {
+  if (e.button !== 0 || !S) return;
+  e.stopPropagation(); e.preventDefault();
+  const g = gripCorner(S.settings), w = sfb.offsetWidth, h = sfb.offsetHeight, start = S.settings.scale || 1;
+  // Never let the board outgrow the screen it's on.
+  const fit = Math.min((screen.availWidth - 40) / w, (screen.availHeight - 40) / h) * start;
+  ui.resizing = { sx: e.screenX, sy: e.screenY, w, h, start, scale: start, max: Math.min(MAX_SCALE, fit),
+    dirX: g[1] === 'r' ? 1 : -1, dirY: g[0] === 'b' ? 1 : -1 };
+  grip.setPointerCapture(e.pointerId);
+  render();
+});
+grip.addEventListener('pointermove', e => {
+  const r = ui.resizing; if (!r) return;
+  const dx = (e.screenX - r.sx) * r.dirX, dy = (e.screenY - r.sy) * r.dirY;
+  // Follow whichever direction the pointer moved further, keeping the board's proportions.
+  const f = Math.abs(dx) / r.w >= Math.abs(dy) / r.h ? (r.w + dx) / r.w : (r.h + dy) / r.h;
+  const scale = Math.round(Math.min(r.max, Math.max(MIN_SCALE, r.start * f)) * 100) / 100;
+  if (scale !== r.scale) { r.scale = scale; render(); }
+});
+const endResize = () => {
+  const r = ui.resizing; if (!r) return;
+  RB.invoke('update_settings', { patch: { scale: r.scale } }).finally(() => { ui.resizing = null; render(); });
+};
+grip.addEventListener('pointerup', endResize);
+grip.addEventListener('pointercancel', endResize);

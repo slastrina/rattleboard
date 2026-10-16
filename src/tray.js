@@ -22,7 +22,7 @@ function render() {
   const kbd = (m, w) => (mac ? m : w);
   const groups = [
     [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ['replay', 'Replay last change', '']],
-    [['pin', 'Pin as widget', '', s.pinned], ['pause', 'Pause checking', '', !s.polling]],
+    [['pin', 'Pin as widget', '', s.mode === 'float'], ['pause', 'Pause checking', '', !s.polling]],
     [['history', 'Message history…', ''], ['settings', 'Settings…', kbd('⌘,', '')], ['setup', 'Run setup again…', '']],
     [['quit', 'Quit Rattleboard', kbd('⌘Q', '')]]
   ];
@@ -31,7 +31,7 @@ function render() {
     <div style="padding:8px 10px 10px; display:flex; flex-direction:column; gap:8px">
       <div style="display:flex; justify-content:space-between; align-items:baseline">
         <span style="font-weight:600">${RB.esc(s.boardName || 'Vestaboard')}</span>
-        <span style="font-size:11.5px; color:#6b6d72">${RB.esc(s.source === 'local' ? 'Local · ' + s.host : s.source === 'demo' ? 'Demo mode' : 'Cloud')}</span>
+        <span style="font-size:11.5px; color:#6b6d72">${RB.esc(RB.sourceLabel(S))}</span>
       </div>
       <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:#55575c">
         <div style="width:7px; height:7px; border-radius:50%; background:${connDot}; flex:none"></div><span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${RB.esc(status)}</span>
@@ -49,7 +49,7 @@ function render() {
 const act = {
   show: () => RB.invoke('show_board'),
   replay: () => RB.invoke('replay'),
-  pin: () => { RB.invoke('update_settings', { patch: { pinned: !S.settings.pinned } }); RB.invoke('show_board'); },
+  pin: () => { RB.invoke('update_settings', { patch: { mode: S.settings.mode === 'float' ? 'toast' : 'float' } }); RB.invoke('show_board'); },
   pause: () => { RB.invoke('update_settings', { patch: { polling: !S.settings.polling } }); RB.invoke('close_window', { label: 'tray' }); },
   history: () => RB.invoke('open_window', { view: 'history' }),
   settings: () => RB.invoke('open_window', { view: 'settings' }),

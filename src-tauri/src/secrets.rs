@@ -4,6 +4,7 @@
 const SERVICE: &str = "io.github.slastrina.rattleboard";
 pub const LOCAL_KEY: &str = "local-api-key";
 pub const CLOUD_TOKEN: &str = "cloud-api-token";
+pub const SERVER_KEY: &str = "api-server-key";
 
 pub fn get(account: &str) -> String {
     keyring::Entry::new(SERVICE, account)

@@ -26,6 +26,19 @@ const RB = {
   esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); },
   ago(ms) { const s = Math.max(0, Math.round(ms / 1000)); return s < 5 ? 'just now' : s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; },
   fmtTime(t) { return new Date(t).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); },
+  sourceLabel(S) {
+    const s = S.settings;
+    return s.source === 'local' ? 'Local · ' + s.host : s.source === 'demo' ? 'Demo mode' : s.source === 'virtual' ? 'API server' : 'Cloud';
+  },
+  // Clipboard with a fallback for webviews that don't expose the async API.
+  copy(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text).catch(() => RB._copy(text));
+    return Promise.resolve(RB._copy(text));
+  },
+  _copy(text) {
+    const t = document.createElement('textarea'); t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+    document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove();
+  },
   mask(k) { return k ? '•'.repeat(8) + k.slice(-4) : 'not set'; },
 
   // The small read-only board used in the tray menu and setup ("mini" in the design).

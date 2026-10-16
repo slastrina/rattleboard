@@ -1,11 +1,12 @@
 mod secrets;
+mod server;
 mod settings;
 mod vestaboard;
 
 use serde::{Deserialize, Serialize};
 use settings::{Point, Settings};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::image::Image;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -21,7 +22,6 @@ use vestaboard::Grid;
 const SHADOW: f64 = 36.0;
 /// Gap between the board and the screen edge when parked in a corner (from the design).
 const MARGIN: f64 = 20.0;
-const SNAP: f64 = 60.0;
 const HISTORY_MAX: usize = 12;
 const TRAY_W: f64 = 336.0;
 const TRAY_PAD: f64 = 14.0;
@@ -53,6 +53,11 @@ struct Runtime {
     last_change_at: Option<i64>,
     unread: bool,
     history: Vec<HistoryEntry>,
+    /// The last message read from the mirrored board, kept apart from what's on screen
+    /// so a message sent to the API server isn't mistaken for a change on the real board.
+    remote_id: Option<String>,
+    remote_layout: Option<Grid>,
+    api_seq: u64,
     tray_hidden_at: Option<Instant>,
     drag_origin: Option<PhysicalPosition<i32>>,
 }
@@ -60,6 +65,16 @@ struct Runtime {
 struct Secrets {
     local_key: String,
     cloud_token: String,
+    server_key: String,
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct ServerStatus {
+    running: bool,
+    error: Option<String>,
+    /// Base URLs apps can use, e.g. http://192.168.1.20:7070
+    urls: Vec<String>,
 }
 
 struct AppState {
@@ -68,6 +83,8 @@ struct AppState {
     secrets: Mutex<Secrets>,
     http: reqwest::Client,
     wake: Notify,
+    server: Mutex<Option<server::Handle>>,
+    server_status: Mutex<ServerStatus>,
     settings_path: PathBuf,
     history_path: PathBuf,
 }
@@ -89,9 +106,10 @@ struct Snapshot {
     history: Vec<HistoryEntry>,
     has_local_key: bool,
     has_cloud_token: bool,
+    server: ServerStatus,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
@@ -119,6 +137,7 @@ fn snapshot(st: &AppState) -> Snapshot {
         history: rt.history.clone(),
         has_local_key: !sec.local_key.is_empty(),
         has_cloud_token: !sec.cloud_token.is_empty(),
+        server: st.server_status.lock().unwrap().clone(),
     }
 }
 
@@ -150,14 +169,37 @@ async fn check(app: &AppHandle) -> Result<Grid, String> {
         let sec = st.secrets.lock().unwrap();
         (sec.local_key.clone(), sec.cloud_token.clone())
     };
-    let res = if source == "demo" {
-        let model = st.settings.lock().unwrap().model.clone();
-        let secs = (now_ms() / 1000) as u64;
-        Ok(vestaboard::demo(&model, (secs / vestaboard::DEMO_EVERY_SECS) as usize))
-    } else if source == "cloud" {
-        vestaboard::read_cloud(&st.http, &token).await
-    } else {
-        vestaboard::read_local(&st.http, &host, &key).await
+    let res = match source.as_str() {
+        "virtual" => {
+            // Nothing to mirror: the board shows what apps send to the API server.
+            let mut rt = st.rt.lock().unwrap();
+            let s = st.settings.lock().unwrap();
+            rt.last_checked = Some(now_ms());
+            let (ok, err) = if !s.server_enabled {
+                ("error", Some("Turn on the API server in Settings → API".to_string()))
+            } else {
+                match st.server_status.lock().unwrap().error.clone() {
+                    Some(e) => ("error", Some(e)),
+                    None => ("ok", None),
+                }
+            };
+            rt.conn = ok.into();
+            rt.error = err.clone();
+            let layout = rt.layout.clone().unwrap_or_else(|| blank(&s));
+            drop((rt, s));
+            broadcast(app);
+            return match err {
+                Some(e) => Err(e),
+                None => Ok(layout),
+            };
+        }
+        "demo" => {
+            let model = st.settings.lock().unwrap().model.clone();
+            let secs = (now_ms() / 1000) as u64;
+            Ok(vestaboard::demo(&model, (secs / vestaboard::DEMO_EVERY_SECS) as usize))
+        }
+        "cloud" => vestaboard::read_cloud(&st.http, &token).await,
+        _ => vestaboard::read_local(&st.http, &host, &key).await,
     };
 
     let reading = match res {
@@ -174,60 +216,73 @@ async fn check(app: &AppHandle) -> Result<Grid, String> {
         }
     };
 
-    let layout = reading.layout.clone();
+    let changed = {
+        let mut rt = st.rt.lock().unwrap();
+        rt.conn = "ok".into();
+        rt.error = None;
+        rt.last_checked = Some(now_ms());
+        let changed = match (&reading.id, &rt.remote_id) {
+            (Some(new), Some(old)) => new != old,
+            _ => rt.remote_layout.as_ref() != Some(&reading.layout),
+        };
+        rt.remote_id = reading.id.clone();
+        rt.remote_layout = Some(reading.layout.clone());
+        changed
+    };
+    let src = match source.as_str() {
+        "cloud" => "Cloud API",
+        "demo" => "Demo",
+        _ => "Local API",
+    };
+    if changed {
+        show_message(app, reading.layout.clone(), reading.id, src);
+    } else {
+        broadcast(app);
+    }
+    Ok(reading.layout)
+}
+
+/// Puts a new message on the virtual board: history, unread dot, and the flip.
+fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str) {
+    let st = app.state::<AppState>();
     let rows = layout.len();
     let cols = layout.first().map(|r| r.len()).unwrap_or(0);
     let detected = if rows == 3 && cols == 15 { "note" } else { "flag" };
-    {
+    let setup_done = {
         let mut s = st.settings.lock().unwrap();
         if s.model != detected {
             s.model = detected.into();
             s.save(&st.settings_path);
         }
-    }
-
-    let (changed, setup_done) = {
-        let mut rt = st.rt.lock().unwrap();
-        rt.conn = "ok".into();
-        rt.error = None;
-        rt.last_checked = Some(now_ms());
-        let changed = match (&reading.id, &rt.msg_id) {
-            (Some(new), Some(old)) => new != old,
-            _ => rt.layout.as_ref() != Some(&reading.layout),
-        };
-        if changed {
-            let first = rt.layout.is_none();
-            rt.layout = Some(reading.layout.clone());
-            rt.msg_id = reading.id.clone();
-            rt.display = None;
-            if !first || rt.last_change_at.is_none() {
-                rt.last_change_at = Some(now_ms());
-            }
-            let already = rt.history.first().map(|h| h.layout == reading.layout).unwrap_or(false);
-            if !already {
-                let src = match source.as_str() {
-                    "cloud" => "Cloud API",
-                    "demo" => "Demo",
-                    _ => "Local API",
-                };
-                let at = now_ms();
-                rt.history.insert(0, HistoryEntry { id: at, at, src: src.into(), layout: reading.layout.clone() });
-                rt.history.truncate(HISTORY_MAX);
-            }
-            let tray_open = app.get_webview_window("tray").and_then(|w| w.is_visible().ok()).unwrap_or(false);
-            rt.unread = !tray_open;
-        }
-        (changed, st.settings.lock().unwrap().setup_done)
+        s.setup_done
     };
-
-    if changed {
-        save_history(&st);
+    {
+        let mut rt = st.rt.lock().unwrap();
+        let first = rt.layout.is_none();
+        if rt.layout.as_ref() == Some(&layout) && rt.display.is_none() {
+            // Same picture as before (e.g. an app re-sent it): replay the flip.
+            rt.seq += 1;
+        }
+        rt.layout = Some(layout.clone());
+        rt.msg_id = id;
+        rt.display = None;
+        if !first || rt.last_change_at.is_none() {
+            rt.last_change_at = Some(now_ms());
+        }
+        let already = rt.history.first().map(|h| h.layout == layout).unwrap_or(false);
+        if !already {
+            let at = now_ms();
+            rt.history.insert(0, HistoryEntry { id: at, at, src: src.into(), layout });
+            rt.history.truncate(HISTORY_MAX);
+        }
+        let tray_open = app.get_webview_window("tray").and_then(|w| w.is_visible().ok()).unwrap_or(false);
+        rt.unread = !tray_open;
     }
+    save_history(&st);
     broadcast(app);
-    if changed && setup_done {
+    if setup_done {
         present_board(app, false);
     }
-    Ok(layout)
 }
 
 async fn poll_loop(app: AppHandle) {
@@ -235,7 +290,7 @@ async fn poll_loop(app: AppHandle) {
         let (go, every) = {
             let st = app.state::<AppState>();
             let s = st.settings.lock().unwrap();
-            (s.polling && s.setup_done, s.poll_every.max(1))
+            (s.polling && s.setup_done, if s.source == "virtual" { 5 } else { s.poll_every.max(1) })
         };
         if go {
             let _ = check(&app).await;
@@ -291,7 +346,7 @@ fn place_board(app: &AppHandle) {
     let Some(w) = board(app) else { return };
     let s = app.state::<AppState>().settings.lock().unwrap().clone();
     let size = w.outer_size().unwrap_or_default();
-    let (x, y) = if s.position == "custom" {
+    let (x, y) = if s.floating() {
         let (cx, cy) = (s.custom.x as i32, s.custom.y as i32);
         let mon = app.monitor_from_point(s.custom.x, s.custom.y).ok().flatten();
         let (wa, scale) = match mon {
@@ -312,9 +367,10 @@ fn place_board(app: &AppHandle) {
 
 fn apply_layering(app: &AppHandle) {
     let Some(w) = board(app) else { return };
-    let pinned = app.state::<AppState>().settings.lock().unwrap().pinned;
-    let _ = w.set_always_on_top(!pinned);
-    let _ = w.set_always_on_bottom(pinned);
+    let s = app.state::<AppState>().settings.lock().unwrap().clone();
+    let desktop = s.floating() && s.float_layer == "desktop";
+    let _ = w.set_always_on_bottom(desktop);
+    let _ = w.set_always_on_top(!desktop);
 }
 
 /// Shows the board window and tells it to flip into view. `countdown` starts the
@@ -472,6 +528,94 @@ fn open_panel(app: &AppHandle, view: &str) {
     }
 }
 
+// ---------------------------------------------------------------- API server
+
+struct ApiBoard(AppHandle);
+
+impl server::Board for ApiBoard {
+    fn api_key(&self) -> String {
+        self.0.state::<AppState>().secrets.lock().unwrap().server_key.clone()
+    }
+    fn dims(&self) -> (usize, usize) {
+        self.0.state::<AppState>().settings.lock().unwrap().dims()
+    }
+    fn current(&self) -> (Grid, Option<String>) {
+        let st = self.0.state::<AppState>();
+        let s = st.settings.lock().unwrap().clone();
+        let rt = st.rt.lock().unwrap();
+        (rt.layout.clone().unwrap_or_else(|| blank(&s)), rt.msg_id.clone())
+    }
+    fn post(&self, layout: Grid) -> String {
+        let st = self.0.state::<AppState>();
+        let id = {
+            let mut rt = st.rt.lock().unwrap();
+            rt.api_seq += 1;
+            format!("api-{}-{}", now_ms(), rt.api_seq)
+        };
+        let (app, l, i) = (self.0.clone(), layout, id.clone());
+        // Windows must be touched from the main thread.
+        let _ = self.0.run_on_main_thread(move || show_message(&app, l, Some(i), "API server"));
+        id
+    }
+}
+
+fn ensure_server_key(st: &AppState) -> Result<(), String> {
+    if st.secrets.lock().unwrap().server_key.is_empty() {
+        let k = server::new_key();
+        secrets::set(secrets::SERVER_KEY, &k)?;
+        st.secrets.lock().unwrap().server_key = k;
+    }
+    Ok(())
+}
+
+async fn restart_server(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    // Stop the old listener first so the port is free again.
+    drop(st.server.lock().unwrap().take());
+    let (on, port, lan) = {
+        let s = st.settings.lock().unwrap();
+        (s.server_enabled, s.server_port, s.server_lan)
+    };
+    let status = if !on {
+        ServerStatus::default()
+    } else if let Err(e) = ensure_server_key(&st) {
+        ServerStatus { error: Some(format!("Couldn't save the API key: {e}")), ..Default::default() }
+    } else {
+        let mut res = server::start(Arc::new(ApiBoard(app.clone())), port, lan).await;
+        if res.is_err() {
+            // The previous listener may take a moment to let go of the port.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            res = server::start(Arc::new(ApiBoard(app.clone())), port, lan).await;
+        }
+        match res {
+            Ok(h) => {
+                let p = h.addr.port();
+                *st.server.lock().unwrap() = Some(h);
+                let mut urls = vec![format!("http://127.0.0.1:{p}")];
+                if lan {
+                    if let Some(ip) = server::lan_ip() {
+                        urls.insert(0, format!("http://{ip}:{p}"));
+                    }
+                }
+                ServerStatus { running: true, error: None, urls }
+            }
+            Err(e) => ServerStatus { error: Some(e), ..Default::default() },
+        }
+    };
+    *st.server_status.lock().unwrap() = status;
+    st.wake.notify_one();
+    broadcast(app);
+}
+
+#[tauri::command]
+async fn regenerate_server_key(app: AppHandle) -> Result<(), String> {
+    let k = server::new_key();
+    secrets::set(secrets::SERVER_KEY, &k)?;
+    app.state::<AppState>().secrets.lock().unwrap().server_key = k;
+    broadcast(&app);
+    Ok(())
+}
+
 // ---------------------------------------------------------------- commands
 
 #[tauri::command]
@@ -484,21 +628,37 @@ fn update_settings(app: AppHandle, st: State<AppState>, patch: serde_json::Value
     let (old, new) = {
         let mut s = st.settings.lock().unwrap();
         let old = s.clone();
-        let new = s.merge(patch)?;
+        let mut new = s.merge(patch)?;
+        if !old.floating() && new.floating() {
+            // Pinning a visible toast keeps it right where it is.
+            if let Some(w) = board(&app).filter(|w| w.is_visible().unwrap_or(false)) {
+                if let Ok(p) = w.outer_position() {
+                    new.custom = Point { x: p.x as f64, y: p.y as f64 };
+                }
+            }
+        }
         *s = new.clone();
         new.save(&st.settings_path);
         (old, new)
     };
-    if old.pinned != new.pinned {
+    if old.mode != new.mode || old.float_layer != new.float_layer {
         apply_layering(&app);
     }
-    if old.position != new.position || old.custom != new.custom {
+    if old.mode != new.mode || old.position != new.position || old.custom != new.custom {
         place_board(&app);
+    }
+    if old.mode != new.mode {
+        let _ = app.emit_to("board", "rb://mode", ());
+    }
+    if old.server_enabled != new.server_enabled || old.server_port != new.server_port || old.server_lan != new.server_lan {
+        let h = app.clone();
+        tauri::async_runtime::spawn(async move { restart_server(&h).await });
     }
     if old.source != new.source || old.host != new.host || old.poll_every != new.poll_every || old.polling != new.polling {
         let mut rt = st.rt.lock().unwrap();
         if old.source != new.source || old.host != new.host {
-            rt.msg_id = None;
+            rt.remote_id = None;
+            rt.remote_layout = None;
             rt.conn = "idle".into();
             rt.error = None;
         }
@@ -522,12 +682,13 @@ fn set_autostart(app: &AppHandle, on: bool) {
 struct SecretsOut {
     local_key: String,
     cloud_token: String,
+    server_key: String,
 }
 
 #[tauri::command]
 fn get_secrets(st: State<AppState>) -> SecretsOut {
     let s = st.secrets.lock().unwrap();
-    SecretsOut { local_key: s.local_key.clone(), cloud_token: s.cloud_token.clone() }
+    SecretsOut { local_key: s.local_key.clone(), cloud_token: s.cloud_token.clone(), server_key: s.server_key.clone() }
 }
 
 #[tauri::command]
@@ -543,7 +704,11 @@ fn set_secret(app: AppHandle, st: State<AppState>, kind: String, value: String) 
             s.local_key = value;
         }
     }
-    st.rt.lock().unwrap().msg_id = None;
+    {
+        let mut rt = st.rt.lock().unwrap();
+        rt.remote_id = None;
+        rt.remote_layout = None;
+    }
     st.wake.notify_one();
     broadcast(&app);
     Ok(())
@@ -681,7 +846,7 @@ fn board_drag_move(app: AppHandle, st: State<AppState>, dx: f64, dy: f64) {
     let _ = w.set_position(PhysicalPosition::new(x, y));
 }
 
-/// Release: snap to a corner when within reach of one, otherwise keep the custom spot.
+/// Release: a toast snaps to the nearest corner; a floating board stays where it was dropped.
 #[tauri::command]
 fn board_drag_end(app: AppHandle, st: State<AppState>) {
     let Some(w) = board(&app) else { return };
@@ -691,17 +856,15 @@ fn board_drag_end(app: AppHandle, st: State<AppState>) {
     let (wa, scale) = work_area(&app, &w);
     let size = w.outer_size().unwrap_or_default();
     let pos = w.outer_position().unwrap_or_default();
-    let snap = corner_positions(&wa, size, scale).into_iter().find(|(_, x, y)| {
-        let (dx, dy) = ((x - pos.x) as f64, (y - pos.y) as f64);
-        (dx * dx + dy * dy).sqrt() < SNAP * scale
-    });
     {
         let mut s = st.settings.lock().unwrap();
-        match snap {
-            Some((name, _, _)) => s.position = name.into(),
-            None => {
-                s.position = "custom".into();
-                s.custom = Point { x: pos.x as f64, y: pos.y as f64 };
+        if s.floating() {
+            s.custom = Point { x: pos.x as f64, y: pos.y as f64 };
+        } else {
+            let dist = |(_, x, y): &(&str, i32, i32)| ((x - pos.x) as f64).hypot((y - pos.y) as f64);
+            let corners = corner_positions(&wa, size, scale);
+            if let Some(c) = corners.iter().min_by(|a, b| dist(a).total_cmp(&dist(b))) {
+                s.position = c.0.into();
             }
         }
         s.save(&st.settings_path);
@@ -763,6 +926,7 @@ pub fn run() {
             board_drag_end,
             tray_resize,
             panel_resize,
+            regenerate_server_key,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -778,15 +942,19 @@ pub fn run() {
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
             let setup_done = settings.setup_done;
+            let floating = settings.floating();
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 rt: Mutex::new(Runtime { history, ..Default::default() }),
                 secrets: Mutex::new(Secrets {
                     local_key: secrets::get(secrets::LOCAL_KEY),
                     cloud_token: secrets::get(secrets::CLOUD_TOKEN),
+                    server_key: secrets::get(secrets::SERVER_KEY),
                 }),
                 http: vestaboard::client(),
                 wake: Notify::new(),
+                server: Mutex::new(None),
+                server_status: Mutex::new(ServerStatus::default()),
                 settings_path,
                 history_path,
             });
@@ -811,8 +979,13 @@ pub fn run() {
             tray.build(app)?;
 
             tauri::async_runtime::spawn(poll_loop(h.clone()));
+            let h2 = h.clone();
+            tauri::async_runtime::spawn(async move { restart_server(&h2).await });
             if !setup_done {
                 open_panel(&h, "setup");
+            } else if floating {
+                // A floating board is always on screen, even before the first check answers.
+                present_board(&h, false);
             }
             Ok(())
         })

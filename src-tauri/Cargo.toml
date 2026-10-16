@@ -24,6 +24,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["time", "sync", "macros", "net"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+getrandom = "0.3"
 
 [profile.release]
 codegen-units = 1
