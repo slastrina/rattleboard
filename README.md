@@ -4,6 +4,15 @@ A split-flap desktop mirror for your [Vestaboard](https://www.vestaboard.com). R
 
 Free and open source under the MIT license. Not affiliated with or endorsed by Vestaboard, Inc.
 
+<p align="center">
+  <img src="docs/rattleboard-flagship.gif" alt="Rattleboard replica of a Flagship board (6 × 22) flipping between messages" width="760"><br>
+  <sub>Flagship (6 × 22)</sub>
+</p>
+<p align="center">
+  <img src="docs/rattleboard-note.gif" alt="Rattleboard replica of a Vestaboard Note (3 × 15) flipping between messages" width="560"><br>
+  <sub>Note (3 × 15)</sub>
+</p>
+
 ## Features
 
 - **Live replica.** The flaps spin through the same drum order as the real hardware: blank, A–Z, 0–9, punctuation, then the colour chips. Flagship (6 × 22) and Note (3 × 15) boards are both supported, in black or white finish.
