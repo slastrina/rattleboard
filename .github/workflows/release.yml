@@ -86,7 +86,7 @@ jobs:
           releaseBody: |
             Download the installer for your platform below.
 
-            **macOS 11+ (Apple Silicon and Intel):** open the `.dmg` and drag Rattleboard to Applications. It's signed with a Developer ID and notarized by Apple.
+            **macOS 11+ (Apple Silicon and Intel):** open the `.dmg` and drag Rattleboard to Applications. If macOS says it can't verify the developer, right-click the app and choose **Open** (or run `xattr -dr com.apple.quarantine /Applications/Rattleboard.app`).
             **Windows:** run the `-setup.exe` (or the `.msi`). If SmartScreen warns you, choose **More info → Run anyway**.
           releaseDraft: false
           prerelease: false

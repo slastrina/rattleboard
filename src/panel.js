@@ -126,9 +126,8 @@ function viewSettings() {
       <div class="lbl">Open at login</div>${tog(s.launchLogin, 'launchLogin')}
     </div>`;
   }
-  return `<div style="padding:16px 24px 22px; display:flex; flex-direction:column; gap:18px">
-    <div style="display:flex; justify-content:center">${seg([['display', 'Display'], ['behavior', 'Behavior'], ['connection', 'Connection'], ['api', 'API server']], L.tab, 'tab', 'tabs')}</div>
-    ${body}</div>`;
+  return `<div class="hdr" style="display:flex; justify-content:center; padding:16px 24px 0">${seg([['display', 'Display'], ['behavior', 'Behavior'], ['connection', 'Connection'], ['api', 'API server']], L.tab, 'tab', 'tabs')}</div>
+    <div class="scroll"><div style="padding:18px 24px 22px">${body}</div></div>`;
 }
 function viewApi() {
   const s = S.settings, sv = S.server, key = L.secrets.serverKey;
@@ -198,12 +197,11 @@ function viewHistory() {
     </div>`;
   }).join('');
   const n = S.history.length;
-  return `<div style="display:flex; flex-direction:column">
-    <div style="display:flex; align-items:center; justify-content:space-between; padding:12px 18px; border-bottom:1px solid rgba(0,0,0,.08)">
+  return `<div class="hdr" style="display:flex; align-items:center; justify-content:space-between; padding:12px 18px; border-bottom:1px solid rgba(0,0,0,.08)">
       <span style="color:#55575c">${n ? `${n} change${n > 1 ? 's' : ''} detected` : 'No changes yet'}</span>
       <button class="btn" style="padding:3px 10px" data-act="clear">Clear</button>
     </div>
-    <div style="max-height:470px; overflow:auto; display:flex; flex-direction:column">
+    <div class="scroll"><div style="display:flex; flex-direction:column">
       ${rows || `<div style="padding:40px 18px; text-align:center; color:#6b6d72">No changes yet. New board messages appear here as they're detected.</div>`}
     </div></div>`;
 }
@@ -302,26 +300,49 @@ function viewSetup() {
       <div style="display:grid; grid-template-columns:130px minmax(0,1fr); gap:10px 16px">${summary.map(([k, v]) => `<div style="color:#6b6d72">${k}</div><div>${esc(v)}</div>`).join('')}</div>
       <div style="color:#55575c; line-height:1.5">Rattleboard now lives in your ${S.os === 'mac' ? 'menu bar' : 'system tray'}. Click its icon any time for the latest message, history and settings.</div>`;
   }
-  return `<div style="display:flex; flex-direction:column">
-    <div style="display:flex; gap:6px; padding:16px 24px 0">${steps}</div>
-    <div style="padding:20px 24px 8px; min-height:300px; display:flex; flex-direction:column; gap:16px">${body}</div>
-    <div style="display:flex; justify-content:space-between; padding:14px 24px 18px">
+  return `<div class="hdr" style="display:flex; gap:6px; padding:16px 24px 0">${steps}</div>
+    <div class="scroll"><div style="padding:20px 24px 8px; display:flex; flex-direction:column; gap:16px">${body}</div></div>
+    <div class="hdr" style="display:flex; justify-content:space-between; padding:14px 24px 18px; border-top:1px solid rgba(0,0,0,.06)">
       <button class="btn" style="font-size:13px; padding:5px 14px; opacity:${st === 0 ? 0.4 : 1}" data-act="back">Back</button>
       <button class="primary" data-act="next">${st === 3 ? 'Finish' : 'Continue'}</button>
-    </div></div>`;
+    </div>`;
 }
 
 // ---------------------------------------------------------------- render loop
 
-let lastFit = '', pointerDown = false;
+let lastView = '', lastPage = '', pointerDown = false;
+const draw = v => (v === 'history' ? viewHistory() : v === 'setup' ? viewSetup() : viewSettings());
+// Natural height of what's in #root: fixed header/footer plus the full scrollable content.
+const contentHeight = () => [...root.children].reduce((h, el) => h + (el.classList.contains('scroll') ? el.firstElementChild.offsetHeight : el.offsetHeight), 0);
+
+// The window is sized once per view, to fit its tallest tab or step, so switching tabs never
+// moves or resizes it. After that the user can resize it freely and the middle scrolls.
+function fitWindow(v) {
+  const keys = v === 'settings' ? ['display', 'behavior', 'connection', 'api'] : v === 'setup' ? [0, 1, 2, 3] : [null];
+  const saved = v === 'settings' ? L.tab : L.step;
+  let h = 0;
+  for (const k of keys) {
+    if (v === 'settings') L.tab = k; else if (v === 'setup') L.step = k;
+    root.innerHTML = draw(v);
+    h = Math.max(h, contentHeight());
+  }
+  if (v === 'settings') L.tab = saved; else if (v === 'setup') L.step = saved;
+  RB.invoke('panel_resize', { width: WIDTH[v] || 600, height: Math.min(Math.ceil(h), v === 'history' ? 560 : 9999) });
+}
+
 function render(force) {
   if (!S) return;
   const a = document.activeElement;
   if (!force && (pointerDown || (a && a.tagName === 'INPUT' && a.type !== 'range'))) return;
   const v = L.view;
-  root.innerHTML = v === 'history' ? viewHistory() : v === 'setup' ? viewSetup() : viewSettings();
-  const fit = [v, L.step, L.tab, L.setupSource, S.settings.source, S.settings.mode].join('/');
-  if (fit !== lastFit) { lastFit = fit; RB.invoke('panel_resize', { width: WIDTH[v] || 600, height: Math.ceil(root.offsetHeight) }); }
+  if (v !== lastView) { lastView = v; fitWindow(v); }
+  // Keep the scroll position across live re-renders, but start each tab or step at the top.
+  const page = [v, L.tab, L.step].join('/'), sc = root.querySelector('.scroll');
+  const top = sc && page === lastPage ? sc.scrollTop : 0;
+  lastPage = page;
+  root.innerHTML = draw(v);
+  const sc2 = root.querySelector('.scroll');
+  if (sc2) sc2.scrollTop = top;
 }
 document.addEventListener('pointerdown', () => (pointerDown = true), true);
 document.addEventListener('pointerup', () => { pointerDown = false; setTimeout(render, 0); }, true);

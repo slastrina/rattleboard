@@ -522,9 +522,18 @@ fn open_panel(app: &AppHandle, view: &str) {
         .minimizable(false)
         .center()
         .focused(true)
+        // Shown by the first panel_resize, once it has its final size, so it doesn't jump.
+        .visible(false)
         .build()
     {
-        let _ = w.set_focus();
+        let w2 = w.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            if !w2.is_visible().unwrap_or(true) {
+                let _ = w2.show();
+                let _ = w2.set_focus();
+            }
+        });
     }
 }
 
@@ -891,6 +900,12 @@ fn panel_resize(app: AppHandle, width: f64, height: f64) {
             .map(|m| m.work_area().size.height as f64 / m.scale_factor() - 80.0)
             .unwrap_or(800.0);
         let _ = w.set_size(tauri::LogicalSize::new(width, height.min(max_h)));
+        // Sized once per view, so re-centring here never moves a window the user placed mid-use.
+        let _ = w.center();
+        if !w.is_visible().unwrap_or(true) {
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
     }
 }
 

@@ -5,8 +5,10 @@
 <title>Rattleboard</title>
 <link rel="stylesheet" href="shared/base.css">
 <style>
-  html { height: 100%; }
-  body { min-height: 100%; overflow-y: auto; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  #root { height: 100%; display: flex; flex-direction: column; }
+  #root > .hdr { flex: none; }
+  #root > .scroll { flex: 1; min-height: 0; overflow-y: auto; }
   body { color: #1b1b1d; font-size: 13px; }
   .mac body { background: #ececec; }
   .win body { background: #f3f3f3; }
