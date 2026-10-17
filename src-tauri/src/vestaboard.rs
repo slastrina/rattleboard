@@ -200,7 +200,7 @@ fn parse(line: &str) -> Vec<u8> {
     let mut out = vec![];
     let mut i = 0;
     while i < chars.len() {
-        let close = chars[i..].iter().position(|&c| c == '}').map(|p| i + p);
+        let close = (chars[i] == '{').then(|| chars[i..].iter().position(|&c| c == '}').map(|p| i + p)).flatten();
         let num: Option<u8> = close.and_then(|e| chars[i + 1..e].iter().collect::<String>().parse().ok());
         if let (Some(e), Some(n)) = (close, num) {
             // "{63}": a raw character code, as accepted by Vestaboard's own text endpoints
@@ -336,6 +336,10 @@ mod demo_tests {
         let g = text_layout("hello world", 3, 15);
         assert_eq!(g[1][2..13], parse("HELLO WORLD")[..]);
         assert_eq!(g[0], vec![0; 15]);
+        // stray braces are just characters, never a crash or a bogus code
+        assert_eq!(parse("a}"), vec![1, code('}')]);
+        assert_eq!(parse("5}"), vec![code('5'), code('}')]);
+        assert_eq!(parse("{63}{g}"), vec![63, 66]);
         let g = text_layout("the quick brown fox jumps over", 3, 15);
         assert_eq!(g[0], parse("THE QUICK BROWN"));
         assert_eq!(g[1][..14], parse("FOX JUMPS OVER")[..]);
