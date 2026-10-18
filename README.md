@@ -45,7 +45,9 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
 On macOS, install with [Homebrew](https://brew.sh):
 
 ```sh
-brew install --cask slastrina/tap/rattleboard
+brew tap slastrina/tap
+brew trust --tap slastrina/tap   # Homebrew 7+ only loads casks from taps you trust
+brew install --cask rattleboard
 ```
 
 Or download the latest installer from [Releases](https://github.com/slastrina/rattleboard/releases).
