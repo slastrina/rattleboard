@@ -175,6 +175,17 @@ async fn serve(cfg: Config) {
         Err(e) => fail(&e),
     };
     tokio::spawn(b.clone().sources_loop());
+    // One line in the log when a newer release is out; RATTLEBOARD_UPDATE_CHECK=off skips it.
+    let off = std::env::var("RATTLEBOARD_UPDATE_CHECK").is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no"));
+    if !off {
+        tokio::spawn(async {
+            if let Ok(r) = rattleboard_core::update::latest(&rattleboard_core::update::client()).await {
+                if rattleboard_core::update::is_newer(&r.version, env!("CARGO_PKG_VERSION")) {
+                    println!("Update: Rattleboard Web {} is available (this is {}): {}", r.version, env!("CARGO_PKG_VERSION"), r.url);
+                }
+            }
+        });
+    }
     let _advert = cfg.mdns.then(|| boards::advertise(&cfg.name, cfg.port)).flatten();
 
     println!("Rattleboard Web {} on port {} · {} · {}", env!("CARGO_PKG_VERSION"), handle.addr.port(), cfg.name, cfg.size_name());

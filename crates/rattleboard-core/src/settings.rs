@@ -89,6 +89,13 @@ pub struct Settings {
     pub notify_quiet_to: String,
     /// Put the previous message back after this many seconds; 0 leaves the notification up
     pub notify_return_sec: u32,
+    /// Check GitHub for a newer release once a day (it only suggests; nothing is installed)
+    pub update_check: bool,
+    /// When the last automatic or manual check answered (ms since the epoch; 0 for never)
+    pub update_last_check: i64,
+    /// The newest release that check found, and its page, so a restart shows it at once
+    pub update_latest: String,
+    pub update_url: String,
 }
 
 /// Board sizes by name: rows × columns.
@@ -141,6 +148,10 @@ impl Default for Settings {
             notify_quiet_from: "22:00".into(),
             notify_quiet_to: "07:00".into(),
             notify_return_sec: 30,
+            update_check: true,
+            update_last_check: 0,
+            update_latest: String::new(),
+            update_url: String::new(),
         }
     }
 }
@@ -189,6 +200,9 @@ impl Settings {
             self.notify_target = "this".into();
         }
         self.notify_return_sec = self.notify_return_sec.min(3600);
+        if !crate::update::is_release_url(&self.update_url) {
+            self.update_url.clear();
+        }
         self
     }
 
@@ -283,6 +297,15 @@ mod tests {
         assert!(!in_quiet_hours("09:30", "17:00", 9 * 60));
         assert!(!in_quiet_hours("nope", "07:00", 0));
         assert!(!in_quiet_hours("08:00", "08:00", 8 * 60));
+    }
+
+    #[test]
+    fn update_check_defaults_on() {
+        // Settings files from before the update check have none of its fields.
+        let old: Settings = serde_json::from_str(r#"{"boardName": "Kitchen"}"#).unwrap();
+        assert!(old.update_check && old.update_last_check == 0 && old.update_latest.is_empty());
+        let s = Settings::default().merge(serde_json::json!({"updateUrl": "https://evil.example/"})).unwrap();
+        assert!(s.update_url.is_empty());
     }
 
     #[test]

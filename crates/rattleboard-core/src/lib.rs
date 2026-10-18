@@ -13,6 +13,7 @@ pub mod sequence;
 pub mod server;
 pub mod settings;
 pub mod sources;
+pub mod update;
 pub mod vestaboard;
 
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -62,6 +62,10 @@ Or download the latest installer from [Releases](https://github.com/slastrina/ra
 
 For a server or a NAS, [Rattleboard Web](#rattleboard-web-docker) runs as a container: `docker run -p 7070:7070 -v rattleboard:/data slastrina/rattleboard-web`.
 
+### Updates
+
+Rattleboard checks GitHub for a newer release once a day. When there is one, **Update available** appears at the top of the menu-bar / tray menu and in **Settings → Behavior**; clicking it opens the release page. It never downloads or installs anything itself: update with the new installer, or with `brew upgrade --cask rattleboard` if you installed with Homebrew. Turn **Check for updates automatically** off in **Settings → Behavior** to stop the checks (**Check for updates** there still checks on demand).
+
 ### Phones, tablets and TVs (coming soon)
 
 Rattleboard for iPhone, iPad, Apple TV, Android and Android TV is on its way to the App Store and Google Play, as a one-off purchase with no subscription. Store links will be added here when they're live.
@@ -193,6 +197,7 @@ Everything is set with environment variables (`-e NAME=value`):
 | `RATTLEBOARD_URL` | | This board's address as phones reach it, e.g. `http://192.168.1.20:7070`, for pairing from the command line |
 | `RATTLEBOARD_MDNS` | `false` | `true` announces the board on the network so other Rattleboards find it; needs `--network host` |
 | `RATTLEBOARD_PORT` | `7070` | The port inside the container |
+| `RATTLEBOARD_UPDATE_CHECK` | `on` | `off` skips the startup check that logs a line when a newer release is out |
 | `TZ` | `UTC` | The time zone for clocks, calendars, countdowns and quiet hours, e.g. `Europe/London` |
 
 ### Who can watch, and who can write

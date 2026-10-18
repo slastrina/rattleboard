@@ -30,8 +30,11 @@ function render() {
     [['site', 'Rattleboard on iokig.com', ''], ['kofi', 'Support Rattleboard on Ko-fi', '']],
     [['quit', 'Quit Rattleboard', kbd('⌘Q', '')]]
   ];
+  // A newer release (see updates.rs): first thing in the menu; it opens the release page.
+  const up = S.update && S.update.available;
   menu.style.margin = mac ? '0 auto' : '0';
   menu.innerHTML = `
+    ${up ? `<div class="update-group"><div class="item update" data-act="update"><span class="chk">↑</span><span>Update available: v${RB.esc(up)}…</span><span class="key"></span></div></div>` : ''}
     <div style="padding:8px 10px 10px; display:flex; flex-direction:column; gap:8px">
       <div style="display:flex; justify-content:space-between; align-items:baseline">
         <span style="font-weight:600">${RB.esc(s.boardName || 'Vestaboard')}</span>
@@ -87,6 +90,7 @@ const act = {
   setup: () => RB.invoke('open_window', { view: 'setup' }),
   site: () => { RB.invoke('open_site'); RB.invoke('close_window', { label: 'tray' }); },
   kofi: () => { RB.invoke('open_kofi'); RB.invoke('close_window', { label: 'tray' }); },
+  update: () => { RB.invoke('open_update'); RB.invoke('close_window', { label: 'tray' }); },
   quit: () => RB.invoke('quit')
 };
 RB.delegate(menu, 'click', Object.fromEntries(Object.entries(act).map(([k, f]) => [k, () => f()])));

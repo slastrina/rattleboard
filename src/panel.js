@@ -106,6 +106,33 @@ const nameField = () => `<input class="field" style="justify-self:start; width:2
 
 // ---------------------------------------------------------------- settings
 
+// Settings → Behavior → "Check for updates" and what it found. Before a check, a newer
+// version an automatic check found shows the same way.
+function updateRow() {
+  const u = L.update || (S.update && S.update.available ? { state: 'new', latest: S.update.available } : null);
+  const link = `color:${RB.ACC}; text-decoration:none`;
+  const status = !u ? ''
+    : u.state === 'checking' ? 'Checking…'
+    : u.state === 'ok' ? `You're up to date (v${esc(u.current)})`
+    : u.state === 'new' ? `<span style="color:${RB.ACC}; font-weight:600">v${esc(u.latest)} is available</span> — <a href="#" data-act="openUpdate" style="${link}">Download</a>`
+    : `Couldn't check: ${esc(u.error)}`;
+  const brew = u && u.state === 'new' && S.update && S.update.homebrew
+    ? `<span class="hint">Update with: <code style="user-select:text">brew upgrade --cask rattleboard</code></span>` : '';
+  return `<div style="display:flex; flex-direction:column; gap:4px">
+      <div style="display:flex; align-items:center; gap:10px"><button class="btn" data-act="checkUpdates" ${u && u.state === 'checking' ? 'disabled' : ''}>Check for updates</button><span class="hint" data-update-status>${status}</span></div>
+      ${brew}
+    </div>`;
+}
+
+function checkUpdates() {
+  L.update = { state: 'checking' };
+  render(true);
+  RB.invoke('check_for_updates')
+    .then(r => { L.update = r.newer ? { state: 'new', latest: r.latest } : { state: 'ok', current: r.current }; })
+    .catch(e => { L.update = { state: 'err', error: String(e) }; })
+    .finally(() => render(true));
+}
+
 function viewSettings() {
   const s = S.settings;
   let body = '';
@@ -131,6 +158,9 @@ function viewSettings() {
       <div style="display:flex; align-items:center; gap:10px">${tog(s.sound, 'sound')}<span class="hint">Mechanical clatter while flaps turn</span></div>
       <div class="lbl">Start at login</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.launchLogin, 'launchLogin')}<span class="hint">Start Rattleboard when I log in</span></div>
+      <div class="lbl">Updates</div>
+      <div style="display:flex; align-items:center; gap:10px">${tog(s.updateCheck, 'updateCheck')}<span class="hint">Check for updates automatically (once a day, on GitHub). Rattleboard never installs anything itself.</span></div>
+      <div></div>${updateRow()}
       <div class="lbl">Full screen at launch</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.fullscreenLaunch, 'fullscreenLaunch')}<span class="hint">Open in full screen at launch, for a spare computer used as a board. Otherwise full screen lasts until Rattleboard quits.</span></div>
       ${S.hasTray === false ? `<div class="lbl">No tray</div>
@@ -734,6 +764,9 @@ RB.delegate(root, 'click', {
   notifyReturn: el => save({ notifyReturnSec: +el.dataset.v }),
   sound: () => save({ sound: !S.settings.sound }),
   launchLogin: () => save({ launchLogin: !S.settings.launchLogin }),
+  updateCheck: () => save({ updateCheck: !S.settings.updateCheck }),
+  checkUpdates,
+  openUpdate: (el, e) => { e.preventDefault(); RB.invoke('open_update'); },
   site: (el, e) => { e.preventDefault(); RB.invoke('open_site'); },
   kofi: (el, e) => { e.preventDefault(); RB.invoke('open_kofi'); },
   fullscreenLaunch: () => save({ fullscreenLaunch: !S.settings.fullscreenLaunch }),

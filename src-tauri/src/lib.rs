@@ -1,5 +1,6 @@
 mod fullscreen;
 mod notify;
+mod updates;
 
 // The board engine, shared with Rattleboard Web (crates/rattleboard-core).
 use rattleboard_core::{boards, plugins, secrets, send, sequence, server, settings, sources, vestaboard};
@@ -198,6 +199,17 @@ struct Snapshot {
     sources: sources::Status,
     /// False on a Linux desktop with no tray (see `fullscreen::linux::tray_available`)
     has_tray: bool,
+    update: UpdateInfo,
+}
+
+/// A newer release, for the tray's "Update available" item and Settings.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInfo {
+    /// The newer version, when automatic checks are on and found one
+    available: Option<String>,
+    /// Installed with the Homebrew cask, so `brew upgrade` is the way to update
+    homebrew: bool,
 }
 
 /// Whether the tray icon was put up, set once at launch.
@@ -257,7 +269,6 @@ fn snapshot(st: &AppState) -> Snapshot {
         transition: rt.transition.clone(),
         rows,
         cols,
-        settings: s,
         seq: rt.seq,
         conn: if rt.conn.is_empty() { "idle".into() } else { rt.conn.clone() },
         error: rt.error.clone(),
@@ -275,6 +286,11 @@ fn snapshot(st: &AppState) -> Snapshot {
         notify: st.notify.lock().unwrap().clone(),
         sources: st.sources.status(),
         has_tray: HAS_TRAY.load(std::sync::atomic::Ordering::Relaxed),
+        update: UpdateInfo {
+            available: (s.update_check && rattleboard_core::update::is_newer(&s.update_latest, env!("CARGO_PKG_VERSION"))).then(|| s.update_latest.clone()),
+            homebrew: updates::from_homebrew(),
+        },
+        settings: s,
     }
 }
 
@@ -1077,6 +1093,10 @@ fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 /// The Windows tray menu's "Full screen" item, ticked while it is.
 #[cfg(not(target_os = "macos"))]
 struct FullItem(tauri::menu::CheckMenuItem<tauri::Wry>);
+
+/// The native tray menu (Windows, Linux), which gains an "Update available" item when there is one.
+#[cfg(not(target_os = "macos"))]
+struct TrayMenu(tauri::menu::Menu<tauri::Wry>);
 
 // ---------------------------------------------------------------- tray
 
@@ -2094,6 +2114,9 @@ fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), Strin
     if old.launch_login != new.launch_login && new.setup_done {
         set_autostart(app, new.launch_login);
     }
+    if old.update_check != new.update_check {
+        updates::sync_tray(app);
+    }
     broadcast(app);
     Ok(())
 }
@@ -2441,6 +2464,8 @@ pub fn run() {
             hide_pointer,
             open_site,
             open_kofi,
+            updates::check_for_updates,
+            updates::open_update,
             get_sources,
             save_sources,
             add_source,
@@ -2569,7 +2594,9 @@ pub fn run() {
                         &MenuItem::with_id(app, "quit", "Quit Rattleboard", true, None::<&str>)?,
                     ],
                 )?;
+                app.manage(TrayMenu(menu.clone()));
                 tray = tray.menu(&menu).on_menu_event(|app, e| match e.id().as_ref() {
+                    "update" => updates::open_update(app.clone()),
                     "show" => present_board(app, true),
                     "next" => sources_next(app.clone()),
                     "fullscreen" => toggle_fullscreen(app.clone()),
@@ -2602,6 +2629,7 @@ pub fn run() {
             tauri::async_runtime::spawn(sources_loop(h.clone()));
             tauri::async_runtime::spawn(watch_screens(h.clone()));
             notify::start(&h);
+            tauri::async_runtime::spawn(updates::run(h.clone()));
             let h2 = h.clone();
             tauri::async_runtime::spawn(async move { restart_server(&h2).await });
             // Debug profiles: RATTLEBOARD_OPEN=settings/sources opens a window at launch, for
