@@ -196,7 +196,9 @@ pub struct Found {
 pub fn discover(wait: Duration, skip: Option<(String, u16)>) -> Vec<Found> {
     let Ok(mdns) = mdns_sd::ServiceDaemon::new() else { return vec![] };
     let Ok(rx) = mdns.browse(SERVICE_TYPE) else { return vec![] };
-    let mut out: Vec<Found> = vec![];
+    // One entry per service: it may be resolved once per network interface, so keep the
+    // address most likely to work from here (the home network over VPNs and loopback).
+    let mut out: Vec<(Found, u8)> = vec![];
     let deadline = Instant::now() + wait;
     while let Ok(ev) = rx.recv_deadline(deadline) {
         let mdns_sd::ServiceEvent::ServiceResolved(s) = ev else { continue };
@@ -204,20 +206,37 @@ pub fn discover(wait: Duration, skip: Option<(String, u16)>) -> Vec<Found> {
         if !name.starts_with("Rattleboard") {
             continue;
         }
-        let mut ips: Vec<_> = s.addresses.iter().map(|a| a.to_ip_addr()).filter(|a| a.is_ipv4()).collect();
-        ips.sort();
-        let Some(ip) = ips.first() else { continue };
+        let ips: Vec<std::net::Ipv4Addr> =
+            s.addresses.iter().filter_map(|a| match a.to_ip_addr() { std::net::IpAddr::V4(v) => Some(v), _ => None }).collect();
         if skip.as_ref().is_some_and(|(me, port)| *port == s.port && ips.iter().any(|a| a.to_string() == *me)) {
             continue;
         }
-        let host = format!("{ip}:{}", s.port);
-        if !out.iter().any(|f| f.host == host) {
-            out.push(Found { name, host });
+        let Some(ip) = ips.iter().min_by_key(|a| address_rank(a)) else { continue };
+        let (found, rank) = (Found { name: name.clone(), host: format!("{ip}:{}", s.port) }, address_rank(ip));
+        match out.iter_mut().find(|(f, _)| f.name == name && f.host.ends_with(&format!(":{}", s.port))) {
+            Some(e) if rank < e.1 => *e = (found, rank),
+            Some(_) => {}
+            None => out.push((found, rank)),
         }
     }
+    let out: Vec<Found> = out.into_iter().map(|(f, _)| f).collect();
     let _ = mdns.stop_browse(SERVICE_TYPE);
     let _ = mdns.shutdown();
     out
+}
+
+/// Lower is better: a home network address, then other private ones, then anything else.
+fn address_rank(a: &std::net::Ipv4Addr) -> u8 {
+    let o = a.octets();
+    if a.is_loopback() || a.is_link_local() {
+        3
+    } else if o[0] == 192 && o[1] == 168 {
+        0
+    } else if a.is_private() {
+        1
+    } else {
+        2
+    }
 }
 
 /// Advertises this computer's API server so other Rattleboards can find it. Dropping it
@@ -264,6 +283,12 @@ mod tests {
         assert!(parse_pair("rattleboard://pair?v=1&url=http%3A%2F%2Fa%3A1&key=k").is_err());
         assert!(parse_pair("rattleboard://pair?v=2&url=http%3A%2F%2Fa%3A1").is_err());
         assert!(parse_pair("rattleboard://pair?v=2&url=ftp%3A%2F%2Fa&key=k").is_err());
+    }
+
+    #[test]
+    fn addresses() {
+        let r = |s: &str| address_rank(&s.parse().unwrap());
+        assert!(r("192.168.1.20") < r("10.211.55.2") && r("10.211.55.2") < r("127.0.0.1"));
     }
 
     #[test]

@@ -142,9 +142,9 @@ The tray menu shows a playing sequence ("Playing ‘Morning’ 2/5") with a **St
 
 ### Pairing a phone
 
-**Settings → API server → Show pairing code** shows a QR code that the Rattleboard phone app (or the phone's camera) scans to add this board. It needs **Other devices** turned on, and offers to turn it on. The code holds this computer's network address, the board's size and the API key, so it's shown only when you ask and disappears after two minutes. **Copy link** copies the same `rattleboard://pair?…` link, which another Rattleboard desktop can paste under **Settings → Boards → Pair link**.
+**Settings → API server → Show pairing code** shows a QR code that the Rattleboard phone app (or the phone's camera) scans to add this board. It needs **Other devices** turned on, and offers to turn it on. The code holds this computer's name and network address, the board's size and the API key, so it's shown only when you ask and disappears after two minutes. **Copy link** copies the same `rattleboard://pair?…` link, which another Rattleboard desktop can paste under **Settings → Boards → Pair link**.
 
-With **Other devices** on, Rattleboard also announces itself on your network (as `Rattleboard (<name>)`, an `_http._tcp` service) so other Rattleboards can find it.
+With **Other devices** on, Rattleboard also announces itself on your network (as `Rattleboard (<computer name>)`, an `_http._tcp` service) so other Rattleboards can find it.
 
 ## Transitions
 
@@ -185,7 +185,7 @@ Open **Compose…** from the tray menu or **Settings → Boards**.
 
 - **Nearby:** Rattleboards that announce themselves on your network (TVs, other computers). Pick one and enter its key.
 - **By address:** a Rattleboard's address and API key, or a Vestaboard's IP address and Local API key. Rattleboard asks `GET /rattleboard/info` to tell which it is.
-- **Pair link:** paste a `rattleboard://pair?…` link from another Rattleboard.
+- **Pair link:** paste a `rattleboard://pair?…` link from another Rattleboard. Rattleboard shows which board it is and asks before adding it.
 - **Cloud:** a Vestaboard's Cloud API token.
 
 Each board can be renamed or removed. Removing it deletes its key from the credential store.

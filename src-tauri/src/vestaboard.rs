@@ -25,13 +25,15 @@ pub fn dims_of(g: &Grid) -> (usize, usize) {
     (g.len().clamp(1, MAX_ROWS), cols.clamp(1, MAX_COLS))
 }
 
-/// Centres `g` on a rows×cols board: padded with blanks, or cropped from the centre.
+/// Centres `g` on a rows×cols board: padded with blanks, or cropped from the centre. The
+/// offset is floor((board - grid) / 2) either way, as on every Rattleboard: an odd extra
+/// blank row or column goes after the content, and an odd extra one cropped comes off the start.
 pub fn fit_center(g: &Grid, rows: usize, cols: usize) -> Grid {
     let (gr, gc) = (g.len(), g.first().map(|r| r.len()).unwrap_or(0));
     let mut out = vec![vec![0u8; cols]; rows];
-    // Offsets into the board (pad) or into the grid (crop), split evenly.
-    let (pr, sr) = if gr <= rows { ((rows - gr) / 2, 0) } else { (0, (gr - rows) / 2) };
-    let (pc, sc) = if gc <= cols { ((cols - gc) / 2, 0) } else { (0, (gc - cols) / 2) };
+    // Offsets into the board (pad) or into the grid (crop).
+    let (pr, sr) = if gr <= rows { ((rows - gr) / 2, 0) } else { (0, (gr - rows).div_ceil(2)) };
+    let (pc, sc) = if gc <= cols { ((cols - gc) / 2, 0) } else { (0, (gc - cols).div_ceil(2)) };
     for r in 0..gr.min(rows) {
         for c in 0..gc.min(cols) {
             out[pr + r][pc + c] = g[sr + r].get(sc + c).copied().unwrap_or(0);
@@ -459,6 +461,13 @@ mod demo_tests {
         let g = fit_center(&big, 6, 22);
         assert_eq!((g.len(), g[0].len(), g[0][0]), (6, 22, big[1][4]));
         assert_eq!(fit_center(&big, 8, 30), big);
+        // Odd differences: the extra blank goes after the content; the extra crop off the start.
+        let g = fit_center(&vec![vec![1u8; 2]; 1], 2, 5);
+        assert_eq!(g, vec![vec![0, 1, 1, 0, 0], vec![0; 5]]);
+        let wide: Grid = vec![(1..=5).collect(), (6..=10).collect()];
+        assert_eq!(fit_center(&wide, 1, 2), vec![vec![8, 9]]);
+        let tall: Grid = vec![vec![1], vec![2], vec![3]];
+        assert_eq!(fit_center(&tall, 2, 1), vec![vec![2], vec![3]]);
         assert_eq!(dims_of(&big), (8, 30));
     }
 }

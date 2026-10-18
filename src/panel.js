@@ -173,7 +173,7 @@ function viewApi() {
     [`curl -X POST ${base}/local-api/message \\`, '#ecebe6'],
     [`  -H "X-Vestaboard-Local-Api-Key: ${shownKey}" \\`, '#a9c4f5'],
     [`  -d '{"text": "Hello from my app"}'`, '#ecebe6'],
-    ['# Write exact flaps: a 6×22 (or 3×15) array of character codes', '#8e9096'],
+    ['# Write exact flaps: rows of character codes, any size up to 12 × 40', '#8e9096'],
     [`curl -X POST ${base}/local-api/message -H "X-Vestaboard-Local-Api-Key: …" -d '[[0,8,5,12,12,15,…],…]'`, '#ecebe6'],
     ['# Read what the board shows', '#8e9096'],
     [`curl ${base}/local-api/message -H "X-Vestaboard-Local-Api-Key: …"`, '#ecebe6'],
@@ -220,7 +220,7 @@ function pairRows() {
         <div style="width:150px; height:150px; flex:none; display:flex" class="qr">${L.pair.svg}</div>
         <div style="display:flex; flex-direction:column; gap:8px; min-width:0">
           <div style="font-weight:600">Scan with the Rattleboard app</div>
-          <div class="hint" style="line-height:1.45; text-wrap:pretty">Or with the phone's camera. The phone adds ${esc(s.boardName || 'this board')} with its address and key. The code includes the key, so only show it to devices you trust.</div>
+          <div class="hint" style="line-height:1.45; text-wrap:pretty">Or with the phone's camera. The phone adds this computer’s board with its address and key. The code includes the key, so only show it to devices you trust.</div>
           <div style="display:flex; align-items:center; gap:8px">
             <button class="btn" data-act="copyPair">${L.copied === 'pair' ? 'Copied' : 'Copy link'}</button>
             <button class="btn" data-act="hidePair">Hide</button>
@@ -273,7 +273,7 @@ function viewBoards() {
     return `<div style="display:flex; align-items:center; gap:12px; padding:10px 14px; border-top:1px solid rgba(0,0,0,.06)">
       <div class="dot" style="background:${color}"></div>
       <div style="display:flex; flex-direction:column; gap:2px; min-width:0; flex:1">${name}
-        <span style="font-size:11.5px; color:#6b6d72; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${kind} · ${esc(where)} · ${sizeName(b.rows, b.cols)}</span></div>
+        <span style="font-size:11.5px; color:#6b6d72; line-height:1.35">${kind} · ${esc(where)} · ${sizeName(b.rows, b.cols)}</span></div>
       ${L.renaming === b.id ? `<button class="btn" data-act="renameDone" data-v="${esc(b.id)}">Done</button>`
         : L.removing === b.id ? `<span class="hint">Remove it and its key?</span><button class="btn" style="color:#c0392b" data-act="removeYes" data-v="${esc(b.id)}">Remove</button><button class="btn" data-act="removeNo">Cancel</button>`
         : `<button class="btn" data-act="rename" data-v="${esc(b.id)}">Rename</button><button class="btn" data-act="removeBoard" data-v="${esc(b.id)}">Remove</button>`}
@@ -300,8 +300,12 @@ function viewBoards() {
       <div class="lbl">Name</div>${formField('name', 'Optional', 'text', '240px')}
       <div></div><div style="display:flex; align-items:center; gap:10px">${addBtn('addManual')}<span class="hint">${HOST_HINT}</span></div>`;
   } else if (L.addMode === 'link') {
+    const c = L.pairConfirm;
     form = `<div class="lbl">Pair link</div>${formField('link', 'rattleboard://pair?v=2&url=…')}
-      <div></div><div style="display:flex; align-items:center; gap:10px">${addBtn('addLink')}<span class="hint">On the other Rattleboard: Settings → API server → Show pairing code → Copy link.</span></div>`;
+      <div></div>${c
+        // Like the phone apps, ask before saving a board from a link.
+        ? `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap"><span>Add <b style="font-weight:600">${esc(c.name)}</b> at ${esc(c.host)} (${sizeName(c.rows, c.cols)})?</span>${addBtn('addLinkYes', 'Add board')}<button class="btn" data-act="addLinkNo">Cancel</button></div>`
+        : `<div style="display:flex; align-items:center; gap:10px">${addBtn('addLink', 'Check link')}<span class="hint">On the other Rattleboard: Settings → API server → Show pairing code → Copy link.</span></div>`}`;
   } else {
     form = `<div class="lbl">Cloud API token</div>${formField('token', 'Paste your token', 'password', '240px')}
       <div class="lbl">Name</div>${formField('name', 'Optional', 'text', '240px')}
@@ -666,7 +670,12 @@ RB.delegate(root, 'click', {
   scanAgain: scanNearby,
   addFound: el => { const f = L.found2[+el.dataset.v]; Object.assign(L.form, { host: f.host, name: f.name.replace(/^Rattleboard\s*\((.*)\)$/, '$1') || f.name, key: '' }); L.addMode = 'manual'; L.boardMsg = null; render(true); },
   addManual: () => addBoard('add_board', { host: L.form.host, key: L.form.key, name: L.form.name }),
-  addLink: () => addBoard('add_pair_link', { link: L.form.link }),
+  addLink: () => RB.invoke('read_pair_link', { link: L.form.link })
+    .then(c => { L.pairConfirm = c; L.boardMsg = null; })
+    .catch(e => { L.boardMsg = { ok: false, text: String(e) }; })
+    .finally(() => render(true)),
+  addLinkYes: () => { L.pairConfirm = null; addBoard('add_pair_link', { link: L.form.link }); },
+  addLinkNo: () => { L.pairConfirm = null; render(true); },
   addCloud: () => addBoard('add_cloud_board', { token: L.form.token, name: L.form.name }),
   rename: el => { L.renaming = el.dataset.v; render(true); const i = root.querySelector('[data-rename]'); if (i) { i.focus(); i.select(); } },
   renameDone: () => { const i = root.querySelector('[data-rename]'); if (i) i.blur(); L.renaming = null; render(true); },
@@ -760,7 +769,7 @@ root.addEventListener('change', e => {
   }
 });
 root.addEventListener('input', e => {
-  if (e.target.dataset.form) L.form[e.target.dataset.form] = e.target.value;
+  if (e.target.dataset.form) { L.form[e.target.dataset.form] = e.target.value; if (e.target.dataset.form === 'link') L.pairConfirm = null; }
   const f = e.target.dataset.field;
   if (f === 'hideSec') document.getElementById('hideLabel').textContent = e.target.value + ' s';
   if (f === 'speed') document.getElementById('speedLabel').textContent = speedLabel(e.target.value);

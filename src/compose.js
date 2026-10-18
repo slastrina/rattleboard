@@ -45,7 +45,8 @@ const blankGrid = () => { const { rows, cols } = dims(); return Array.from({ len
 // Centres a grid of another size on the target board, as the boards themselves do.
 const fitTo = g => {
   const { rows, cols } = dims(), gr = (g || []).length, gc = gr ? g[0].length : 0;
-  const off = (n, m) => (n >= m ? Math.floor((n - m) / 2) : -Math.floor((m - n) / 2));
+  // floor((board - grid) / 2), as the boards do: an odd extra blank goes after, an odd crop off the start.
+  const off = (n, m) => Math.floor((n - m) / 2);
   const dr = off(rows, gr), dc = off(cols, gc);
   return Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => (g && g[r - dr] && g[r - dr][c - dc]) || 0));
 };
@@ -111,7 +112,7 @@ function viewCompose() {
         ${showBoard ? `<button class="btn" data-act="cmpReplay" ${C.preview ? 'disabled' : ''}>Replay</button>` : `<button class="btn" data-act="cmpClear">Clear</button>`}
       </div>
       <div style="display:flex; justify-content:center; padding:14px 0; border-radius:10px; background:rgba(0,0,0,.05); overflow:hidden">
-        ${showBoard ? '<div id="cmpPreview"></div>' : editor}
+        ${showBoard ? `<div id="cmpPreview" style="min-height:${previewHeight(rows, cols)}px"></div>` : editor}
       </div>
       ${showBoard ? '' : palette()}
       ${textBox}
@@ -248,7 +249,15 @@ const loadRecent = () => RB.invoke('get_recent').then(r => { C.recent = r || [];
 // Message History → Edit: the exact grid, in Grid mode.
 function composeEdit(grid) {
   if (C.preview) C.preview.stop = true;
-  Object.assign(C, { msg: Object.assign(newItem('grid'), { cells: JSON.parse(JSON.stringify(grid)) }), frames: [], sel: -1, draftId: '', name: '', loop: false, status: null, brush: 'type', cursor: { r: 0, c: 0 } });
+  Object.assign(C, { msg: Object.assign(newItem('grid'), { cells: JSON.parse(JSON.stringify(grid)) }), frames: [], sel: -1, draftId: '', name: '', loop: false, status: null, deliveries: [], brush: 'type', cursor: { r: 0, c: 0 } });
+}
+
+// The preview's tile size, and its height (the same sums as split-flap.js), so the window is
+// sized for the board before the board has drawn itself.
+const previewTile = cols => Math.max(8, Math.min(40, Math.round(600 / (1.17 * cols))));
+function previewHeight(rows, cols) {
+  const t = previewTile(cols), h = Math.round(t * 1.42);
+  return rows * h + (rows - 1) * Math.max(3, Math.round(t * 0.3)) + 2 * Math.max(22, Math.round(t * 1.15));
 }
 
 // After each render: put the persistent preview board back (it keeps flipping across renders).
@@ -257,7 +266,7 @@ function composeAfter() {
   if (!slot) return;
   const { rows, cols } = dims(), s = S.settings;
   const set = (k, v) => { if (preview.getAttribute(k) !== String(v)) preview.setAttribute(k, v); };
-  set('rows', rows); set('cols', cols); set('tile', Math.max(8, Math.min(40, Math.round(600 / (1.17 * cols))))); set('finish', s.finish);
+  set('rows', rows); set('cols', cols); set('tile', previewTile(cols)); set('finish', s.finish);
   set('speed', s.speed); set('sound', s.sound ? 'on' : 'off');
   slot.appendChild(preview);
   if (!C.preview) showCurrent();
@@ -547,7 +556,8 @@ loadRecent();
 let lastDims = '';
 RB.listen('rb://state', () => {
   if (!S) return;
-  if (C.target !== 'this' && !board()) C.target = 'this';
+  // A removed board or group falls back to this board.
+  if (!RB.targets(S).some(t => t[0] === C.target)) C.target = 'this';
   const d = JSON.stringify(dims());
   if (d !== lastDims) { lastDims = d; relayoutAll().then(() => { if (L.view === 'compose') render(); }); }
 });

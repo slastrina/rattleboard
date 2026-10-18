@@ -20,8 +20,8 @@ function render() {
     : S.conn === 'error' ? (S.error || "Can't reach the board")
     : `Checked ${checkedLabel(now)} · changed ${S.lastChangeAt ? RB.ago(now - S.lastChangeAt) : '—'}`;
   const kbd = (m, w) => (mac ? m : w);
-  // The board last sent to from Compose or Message History, for a one-click resend.
-  const to = (S.boards || []).find(b => b.id === s.sendTarget);
+  // The board (or group) last sent to from Compose or Message History, for a one-click resend.
+  const to = s.sendTarget !== 'this' && RB.targets(S).some(t => t[0] === s.sendTarget) && { name: RB.targetName(S, s.sendTarget) };
   const groups = [
     [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
     [['pin', 'Pin as widget', '', s.mode === 'float'], ['pause', 'Pause checking', '', !s.polling]],

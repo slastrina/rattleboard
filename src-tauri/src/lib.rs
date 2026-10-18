@@ -153,6 +153,8 @@ struct AppState {
     drafts_path: PathBuf,
     recent_path: PathBuf,
     groups_path: PathBuf,
+    /// This computer's name, as in the pair QR code and `/rattleboard/info`
+    device: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -182,6 +184,19 @@ struct Snapshot {
     playing: Vec<Playing>,
     play_error: Option<String>,
     notify: NotifyInfo,
+}
+
+/// This computer's name as people know it ("Sam's MacBook").
+fn device_name() -> String {
+    #[cfg(target_os = "macos")]
+    let name = std::process::Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+    #[cfg(not(target_os = "macos"))]
+    let name = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).ok();
+    name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Rattleboard".into())
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -431,10 +446,12 @@ fn clamp_to(wa: &PhysicalRect<i32, u32>, size: PhysicalSize<u32>, scale: f64, x:
     (x.clamp(min_x, max_x), y.clamp(min_y, max_y))
 }
 
-fn place_board(app: &AppHandle) {
+/// Puts the board in its corner (a pop-up) or at its spot (a pinned widget). `size` is the
+/// window's new size when it has just been resized: the window may not report it yet.
+fn place_board(app: &AppHandle, size: Option<PhysicalSize<u32>>) {
     let Some(w) = board(app) else { return };
     let s = app.state::<AppState>().settings.lock().unwrap().clone();
-    let size = w.outer_size().unwrap_or_default();
+    let size = size.unwrap_or_else(|| w.outer_size().unwrap_or_default());
     let (x, y) = if s.floating() {
         let (cx, cy) = (s.custom.x as i32, s.custom.y as i32);
         let mon = app.monitor_from_point(s.custom.x, s.custom.y).ok().flatten();
@@ -642,8 +659,7 @@ impl server::Board for ApiBoard {
         self.0.state::<AppState>().settings.lock().unwrap().adaptive
     }
     fn name(&self) -> String {
-        let name = self.0.state::<AppState>().settings.lock().unwrap().board_name.clone();
-        format!("Rattleboard ({})", if name.is_empty() { "Vestaboard" } else { &name })
+        format!("Rattleboard ({})", self.0.state::<AppState>().device)
     }
     fn current(&self) -> (Grid, Option<String>) {
         let st = self.0.state::<AppState>();
@@ -695,7 +711,7 @@ async fn restart_server(app: &AppHandle) {
     drop(st.advert.lock().unwrap().take());
     let (on, port, lan, name) = {
         let s = st.settings.lock().unwrap();
-        (s.server_enabled, s.server_port, s.server_lan, s.board_name.clone())
+        (s.server_enabled, s.server_port, s.server_lan, st.device.clone())
     };
     let status = if !on {
         ServerStatus::default()
@@ -718,7 +734,6 @@ async fn restart_server(app: &AppHandle) {
                         urls.insert(0, format!("http://{ip}:{p}"));
                     }
                     // So other Rattleboards can find this one, as they find a TV.
-                    let name = if name.is_empty() { "Vestaboard".to_string() } else { name };
                     *st.advert.lock().unwrap() = boards::advertise(&name, p);
                 }
                 ServerStatus { running: true, error: None, urls }
@@ -980,6 +995,13 @@ async fn add_cloud_board(app: AppHandle, token: String, name: String) -> Result<
     let (rows, cols) = vestaboard::dims_of(&r.layout);
     let b = SavedBoard { id: boards::new_id(), name, kind: "cloud".into(), host: String::new(), rows, cols, adaptive: false };
     keep_board(&app, b, &token)
+}
+
+/// What a pasted pair link would add, for the confirmation before saving it (no key).
+#[tauri::command]
+fn read_pair_link(link: String) -> Result<Value, String> {
+    let l = boards::parse_pair(&link)?;
+    Ok(json!({ "name": l.name, "host": l.host, "rows": l.rows, "cols": l.cols }))
 }
 
 /// Adds the board in a rattleboard://pair link, as shown by another Rattleboard's QR code.
@@ -1388,7 +1410,7 @@ fn pair_qr(st: State<AppState>) -> Result<PairQr, String> {
     let base = base.ok_or("No network address found; is this computer on Wi-Fi or Ethernet?")?;
     let key = st.secrets.lock().unwrap().server_key.clone();
     let (rows, cols) = s.dims();
-    let name = if s.board_name.is_empty() { "Rattleboard".to_string() } else { s.board_name };
+    let name = st.device.clone();
     let url = boards::pair_url(&base, &key, &name, rows, cols);
     let code = qrcode::QrCode::new(url.as_bytes()).map_err(|e| e.to_string())?;
     let svg = code
@@ -1437,7 +1459,7 @@ fn update_settings(app: AppHandle, st: State<AppState>, patch: serde_json::Value
         apply_layering(&app);
     }
     if old.mode != new.mode || old.position != new.position || old.custom != new.custom {
-        place_board(&app);
+        place_board(&app, None);
     }
     if old.mode != new.mode {
         let _ = app.emit_to("board", "rb://mode", ());
@@ -1625,7 +1647,9 @@ fn board_resize(app: AppHandle, width: f64, height: f64) {
     let Some(w) = board(&app) else { return };
     let size = tauri::LogicalSize::new(width + SHADOW * 2.0, height + SHADOW * 2.0);
     let _ = w.set_size(size);
-    place_board(&app);
+    // A message of another size resizes the board: a pop-up stays anchored to its corner and a
+    // pinned widget keeps its top-left, both kept on screen.
+    place_board(&app, Some(size.to_physical(w.scale_factor().unwrap_or(1.0))));
 }
 
 #[tauri::command]
@@ -1675,7 +1699,7 @@ fn board_drag_end(app: AppHandle, st: State<AppState>) {
         }
         s.save(&st.settings_path);
     }
-    place_board(&app);
+    place_board(&app, None);
     broadcast(&app);
 }
 
@@ -1757,6 +1781,7 @@ pub fn run() {
             pair_qr,
             notify_request_access,
             set_groups,
+            read_pair_link,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -1806,6 +1831,7 @@ pub fn run() {
                 drafts_path,
                 recent_path,
                 groups_path,
+                device: device_name(),
             });
 
             let h = app.handle().clone();

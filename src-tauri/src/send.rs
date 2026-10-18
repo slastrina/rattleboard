@@ -114,7 +114,9 @@ where
         .collect()
 }
 
-/// One message to a saved board. Rattleboards and real boards both take it on the Local API.
+/// One message to a saved board. Rattleboards and real boards both take it on the Local API:
+/// the plain layout array, or {"characters"} with the transition fields. The Cloud API gets
+/// only {"characters"}.
 pub async fn post(c: &reqwest::Client, b: &SavedBoard, key: &str, layout: &Grid, tr: &Transition) -> Result<(), String> {
     if key.is_empty() {
         return Err("No key saved for this board".into());
@@ -122,10 +124,17 @@ pub async fn post(c: &reqwest::Client, b: &SavedBoard, key: &str, layout: &Grid,
     if b.kind == "cloud" {
         return vestaboard::write_cloud(c, key, layout).await;
     }
+    vestaboard::write_local(c, &b.host, key, &local_body(layout, tr)).await
+}
+
+pub fn local_body(layout: &Grid, tr: &Transition) -> Value {
+    if tr.classic() {
+        return json!(layout);
+    }
     let mut body = serde_json::Map::new();
     body.insert("characters".into(), json!(layout));
     tr.add_to(&mut body);
-    vestaboard::write_local(c, &b.host, key, &Value::Object(body)).await
+    Value::Object(body)
 }
 
 /// How Compose shows a failed delivery.
@@ -145,6 +154,14 @@ mod tests {
 
     fn board(id: &str, rows: usize, cols: usize) -> SavedBoard {
         SavedBoard { id: id.into(), name: id.to_uppercase(), kind: "rattleboard".into(), host: String::new(), rows, cols, adaptive: false }
+    }
+
+    #[test]
+    fn bodies() {
+        let g = vec![vec![1u8; 15]; 3];
+        assert_eq!(local_body(&g, &Transition::default()), json!(g));
+        let col = Transition { strategy: "column".into(), step_interval_ms: 80, step_size: 2 };
+        assert_eq!(local_body(&g, &col), json!({"characters": g, "strategy": "column", "step_interval_ms": 80, "step_size": 2}));
     }
 
     #[test]
