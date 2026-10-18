@@ -14,9 +14,11 @@ function checkedLabel(now) {
 function render() {
   if (!S) return;
   const s = S.settings, now = Date.now(), mac = isMac(), fin = RB.fin(s.finish);
-  const connDot = !s.polling ? '#9a9ca1' : S.conn === 'testing' ? '#e0a526' : S.conn === 'error' ? '#e0553f' : S.conn === 'ok' ? '#34b05a' : '#9a9ca1';
+  // Pausing stops reading the mirrored board; a standalone (virtual) board has nothing to pause.
+  const virt = s.source === 'virtual', paused = !s.polling && !virt;
+  const connDot = paused ? '#9a9ca1' : S.conn === 'testing' ? '#e0a526' : S.conn === 'error' ? '#e0553f' : S.conn === 'ok' ? '#34b05a' : '#9a9ca1';
   const status = !s.setupDone ? 'Not set up yet'
-    : !s.polling ? 'Checking paused'
+    : paused ? 'Checking paused'
     : S.conn === 'error' ? (S.error || "Can't reach the board")
     : `Checked ${checkedLabel(now)} · changed ${S.lastChangeAt ? RB.ago(now - S.lastChangeAt) : '—'}`;
   const kbd = (m, w) => (mac ? m : w);
@@ -25,7 +27,7 @@ function render() {
   const to = s.sendTarget !== 'this' && RB.targets(S).some(t => t[0] === s.sendTarget) && { name: RB.targetName(S, s.sendTarget) };
   const groups = [
     [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ...(src.active ? [['next', src.showing ? `Next source <span style="color:#8a8c91">· now ${RB.esc(src.showing)}</span>` : 'Next source', kbd('⌘→', 'Ctrl+→')]] : []), ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
-    [['pin', 'Pin as widget', '', s.mode === 'float'], ['full', 'Full screen', kbd('⌃⌘F', 'F11'), s.mode === 'fullscreen'], ['pause', 'Pause checking', '', !s.polling]],
+    [['pin', 'Pin as widget', '', s.mode === 'float'], ['full', 'Full screen', kbd('⌃⌘F', 'F11'), s.mode === 'fullscreen'], ...(virt ? [] : [['pause', paused ? 'Resume checking' : 'Pause checking', '', false]])],
     [['compose', 'Compose…', kbd('⌘N', 'Ctrl+N')], ['history', 'Message history…', ''], ['settings', 'Settings…', kbd('⌘,', '')], ['setup', 'Run setup again…', '']],
     [['site', 'Rattleboard on iokig.com', ''], ['kofi', 'Support Rattleboard on Ko-fi', '']],
     [['quit', 'Quit Rattleboard', kbd('⌘Q', '')]]
@@ -34,6 +36,7 @@ function render() {
   const up = S.update && S.update.available;
   menu.style.margin = mac ? '0 auto' : '0';
   menu.innerHTML = `
+    ${paused && s.setupDone ? `<div class="update-group"><div class="item update" data-act="resume"><span class="chk">❙❙</span><span>Checking paused · Resume</span><span class="key"></span></div></div>` : ''}
     ${up ? `<div class="update-group"><div class="item update" data-act="update"><span class="chk">↑</span><span>Update available: v${RB.esc(up)}…</span><span class="key"></span></div></div>` : ''}
     <div style="padding:8px 10px 10px; display:flex; flex-direction:column; gap:8px">
       <div style="display:flex; justify-content:space-between; align-items:baseline">
@@ -91,6 +94,7 @@ const act = {
   site: () => { RB.invoke('open_site'); RB.invoke('close_window', { label: 'tray' }); },
   kofi: () => { RB.invoke('open_kofi'); RB.invoke('close_window', { label: 'tray' }); },
   update: () => { RB.invoke('open_update'); RB.invoke('close_window', { label: 'tray' }); },
+  resume: () => RB.invoke('update_settings', { patch: { polling: true } }),
   quit: () => RB.invoke('quit')
 };
 RB.delegate(menu, 'click', Object.fromEntries(Object.entries(act).map(([k, f]) => [k, () => f()])));

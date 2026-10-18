@@ -478,7 +478,8 @@ async fn poll_loop(app: AppHandle) {
         let (go, every) = {
             let st = app.state::<AppState>();
             let s = st.settings.lock().unwrap();
-            (s.polling && s.setup_done, if s.source == "virtual" { 5 } else { s.poll_every.max(1) })
+            // A standalone (virtual) board has nothing to pause; its check only reports status.
+            ((s.polling || s.source == "virtual") && s.setup_done, if s.source == "virtual" { 5 } else { s.poll_every.max(1) })
         };
         if go {
             let _ = check(&app).await;
@@ -1094,6 +1095,39 @@ fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 /// The Windows tray menu's "Full screen" item, ticked while it is.
 #[cfg(not(target_os = "macos"))]
 struct FullItem(tauri::menu::CheckMenuItem<tauri::Wry>);
+
+/// The native tray menu's Pause / Resume checking item (Windows, Linux).
+#[cfg(not(target_os = "macos"))]
+struct PauseItem(tauri::menu::MenuItem<tauri::Wry>);
+
+/// Pause checking reads "Resume checking" while paused, and isn't in the menu at all for a
+/// standalone (virtual) board, which has nothing to check. Settings are read first; no lock is
+/// held while the menu changes.
+fn sync_pause_item(app: &AppHandle) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let (polling, virt) = {
+            let st = app.state::<AppState>();
+            let s = st.settings.lock().unwrap();
+            (s.polling, s.source == "virtual")
+        };
+        let h = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let (Some(menu), Some(item)) = (h.try_state::<TrayMenu>(), h.try_state::<PauseItem>()) else { return };
+            let (menu, item) = (&menu.0, &item.0);
+            let _ = item.set_text(if polling { "Pause checking" } else { "Resume checking" });
+            let present = menu.get("pause").is_some();
+            if virt && present {
+                let _ = menu.remove(item);
+            } else if !virt && !present {
+                let at = menu.items().ok().and_then(|v| v.iter().position(|i| i.id() == "fullscreen")).map_or(0, |k| k + 1);
+                let _ = menu.insert(item, at);
+            }
+        });
+    }
+    #[cfg(target_os = "macos")]
+    let _ = app;
+}
 
 /// The native tray menu (Windows, Linux), which gains an "Update available" item when there is one.
 #[cfg(not(target_os = "macos"))]
@@ -2118,6 +2152,9 @@ fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), Strin
     if old.update_check != new.update_check {
         updates::sync_tray(app);
     }
+    if old.polling != new.polling || old.source != new.source {
+        sync_pause_item(app);
+    }
     broadcast(app);
     Ok(())
 }
@@ -2608,12 +2645,14 @@ pub fn run() {
                 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
                 let full_item = CheckMenuItem::with_id(app, "fullscreen", "Full screen", true, full, Some("F11"))?;
                 app.manage(FullItem(full_item.clone()));
+                let pause_item = MenuItem::with_id(app, "pause", "Pause checking", true, None::<&str>)?;
                 let menu = Menu::with_items(
                     app,
                     &[
                         &MenuItem::with_id(app, "show", "Show board", true, None::<&str>)?,
                         &MenuItem::with_id(app, "next", "Next source", true, None::<&str>)?,
                         &full_item,
+                        &pause_item,
                         &MenuItem::with_id(app, "compose", "Compose…", true, None::<&str>)?,
                         &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
@@ -2624,11 +2663,17 @@ pub fn run() {
                     ],
                 )?;
                 app.manage(TrayMenu(menu.clone()));
+                app.manage(PauseItem(pause_item));
+                sync_pause_item(&h);
                 tray = tray.menu(&menu).on_menu_event(|app, e| match e.id().as_ref() {
                     "update" => updates::open_update(app.clone()),
                     "show" => present_board(app, true),
                     "next" => sources_next(app.clone()),
                     "fullscreen" => toggle_fullscreen(app.clone()),
+                    "pause" => {
+                        let polling = app.state::<AppState>().settings.lock().unwrap().polling;
+                        let _ = apply_settings(app, json!({ "polling": !polling }));
+                    }
                     "compose" => open_panel(app, "compose"),
                     "settings" => open_panel(app, "settings"),
                     "site" => open_site(app.clone()),

@@ -96,13 +96,14 @@ function render() {
 
   const counting = ui.visible && !stays() && !ui.flipping && ui.remaining > 0;
   const paused = counting && s.pauseOnHover && ui.hover;
-  const name = s.boardName || 'Rattleboard';
-  $('statusText').textContent = ui.resizing ? `${Math.round(ui.resizing.scale * 100)}%`
+  const name = s.boardName || 'Rattleboard', stopped = checkingPaused() && !ui.dragging && !ui.resizing;
+  $('resume').style.display = stopped ? '' : 'none';
+  $('statusText').textContent = (ui.resizing ? `${Math.round(ui.resizing.scale * 100)}%`
     : ui.dragging ? (float ? 'Release to place it here' : 'Release to snap to the nearest corner')
     : ui.flipping ? `${name} · updating`
     : float ? `${name} · pinned`
     : counting ? `${name} · hides in ${Math.ceil(ui.remaining / 1000)}s${paused ? ' · paused' : ''}`
-    : S.conn === 'error' ? `${name} · offline` : name;
+    : S.conn === 'error' && !stopped ? `${name} · offline` : name) + (stopped ? ' · checking paused ·' : '');
   $('dot').style.background = ui.flipping ? '#f2c230' : S.conn === 'error' ? '#e0553f' : '#3fbf6a';
   $('chrome').style.opacity = ui.hover || ui.dragging || ui.resizing ? 1 : 0;
   $('pinBtn').textContent = float ? 'Unpin' : 'Pin';
@@ -127,6 +128,10 @@ function measure() {
     if (w && h && key !== lastSize) { lastSize = key; return RB.invoke('board_resize', { width: w, height: h }); }
   });
 }
+
+// "Pause checking" stops reading the mirrored board; a standalone (virtual) board has nothing
+// to check, so it's never shown as paused.
+const checkingPaused = () => !!S && !S.settings.polling && S.settings.source !== 'virtual' && S.settings.setupDone;
 
 function startCountdown(float = stays()) {
   if (!ui.visible) return;
@@ -218,6 +223,7 @@ RB.delegate(document.body, 'click', {
     ui.visible = true; startCountdown(float);
   },
   replay: () => RB.invoke('replay'),
+  resume: () => RB.invoke('update_settings', { patch: { polling: true } }),
   next: () => RB.invoke('sources_next'),
   hide,
   exitFull: () => RB.invoke('toggle_fullscreen'),
@@ -271,13 +277,15 @@ function renderOverlay() {
   $('credit').classList.toggle('live', on && ov.shown);
   if (!on) return;
   const s = S.settings, p = (S.playing || []).find(p => p.target === 'this');
-  const status = !s.polling ? 'Checking paused'
+  const stopped = checkingPaused();
+  $('ovResume').style.display = stopped ? '' : 'none';
+  const status = stopped ? 'Checking paused ·'
     : S.conn === 'error' ? (S.error || "Can't reach the board")
     : p ? `Playing ${p.name ? `‘${p.name}’` : 'sequence'} ${p.frame}/${p.frames}`
     : S.sources && S.sources.active && S.sources.showing ? `Showing ${S.sources.showing}`
     : S.lastChangeAt ? `Changed ${RB.ago(Date.now() - S.lastChangeAt)}` : 'Waiting for a message';
   $('ovText').textContent = `${s.boardName || 'Rattleboard'} · ${RB.sourceLabel(S)} · ${status}`;
-  $('ovDot').style.background = !s.polling ? '#9a9ca1' : S.conn === 'error' ? '#e0553f' : ui.flipping ? '#f2c230' : '#3fbf6a';
+  $('ovDot').style.background = stopped ? '#9a9ca1' : S.conn === 'error' ? '#e0553f' : ui.flipping ? '#f2c230' : '#3fbf6a';
 }
 
 // Pair a phone: the QR code from Settings → API server, on the board's own screen.

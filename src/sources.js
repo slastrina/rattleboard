@@ -136,7 +136,8 @@ function sourcesAfter() {
 function srcStatusText() {
   const st = S.sources || {}, s = SR.data;
   if (!s) return ['#9a9ca1', 'Loading…'];
-  if (st.paused) return ['#e0a526', st.paused + (S.settings.source !== 'virtual' ? '. Turn on Show sources while mirroring, below, to run them anyway.' : '')];
+  const paused = srcPaused();
+  if (paused) return ['#e0a526', paused];
   if (!s.rotation.some(x => x.enabled)) return ['#9a9ca1', s.rotation.length ? 'Every source is off' : 'Add a source to start a rotation on this board'];
   if (st.quiet) return ['#8a63c9', 'Quiet hours: nothing new goes up until ' + s.quietHours.to];
   if (st.holdUntil && st.holdUntil > Date.now()) return ['#e0a526', `Holding a message until ${clock(st.holdUntil)}; then the rotation carries on`];
@@ -149,6 +150,30 @@ function srcStatusText() {
 function srcStatusTick() {
   const el = document.getElementById('srcStatus');
   if (el) { const [c, t] = srcStatusText(); el.textContent = t; document.getElementById('srcDot').style.background = c; }
+}
+
+// Paused sources say how to get them going: finish setup, or (while mirroring) show them
+// anyway or stop mirroring and make this a standalone board.
+// Why the rotation is paused, from this window's settings (as sources_ctx in lib.rs decides),
+// so it changes the moment they do; the engine's own status follows within a second.
+function srcPaused() {
+  const s = S.settings;
+  if (!s.setupDone) return 'Finish setting up Rattleboard first';
+  if (['local', 'cloud', 'demo'].includes(s.source) && SR.data && !SR.data.showWhileMirroring) return `Paused while mirroring ${s.source === 'demo' ? 'the demo' : 'another board'}`;
+  return null;
+}
+function pausedRow() {
+  const s = S.settings;
+  if (!srcPaused()) return '';
+  if (!s.setupDone) return `<div></div><div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:-6px"><button class="btn" data-act="srcRunSetup">Run setup</button></div>`;
+  if (s.source === 'virtual') return '';
+  const what = s.source === 'demo' ? 'the demo' : 'the board it mirrors';
+  if (SR.confirmStandalone) return `<div></div><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:-6px">
+      <span class="hint" style="text-wrap:pretty">This board stops showing ${what} and shows its own sources and the messages sent to it. Change it back in Settings → Connection.</span>
+      <button class="primary" data-act="srcStandaloneYes">Make it standalone</button><button class="btn" data-act="srcStandaloneNo">Cancel</button></div>`;
+  return `<div></div><div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:-6px">
+      <button class="btn" data-act="srcShowAnyway" title="Turns on Show sources while mirroring, below">Show sources anyway</button>
+      <button class="btn" data-act="srcStandalone" title="Sets Connection → Read from to Virtual board">Make this a standalone board</button></div>`;
 }
 
 function viewSources() {
@@ -172,6 +197,7 @@ function viewSources() {
       <div class="dot" id="srcDot" style="background:${dot}"></div><span id="srcStatus" style="flex:1; min-width:0; text-wrap:pretty">${esc(status)}</span>
       <button class="btn" style="flex:none" data-act="srcNext" ${S.sources && S.sources.active ? '' : 'disabled'} title="Show the next source now">Next</button>
     </div>
+    ${pausedRow()}
     ${preview}
     <div style="grid-column:1 / -1; display:flex; flex-direction:column; gap:8px; min-width:0">
       <div style="display:flex; align-items:baseline; gap:10px"><span style="font-weight:600">Rotation</span><span class="hint">Takes turns in this order; drag ⋮⋮ to reorder</span></div>
@@ -553,6 +579,11 @@ RB.delegate(root, 'click', {
   srcAlert: el => saveCfg({ alertSeconds: +el.dataset.v }),
   srcQuiet: () => saveCfg({ quietHours: { ...SR.data.quietHours, enabled: !SR.data.quietHours.enabled } }),
   srcMirror: () => saveCfg({ showWhileMirroring: !SR.data.showWhileMirroring }),
+  srcShowAnyway: () => saveCfg({ showWhileMirroring: true }),
+  srcStandalone: () => { SR.confirmStandalone = true; render(true); },
+  srcStandaloneNo: () => { SR.confirmStandalone = false; render(true); },
+  srcStandaloneYes: () => { SR.confirmStandalone = false; save(sourcePatch('virtual')); },
+  srcRunSetup: () => RB.invoke('open_window', { view: 'setup' }),
   srcClock24: () => saveCfg({ clock24: !SR.data.clock24 })
 });
 

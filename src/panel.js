@@ -177,8 +177,8 @@ function viewSettings() {
   } else {
     const local = s.source === 'local', demo = s.source === 'demo' || s.source === 'virtual', virt = s.source === 'virtual', key = local ? L.secrets.localKey : L.secrets.cloudToken;
     const keyType = L.showKey ? 'text' : 'password', keyBtn = L.showKey ? 'Hide' : 'Show';
-    const connDot = !s.polling ? '#9a9ca1' : S.conn === 'testing' ? '#e0a526' : S.conn === 'error' ? '#e0553f' : S.conn === 'ok' ? '#34b05a' : '#9a9ca1';
-    const connText = S.conn === 'testing' ? 'Testing…' : !s.polling ? 'Paused' : S.conn === 'error' ? (S.error || "Can't reach the board") : S.conn === 'ok' ? `Connected · checked ${checkedLabel()}` : 'Not checked yet';
+    const connDot = !s.polling && !virt ? '#9a9ca1' : S.conn === 'testing' ? '#e0a526' : S.conn === 'error' ? '#e0553f' : S.conn === 'ok' ? '#34b05a' : '#9a9ca1';
+    const connText = S.conn === 'testing' ? 'Testing…' : !s.polling && !virt ? 'Checking paused' : S.conn === 'error' ? (S.error || "Can't reach the board") : S.conn === 'ok' ? `Connected · checked ${checkedLabel()}` : 'Not checked yet';
     const url = local ? (/:\d+$/.test(s.host.trim()) ? `http://${s.host.trim()}/local-api/message` : `http://${s.host.trim() || '[BOARD_IP]'}:7000/local-api/message`) : '';
     const lines = virt
       ? [[`No mirroring: the board shows what apps send to ${S.server.urls[0] || 'the API server'}`, '#ecebe6'], ['→ see the API server tab for the key and examples', '#9fd3a8']]
@@ -202,7 +202,8 @@ function viewSettings() {
       <div class="lbl">Status</div>
       <div style="display:flex; align-items:center; gap:10px; min-width:0">
         <div class="dot" style="background:${connDot}"></div><span id="connText" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${esc(connText)}</span>
-        <button class="btn" style="margin-left:auto; flex:none" data-act="test">Test connection</button>
+        ${!s.polling && !virt ? `<button class="btn" style="margin-left:auto; flex:none; color:${RB.ACC}; font-weight:600" data-act="resume">Resume checking</button>` : ''}
+        <button class="btn" style="${!s.polling && !virt ? '' : 'margin-left:auto; '}flex:none" data-act="test">Test connection</button>
       </div>
       <div class="mono" style="grid-column:1 / -1; background:#1d1e21; border-radius:8px; padding:12px 14px; font-size:11.5px; line-height:1.7; display:flex; flex-direction:column; overflow:hidden">
         ${lines.map(([t, c]) => `<div style="color:${c}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${esc(t)}</div>`).join('')}
@@ -850,6 +851,7 @@ RB.delegate(root, 'click', {
   corner: el => save({ position: el.dataset.v }),
   source: el => save(sourcePatch(el.dataset.v)),
   poll: el => save({ pollEvery: +el.dataset.v }),
+  resume: () => save({ polling: true }),
   pauseOnHover: () => save({ pauseOnHover: !S.settings.pauseOnHover }),
   serverEnabled: () => save({ serverEnabled: !S.settings.serverEnabled }),
   serverLan: () => save({ serverLan: !S.settings.serverLan }),
