@@ -58,6 +58,8 @@ const RB = {
   esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); },
   ago(ms) { const s = Math.max(0, Math.round(ms / 1000)); return s < 5 ? 'just now' : s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; },
   fmtTime(t) { return new Date(t).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); },
+  // Where this computer keeps keys, by name.
+  keychain(S) { return S.os === 'mac' ? 'the macOS Keychain' : S.os === 'linux' ? 'the Secret Service keyring (GNOME Keyring or KWallet)' : 'Windows Credential Manager'; },
   sourceLabel(S) {
     const s = S.settings;
     return s.source === 'local' ? 'Local · ' + s.host : s.source === 'demo' ? 'Demo mode' : s.source === 'virtual' ? 'API server' : 'Cloud';

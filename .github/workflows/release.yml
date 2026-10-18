@@ -33,6 +33,11 @@ jobs:
             os: windows-latest
             args: ''
             rust-targets: ''
+          # 22.04 for the oldest glibc the .deb and AppImage still run on.
+          - name: Linux x64
+            os: ubuntu-22.04
+            args: --bundles deb,appimage
+            rust-targets: ''
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +54,12 @@ jobs:
       - uses: swatinem/rust-cache@v2
 
       - run: npm ci
+
+      - name: System libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev libxdo-dev patchelf
 
       # Tauri treats an empty APPLE_* variable as "sign with this", so only export the
       # ones whose secrets are actually set.
@@ -87,6 +98,8 @@ jobs:
 
             **macOS 11+ (Apple Silicon and Intel):** open the `.dmg` and drag Rattleboard to Applications. It's signed and notarized by Apple. Or install with Homebrew: `brew install --cask slastrina/tap/rattleboard`
             **Windows:** run the `-setup.exe` (or the `.msi`). If SmartScreen warns you, choose **More info → Run anyway**.
+            **Linux (x86_64):** install the `.deb` (Debian, Ubuntu 22.04+) or run the `.AppImage` (`chmod +x` first). The tray needs libayatana-appindicator (and on GNOME the AppIndicator extension); keys need a Secret Service keyring such as GNOME Keyring or KWallet.
+            **Rattleboard Web (Docker):** `docker run -p 7070:7070 -v rattleboard:/data ghcr.io/slastrina/rattleboard-web`
           releaseDraft: false
           prerelease: false
 
@@ -99,6 +112,8 @@ jobs:
             target/**/release/bundle/dmg/*.dmg
             target/**/release/bundle/msi/*.msi
             target/**/release/bundle/nsis/*.exe
+            target/**/release/bundle/deb/*.deb
+            target/**/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   # Bumps the cask in slastrina/homebrew-tap once the release has its DMG.

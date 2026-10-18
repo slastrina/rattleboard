@@ -37,8 +37,10 @@ const SITE: &str = "https://www.iokig.com/rattleboard";
 
 #[cfg(target_os = "macos")]
 const OS: &str = "mac";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 const OS: &str = "win";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const OS: &str = "linux";
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -193,7 +195,12 @@ struct Snapshot {
     play_error: Option<String>,
     notify: NotifyInfo,
     sources: sources::Status,
+    /// False on a Linux desktop with no tray (see `fullscreen::linux::tray_available`)
+    has_tray: bool,
 }
+
+/// Whether the tray icon was put up, set once at launch.
+static HAS_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// This computer's name as people know it ("Sam's MacBook").
 fn device_name() -> String {
@@ -204,7 +211,11 @@ fn device_name() -> String {
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok());
     #[cfg(not(target_os = "macos"))]
-    let name = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).ok();
+    let name = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        // Linux desktops rarely export HOSTNAME.
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok());
     name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Rattleboard".into())
 }
 
@@ -262,6 +273,7 @@ fn snapshot(st: &AppState) -> Snapshot {
         play_error: rt.play_error.clone(),
         notify: st.notify.lock().unwrap().clone(),
         sources: st.sources.status(),
+        has_tray: HAS_TRAY.load(std::sync::atomic::Ordering::Relaxed),
     }
 }
 
@@ -2346,6 +2358,13 @@ fn panel_resize(app: AppHandle, width: f64, height: f64) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Wayland doesn't let apps place their own windows, so the pop-up couldn't go in its
+    // corner; run under XWayland where there is one (GTK falls back to Wayland if not).
+    // RATTLEBOARD_NATIVE_WAYLAND=1, or a GDK_BACKEND of the user's own, keeps native Wayland.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("GDK_BACKEND").is_none() && std::env::var_os("RATTLEBOARD_NATIVE_WAYLAND").is_none() {
+        std::env::set_var("GDK_BACKEND", "x11,wayland");
+    }
     #[cfg(target_os = "macos")]
     fullscreen::no_system_fullscreen_item();
     let builder = tauri::Builder::default();
@@ -2554,7 +2573,19 @@ pub fn run() {
             if let Some(img) = tray_image(false) {
                 tray = tray.icon(img).icon_as_template(OS == "mac");
             }
-            tray.build(app)?;
+            // Linux: only where a tray icon would show (see `fullscreen::linux::tray_available`);
+            // otherwise Settings opens as a normal window instead, and launching Rattleboard
+            // again brings it back.
+            #[cfg(target_os = "linux")]
+            let has_tray = fullscreen::linux::tray_available();
+            #[cfg(not(target_os = "linux"))]
+            let has_tray = true;
+            HAS_TRAY.store(has_tray, std::sync::atomic::Ordering::Relaxed);
+            if has_tray {
+                tray.build(app)?;
+            } else {
+                eprintln!("Rattleboard: no system tray here (on GNOME, install the AppIndicator extension); opening Settings as a window");
+            }
 
             tauri::async_runtime::spawn(poll_loop(h.clone()));
             tauri::async_runtime::spawn(sources_loop(h.clone()));
@@ -2576,6 +2607,9 @@ pub fn run() {
             } else if floating {
                 // A floating board is always on screen, even before the first check answers.
                 present_board(&h, false);
+            }
+            if !has_tray && setup_done && !full {
+                open_panel(&h, "settings");
             }
             Ok(())
         })

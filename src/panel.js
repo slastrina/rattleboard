@@ -133,6 +133,8 @@ function viewSettings() {
       <div style="display:flex; align-items:center; gap:10px">${tog(s.launchLogin, 'launchLogin')}<span class="hint">Start Rattleboard when I log in</span></div>
       <div class="lbl">Full screen at launch</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.fullscreenLaunch, 'fullscreenLaunch')}<span class="hint">Open in full screen at launch, for a spare computer used as a board. Otherwise full screen lasts until Rattleboard quits.</span></div>
+      ${S.hasTray === false ? `<div class="lbl">No tray</div>
+      <div style="display:flex; align-items:center; gap:10px"><button class="btn" data-act="quitApp">Quit Rattleboard</button><span class="hint">This desktop has no tray icon area, so Rattleboard keeps running after this window closes. Open Rattleboard again to come back here.</span></div>` : ''}
     </div>`;
   } else if (L.tab === 'api') {
     body = viewApi();
@@ -350,7 +352,7 @@ function viewBoards() {
     <div class="lbl">Add a board</div>${seg([['nearby', 'Nearby'], ['manual', 'By address'], ['link', 'Pair link'], ['cloud', 'Cloud']], L.addMode, 'addMode')}
     ${form}
     ${msg}
-    <div style="grid-column:1 / -1" class="hint">Keys are kept in ${S.os === 'mac' ? 'the macOS Keychain' : 'Windows Credential Manager'}, one entry per board, and never written to a file.</div>
+    <div style="grid-column:1 / -1" class="hint">Keys are kept in ${RB.keychain(S)}, one entry per board, and never written to a file.</div>
   </div>`;
 }
 
@@ -735,6 +737,7 @@ RB.delegate(root, 'click', {
   site: (el, e) => { e.preventDefault(); RB.invoke('open_site'); },
   fullscreenLaunch: () => save({ fullscreenLaunch: !S.settings.fullscreenLaunch }),
   showKey: () => { L.showKey = !L.showKey; render(true); },
+  quitApp: () => RB.invoke('quit'),
   test: () => RB.invoke('test_connection').catch(() => {}),
   clear: () => RB.invoke('clear_history'),
   flip: el => RB.invoke('show_history_entry', { id: +el.dataset.v }),

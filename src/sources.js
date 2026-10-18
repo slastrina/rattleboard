@@ -166,7 +166,7 @@ function viewSources() {
     </div>
     <div style="grid-column:1 / -1; font-weight:600; margin-top:4px">How sources run</div>
     ${engineRows()}
-    <div style="grid-column:1 / -1" class="hint">Sources run on this computer only. Secrets (tokens, private calendar addresses) are kept in ${S.os === 'mac' ? 'the macOS Keychain' : 'Windows Credential Manager'}, one entry per source, and never written to a file or sent anywhere but the source's own address.</div>
+    <div style="grid-column:1 / -1" class="hint">Sources run on this computer only. Secrets (tokens, private calendar addresses) are kept in ${RB.keychain(S)}, one entry per source, and never written to a file or sent anywhere but the source's own address.</div>
   </div>
   ${SR.approve ? approveDialog() : ''}${SR.countdown ? countdownDialog() : ''}`;
 }

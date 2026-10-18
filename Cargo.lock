@@ -3175,6 +3175,7 @@ dependencies = [
  "block2",
  "chrono",
  "futures-util",
+ "libloading",
  "objc2",
  "qrcode",
  "rattleboard-core",
@@ -3189,6 +3190,7 @@ dependencies = [
  "tokio",
  "url",
  "windows",
+ "zbus",
 ]
 
 [[package]]

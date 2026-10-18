@@ -58,6 +58,77 @@ mod mac {
 #[cfg(target_os = "macos")]
 static AWAKE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
 
+/// Linux: the session's D-Bus. Keeping the display awake asks the screen saver
+/// (org.freedesktop.ScreenSaver: GNOME, KDE, Xfce and most others) and, failing that, the
+/// desktop portal (Flatpak, sandboxes) to inhibit idling. Both last until released or until
+/// the connection closes, so a crash never leaves the screen kept on.
+#[cfg(target_os = "linux")]
+pub mod linux {
+    use zbus::blocking::Connection;
+
+    pub enum Held {
+        ScreenSaver(Connection, u32),
+        Portal(Connection, zbus::zvariant::OwnedObjectPath),
+    }
+
+    const REASON: &str = "Rattleboard is showing the board full screen";
+
+    pub fn hold() -> Option<Held> {
+        let conn = Connection::session().ok()?;
+        for path in ["/org/freedesktop/ScreenSaver", "/ScreenSaver"] {
+            let r = conn.call_method(Some("org.freedesktop.ScreenSaver"), path, Some("org.freedesktop.ScreenSaver"), "Inhibit", &("Rattleboard", REASON));
+            if let Ok(cookie) = r.and_then(|m| m.body().deserialize::<u32>()) {
+                return Some(Held::ScreenSaver(conn, cookie));
+            }
+        }
+        // 8: idle
+        let mut options = std::collections::HashMap::<&str, zbus::zvariant::Value>::new();
+        options.insert("reason", REASON.into());
+        let r = conn.call_method(
+            Some("org.freedesktop.portal.Desktop"),
+            "/org/freedesktop/portal/desktop",
+            Some("org.freedesktop.portal.Inhibit"),
+            "Inhibit",
+            &("", 8u32, options),
+        );
+        let handle = r.and_then(|m| m.body().deserialize::<zbus::zvariant::OwnedObjectPath>()).ok()?;
+        Some(Held::Portal(conn, handle))
+    }
+
+    pub fn release(h: Held) {
+        match h {
+            Held::ScreenSaver(conn, cookie) => {
+                for path in ["/org/freedesktop/ScreenSaver", "/ScreenSaver"] {
+                    let r = conn.call_method(Some("org.freedesktop.ScreenSaver"), path, Some("org.freedesktop.ScreenSaver"), "UnInhibit", &(cookie,));
+                    if r.is_ok() {
+                        break;
+                    }
+                }
+            }
+            Held::Portal(conn, handle) => {
+                let _ = conn.call_method(Some("org.freedesktop.portal.Desktop"), handle.as_str(), Some("org.freedesktop.portal.Request"), "Close", &());
+            }
+        }
+    }
+
+    /// Whether a tray icon would show: the AppIndicator library loads, and something on the
+    /// session bus shows StatusNotifier icons (KDE, most desktops; GNOME only with the
+    /// AppIndicator extension). Without either, tray-icon would panic or show nothing.
+    pub fn tray_available() -> bool {
+        let lib = ["libayatana-appindicator3.so.1", "libappindicator3.so.1", "libayatana-appindicator3.so", "libappindicator3.so"]
+            .iter()
+            .any(|name| unsafe { libloading::Library::new(name) }.is_ok());
+        if !lib {
+            return false;
+        }
+        let Ok(conn) = Connection::session() else { return false };
+        conn.call_method(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", Some("org.freedesktop.DBus"), "NameHasOwner", &("org.kde.StatusNotifierWatcher",))
+            .and_then(|m| m.body().deserialize::<bool>())
+            .unwrap_or(false)
+    }
+}
+
+
 /// Keeps the display awake while the board is full screen. Call it on the main thread: on
 /// Windows the request belongs to the thread that makes it.
 pub fn keep_awake(on: bool) {
@@ -79,7 +150,27 @@ pub fn keep_awake(on: bool) {
         let flags = if on { ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED } else { ES_CONTINUOUS };
         unsafe { SetThreadExecutionState(flags) };
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        // D-Bus calls are quick, but never on the main thread: one worker takes them in order.
+        static WORKER: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<bool>>> = std::sync::OnceLock::new();
+        let tx = WORKER.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<bool>();
+            std::thread::spawn(move || {
+                let mut held: Option<linux::Held> = None;
+                for on in rx {
+                    match (on, held.is_some()) {
+                        (true, false) => held = linux::hold(),
+                        (false, true) => linux::release(held.take().expect("held")),
+                        _ => {}
+                    }
+                }
+            });
+            std::sync::Mutex::new(tx)
+        });
+        let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(on);
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     let _ = on;
 }
 

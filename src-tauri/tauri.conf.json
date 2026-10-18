@@ -19,7 +19,7 @@
     "active": true,
     "targets": "all",
     "category": "Utility",
-    "shortDescription": "A split-flap message board for your Mac or PC",
+    "shortDescription": "A split-flap message board for your Mac, PC or Linux desktop",
     "longDescription": "Rattleboard is a split-flap message board for your desktop: a pop-up, a pinned widget or full screen. Compose messages and sequences, send them to your other boards, run a calm rotation of clocks, weather, countdowns and feeds, and let scripts post to its built-in API.",
     "copyright": "MIT License",
     "icon": [
@@ -36,6 +36,12 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "deb": {
+        "section": "utils",
+        "recommends": ["gnome-keyring"]
       }
     }
   }
