@@ -1,16 +1,9 @@
-mod boards;
-mod builtins;
-mod cards;
 mod fullscreen;
 mod notify;
-mod plugins;
-mod secrets;
-mod send;
-mod sequence;
-mod server;
-mod settings;
-mod sources;
-mod vestaboard;
+
+// The board engine, shared with Rattleboard Web (crates/rattleboard-core).
+use rattleboard_core::{boards, plugins, secrets, send, sequence, server, settings, sources, vestaboard};
+pub(crate) use rattleboard_core::now_ms;
 
 use boards::SavedBoard;
 use sequence::Sequence;
@@ -20,7 +13,7 @@ use settings::{NotifyApp, Point, Settings};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
@@ -230,10 +223,6 @@ fn profile_dir(dir: PathBuf) -> PathBuf {
         (Some(p), Some(name)) => dir.with_file_name(format!("{}.{p}", name.to_string_lossy())),
         _ => dir,
     }
-}
-
-pub(crate) fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 fn blank(s: &Settings) -> Grid {

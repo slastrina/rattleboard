@@ -322,7 +322,7 @@ pub struct QuoteEntry {
 pub fn bundled_quotes() -> &'static [QuoteEntry] {
     static QUOTES: OnceLock<Vec<QuoteEntry>> = OnceLock::new();
     QUOTES.get_or_init(|| {
-        let f: QuoteFile = serde_json::from_str(include_str!("../../data/quotes.json")).expect("data/quotes.json");
+        let f: QuoteFile = serde_json::from_str(include_str!("../../../data/quotes.json")).expect("data/quotes.json");
         assert_eq!(f.format, 1, "data/quotes.json format");
         f.quotes
     })

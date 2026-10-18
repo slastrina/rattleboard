@@ -47,8 +47,6 @@ jobs:
           targets: ${{ matrix.rust-targets }}
 
       - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - run: npm ci
 
@@ -98,9 +96,9 @@ jobs:
         with:
           name: rattleboard-${{ matrix.os }}
           path: |
-            src-tauri/target/**/release/bundle/dmg/*.dmg
-            src-tauri/target/**/release/bundle/msi/*.msi
-            src-tauri/target/**/release/bundle/nsis/*.exe
+            target/**/release/bundle/dmg/*.dmg
+            target/**/release/bundle/msi/*.msi
+            target/**/release/bundle/nsis/*.exe
           if-no-files-found: error
 
   # Bumps the cask in slastrina/homebrew-tap once the release has its DMG.

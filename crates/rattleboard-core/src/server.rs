@@ -108,6 +108,15 @@ pub trait Board: Send + Sync + 'static {
     fn sources_ctx(&self) -> Option<sources::Ctx> {
         None
     }
+    /// What `/rattleboard/info` reports as "platform"
+    fn platform(&self) -> &'static str {
+        PLATFORM
+    }
+    /// A page for a browser that opens `/` without a key (Rattleboard Web's board). API
+    /// clients, which send a key, still get the Read/Write API's answer there.
+    fn index(&self) -> Option<Response> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -116,21 +125,14 @@ struct Ctx {
 }
 
 pub async fn start(board: std::sync::Arc<dyn Board>, port: u16, lan: bool) -> Result<Handle, String> {
-    let ip = if lan { [0, 0, 0, 0] } else { [127, 0, 0, 1] };
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from((ip, port))).await.map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AddrInUse {
-            if port == 7000 {
-                "Port 7000 is in use (AirPlay receivers use it); pick another port".to_string()
-            } else {
-                format!("Port {port} is already in use; pick another")
-            }
-        } else {
-            format!("Couldn't open port {port}: {e}")
-        }
-    })?;
-    let addr = listener.local_addr().map_err(|e| e.to_string())?;
+    serve(router(board, Router::new()), port, lan).await
+}
+
+/// Every API route for `board`, plus `extra` routes of the caller's own (Rattleboard Web's
+/// page and live stream); requests to anything else answer 404.
+pub fn router(board: std::sync::Arc<dyn Board>, extra: Router) -> Router {
     let ctx = Ctx { board };
-    let router = Router::new()
+    Router::new()
         .route("/local-api/message", get(local_get).post(post).options(preflight))
         .route("/", get(cloud_get).post(post).options(preflight))
         .route("/rattleboard/info", get(info).options(preflight))
@@ -150,12 +152,31 @@ pub async fn start(board: std::sync::Arc<dyn Board>, port: u16, lan: bool) -> Re
         .route("/rattleboard/sources/preview/{id}", get(preview_get).options(preflight))
         .route("/rattleboard/sources/upnext", get(upnext_get).options(preflight))
         .route("/rattleboard/sources/next", routing::post(next_post).options(preflight))
+        .with_state(ctx)
+        .merge(extra)
         .fallback(|| async { err(StatusCode::NOT_FOUND, "Not found") })
         .layer(axum::middleware::map_response(cors))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
-        .with_state(ctx);
+}
+
+/// Serves `router` on `port`, on every interface (`lan`) or only this computer's.
+pub async fn serve(router: Router, port: u16, lan: bool) -> Result<Handle, String> {
+    let ip = if lan { [0, 0, 0, 0] } else { [127, 0, 0, 1] };
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from((ip, port))).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AddrInUse {
+            if port == 7000 {
+                "Port 7000 is in use (AirPlay receivers use it); pick another port".to_string()
+            } else {
+                format!("Port {port} is already in use; pick another")
+            }
+        } else {
+            format!("Couldn't open port {port}: {e}")
+        }
+    })?;
+    let addr = listener.local_addr().map_err(|e| e.to_string())?;
     let (tx, rx) = oneshot::channel::<()>();
-    tauri::async_runtime::spawn(async move {
+    // Spawned on the runtime of whoever awaits this (Tauri's, on the desktop).
+    tokio::spawn(async move {
         let _ = axum::serve(listener, router)
             .with_graceful_shutdown(async {
                 let _ = rx.await;
@@ -190,6 +211,15 @@ fn authorized(ctx: &Ctx, h: &HeaderMap) -> bool {
         .any(|v| same(v.trim(), &key))
 }
 
+/// Whether the request carries a key at all (right or wrong).
+fn sends_key(h: &HeaderMap) -> bool {
+    KEY_HEADERS.iter().any(|n| h.contains_key(*n)) || h.contains_key(header::AUTHORIZATION)
+}
+
+fn wants_html(h: &HeaderMap) -> bool {
+    h.get(header::ACCEPT).and_then(|v| v.to_str().ok()).is_some_and(|a| a.contains("text/html"))
+}
+
 async fn local_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
     if !authorized(&ctx, &h) {
         return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
@@ -198,6 +228,12 @@ async fn local_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
 }
 
 async fn cloud_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
+    // A browser opening the board's address, with no key: the board's own page, if it has one.
+    if !sends_key(&h) && wants_html(&h) {
+        if let Some(page) = ctx.board.index() {
+            return page;
+        }
+    }
     if !authorized(&ctx, &h) {
         return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
     }
@@ -275,7 +311,7 @@ async fn info(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
         "app": "rattleboard",
         "protocol": PROTOCOL,
         "version": env!("CARGO_PKG_VERSION"),
-        "platform": PLATFORM,
+        "platform": ctx.board.platform(),
         "name": ctx.board.name(),
         "board": { "rows": rows, "cols": cols },
         "adaptive": ctx.board.adaptive(),

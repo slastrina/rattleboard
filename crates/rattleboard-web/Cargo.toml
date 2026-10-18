@@ -1,0 +1,12 @@
+[package]
+name = "rattleboard-web"
+description = "Rattleboard Web: a self-hosted split-flap board for any browser"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rattleboard-core = { path = "../rattleboard-core", default-features = false }

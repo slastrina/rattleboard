@@ -1382,9 +1382,9 @@ mod tests {
     #[test]
     fn examples() {
         for (src, kind) in [
-            (include_str!("../../plugins/examples/hacker-news.rattleboard-plugin.json"), "rss"),
-            (include_str!("../../plugins/examples/iss-position.rattleboard-plugin.json"), "json"),
-            (include_str!("../../plugins/examples/git-status.rattleboard-plugin.json"), "command"),
+            (include_str!("../../../plugins/examples/hacker-news.rattleboard-plugin.json"), "rss"),
+            (include_str!("../../../plugins/examples/iss-position.rattleboard-plugin.json"), "json"),
+            (include_str!("../../../plugins/examples/git-status.rattleboard-plugin.json"), "command"),
         ] {
             // The git example's /usr/bin/git isn't an absolute path on Windows.
             if cfg!(windows) && kind == "command" {

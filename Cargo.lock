@@ -3170,23 +3170,15 @@ dependencies = [
 name = "rattleboard"
 version = "0.3.0"
 dependencies = [
- "axum",
  "block2",
  "chrono",
- "chrono-tz",
- "feed-rs",
  "futures-util",
- "getrandom 0.3.4",
- "ical",
- "keyring",
- "mdns-sd",
  "objc2",
  "qrcode",
+ "rattleboard-core",
  "reqwest 0.12.28",
- "rrule",
  "serde",
  "serde_json",
- "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
@@ -3195,6 +3187,35 @@ dependencies = [
  "tokio",
  "url",
  "windows",
+]
+
+[[package]]
+name = "rattleboard-core"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "chrono-tz",
+ "feed-rs",
+ "futures-util",
+ "getrandom 0.3.4",
+ "ical",
+ "keyring",
+ "mdns-sd",
+ "reqwest 0.12.28",
+ "rrule",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "rattleboard-web"
+version = "0.3.0"
+dependencies = [
+ "rattleboard-core",
 ]
 
 [[package]]
