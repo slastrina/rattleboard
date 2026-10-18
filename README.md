@@ -1,21 +1,25 @@
 # Rattleboard
 
-A split-flap desktop mirror for your [Vestaboard](https://www.vestaboard.com). Rattleboard sits in your macOS menu bar or Windows system tray. When the message on your board changes, a live replica flips into view (with the clatter, if you like) and then tucks away again.
+A split-flap message board for your Mac or PC. Rattleboard sits in your macOS menu bar or Windows system tray. When a message arrives, the board flips into view (with the clatter, if you like) and then tucks away again. Pin it to the desktop, or run a spare computer full screen as a dedicated board.
 
-Free and open source under the MIT license. Not affiliated with or endorsed by Vestaboard, Inc.
+Compose messages and sequences and send them to every board you own. Scripts can post to its built-in API, and it can mirror another Rattleboard, or a [Vestaboard](https://www.vestaboard.com) if you have one.
+
+Free and open source under the MIT license. Rattleboard for iPhone, iPad, Android and Android TV is coming soon. Project page: [iokig.com/rattleboard](https://www.iokig.com/rattleboard).
+
+Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with or endorsed by Vestaboard.
 
 <p align="center">
-  <img src="docs/rattleboard-standard.gif" alt="Rattleboard replica of a Standard board (6 × 22) flipping between messages" width="760"><br>
+  <img src="docs/rattleboard-standard.gif" alt="Rattleboard Standard board (6 × 22) flipping between messages" width="760"><br>
   <sub>Standard (6 × 22)</sub>
 </p>
 <p align="center">
-  <img src="docs/rattleboard-compact.gif" alt="Rattleboard replica of a Compact board (3 × 15) flipping between messages" width="560"><br>
+  <img src="docs/rattleboard-compact.gif" alt="Rattleboard Compact board (3 × 15) flipping between messages" width="560"><br>
   <sub>Compact (3 × 15)</sub>
 </p>
 
 ## Features
 
-- **Live replica.** The flaps spin through the same drum order as the real hardware: blank, A–Z, 0–9, punctuation, then the colour chips, in black or white finish.
+- **Real split-flap motion.** The flaps spin through a full drum: blank, A–Z, 0–9, punctuation, then the colour chips, in black or white finish.
 - **Any message size.** By default the board shows each message at the size it was sent at, from 1 × 1 up to 12 × 40, and the pop-up or widget resizes to fit. Or fix it at Standard (6 × 22), Compact (3 × 15), Large (8 × 30) or a custom size. See [Board sizes](#board-sizes).
 - **Transitions.** Messages can flip in all at once, or in a wave: by column, reverse column, from the edges to the centre, by row, diagonally or at random. See [Transitions](#transitions).
 - **Flap sound.** An optional mechanical clatter, synthesized live while the flaps turn.
@@ -59,6 +63,58 @@ The first launch opens a short setup:
 - **Virtual board.** Needs nothing. The board shows only what apps send to the [API server](#api-server).
 
 You can change the source any time in **Settings → Connection**. A mirrored board takes the size of the board it reads.
+
+## Give an old screen a second life
+
+That old laptop in a drawer is a split-flap display. Computers, tablets and phones that are too slow for everyday use are still good at showing a board full screen. Running Rattleboard on one keeps a working screen in use instead of sending it to e-waste.
+
+Prop one on a shelf, mount it by the front door, or plug an old mini PC into a spare monitor. Each one can be a board of its own, a mirror of another board, or part of a group you send to all at once.
+
+| Device | Needs | Status |
+| --- | --- | --- |
+| Old Mac (MacBook, iMac, Mac mini) | macOS 11 or later | **Available now:** [Releases](https://github.com/slastrina/rattleboard/releases/latest) or Homebrew |
+| Windows laptop, NUC or mini PC | Windows 10 or 11 | **Available now:** [Releases](https://github.com/slastrina/rattleboard/releases/latest) |
+| Android phone, tablet, TV or TV box | Android 8 or later | Coming soon; links to come |
+| iPhone or iPad | iOS 16 or later | Coming soon; links to come |
+
+To set up a spare computer as a board, see [full screen](#use-a-spare-computer-as-a-board): turn on full screen, **Open in full screen at launch** and **Start Rattleboard when I log in**, and it comes back on its own after a restart.
+
+### How they connect
+
+**A board of its own.** The old device is the board. Scripts, smart-home automations and your phone send it messages over your network.
+
+```mermaid
+flowchart LR
+  S["Scripts and apps<br/><small>curl · cron · CI</small>"] -->|HTTP API + key| L["Old laptop<br/><small>full screen</small>"]
+  H["Home Assistant<br/><small>doorbell · weather</small>"] -->|HTTP API + key| L
+  P["Your phone<br/><small>Compose · paired by QR</small>"] -->|HTTP API + key| L
+```
+
+**A mirror.** Every screen shows the same board. Mirror a Rattleboard on your Wi-Fi, or a Vestaboard through its Local or Cloud API.
+
+```mermaid
+flowchart LR
+  B["Rattleboard or Vestaboard<br/><small>the board being mirrored</small>"] -->|Local network / Cloud API| M["Old Mac<br/><small>kitchen</small>"]
+  B --> T["Old tablet<br/><small>by the door</small>"]
+  B --> V["TV<br/><small>living room</small>"]
+```
+
+**One message, every screen.** Compose once and send it to a group or to every board you own. Each board lays the message out to fit its own size.
+
+```mermaid
+flowchart LR
+  C["Your phone or computer<br/><small>Compose · sequences</small>"] -->|Group / All boards| TV["TV<br/><small>Standard 6 × 22</small>"]
+  C --> LP["Old laptop<br/><small>Large 8 × 30</small>"]
+  C --> PH["Old phone<br/><small>Compact 3 × 15</small>"]
+  C -.->|optional| VB["Vestaboard"]
+```
+
+**Notifications on the wall.** An Android phone forwards notifications from the apps you pick, such as a doorbell or a delivery, then the board goes back to what it was showing. On desktop, Windows can do the same.
+
+```mermaid
+flowchart LR
+  A["Android phone<br/><small>apps you choose</small>"] -->|Local network| AB["Any board<br/><small>alert, then back</small>"]
+```
 
 ## Use a spare computer as a board
 

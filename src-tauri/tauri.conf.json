@@ -19,8 +19,8 @@
     "active": true,
     "targets": "all",
     "category": "Utility",
-    "shortDescription": "A split-flap desktop mirror for your Vestaboard",
-    "longDescription": "Rattleboard watches your Vestaboard over the Local or Cloud API and flips a live split-flap replica onto your desktop whenever the message changes.",
+    "shortDescription": "A split-flap message board for your Mac or PC",
+    "longDescription": "Rattleboard is a split-flap message board for your desktop: a pop-up, a pinned widget or full screen. Compose messages and sequences, send them to your other boards, and let scripts post to its built-in API.",
     "copyright": "MIT License",
     "icon": [
       "icons/32x32.png",

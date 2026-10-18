@@ -508,7 +508,7 @@ function viewSetup() {
       <div style="color:#55575c; font-size:12.5px; line-height:1.45">${text}</div>
       <div class="mono" style="font-size:11px; color:#6b6d72">${needs}</div></div>`;
     body = `<div style="font-size:20px; font-weight:600; letter-spacing:-.01em">Mirror your board on this computer</div>
-      <div style="color:#55575c; line-height:1.5; max-width:520px; text-wrap:pretty">Rattleboard checks your board in the background. When the message changes, a live replica flips into view and tucks away again. How should it read the board?</div>
+      <div style="color:#55575c; line-height:1.5; max-width:520px; text-wrap:pretty">Rattleboard checks your board in the background. When the message changes, the board flips into view and tucks away again. How should it read the board?</div>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px">
         ${card('local', 'Local network', 'Recommended', 'Mirror another Rattleboard on your Wi‑Fi: a TV, desktop or phone. Also works with a Vestaboard’s Local API.', 'Needs: its address and key')}
         ${card('cloud', 'Cloud', '', 'Works from anywhere, including when this computer is away from home.', 'Needs: Cloud API token')}

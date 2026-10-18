@@ -2,7 +2,7 @@
   "name": "rattleboard",
   "version": "0.2.0",
   "private": true,
-  "description": "A split-flap desktop mirror for your Vestaboard",
+  "description": "A split-flap message board for your Mac or PC",
   "license": "MIT",
   "scripts": {
     "tauri": "tauri",
