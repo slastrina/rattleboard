@@ -20,10 +20,12 @@ function render() {
     : S.conn === 'error' ? (S.error || "Can't reach the board")
     : `Checked ${checkedLabel(now)} · changed ${S.lastChangeAt ? RB.ago(now - S.lastChangeAt) : '—'}`;
   const kbd = (m, w) => (mac ? m : w);
+  // The board last sent to from Compose or Message History, for a one-click resend.
+  const to = (S.boards || []).find(b => b.id === s.sendTarget);
   const groups = [
-    [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ['replay', 'Replay last change', '']],
+    [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
     [['pin', 'Pin as widget', '', s.mode === 'float'], ['pause', 'Pause checking', '', !s.polling]],
-    [['history', 'Message history…', ''], ['settings', 'Settings…', kbd('⌘,', '')], ['setup', 'Run setup again…', '']],
+    [['compose', 'Compose…', kbd('⌘N', 'Ctrl+N')], ['history', 'Message history…', ''], ['settings', 'Settings…', kbd('⌘,', '')], ['setup', 'Run setup again…', '']],
     [['quit', 'Quit Rattleboard', kbd('⌘Q', '')]]
   ];
   menu.style.margin = mac ? '0 auto' : '0';
@@ -39,6 +41,7 @@ function render() {
       <div data-act="show" style="background:${fin.frame}; padding:8px; border-radius:6px; display:flex; flex-direction:column; gap:3px; align-items:center; cursor:pointer">
         ${RB.mini(S.display, S)}
       </div>
+      ${playing()}
     </div>
     ${groups.map(g => `<div class="group">${g.map(([act, label, key, on]) =>
       `<div class="item" data-act="${act}"><span class="chk">${on ? '✓' : ''}</span><span>${label}</span><span class="key">${key}</span></div>`).join('')}</div>`).join('')}`;
@@ -46,23 +49,49 @@ function render() {
   if (h !== lastH) { lastH = h; RB.invoke('tray_resize', { height: h }); }
 }
 
+// Sequences this computer is playing, each with a Stop button.
+// A group's players show as one line, with one Stop for all of them.
+function playing() {
+  const lines = [];
+  for (const p of S.playing || []) {
+    const many = p.via === 'all' || p.via.startsWith('group:'), line = many && lines.find(l => l.via === p.via);
+    if (line) line.count++;
+    else lines.push({ ...p, count: 1, stop: many ? p.via : p.target, where: many ? p.viaName : p.target === 'this' ? '' : p.targetName });
+  }
+  const rows = lines.map(p => {
+    const name = p.name ? `‘${RB.esc(p.name)}’` : 'sequence';
+    const where = p.where ? ` <span style="color:#6b6d72">on ${RB.esc(p.where)}${p.count > 1 ? ` · ${p.count} boards` : ''}</span>` : '';
+    return `<div style="display:flex; align-items:center; gap:8px; font-size:12px; padding:5px 6px 5px 8px; border-radius:6px; background:rgba(0,0,0,.05)">
+      <div style="width:0; height:0; border-left:7px solid ${RB.ACC}; border-top:4.5px solid transparent; border-bottom:4.5px solid transparent; flex:none"></div>
+      <span style="flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">Playing ${name} ${p.frame}/${p.frames}${p.loop ? ' · loop' : ''}${where}</span>
+      <button data-act="stopSeq" data-v="${RB.esc(p.stop)}" style="border:1px solid rgba(0,0,0,.15); background:#fff; border-radius:5px; font:inherit; font-size:11.5px; padding:2px 9px; cursor:pointer">Stop</button>
+    </div>`;
+  }).join('');
+  const err = !rows && S.playError ? `<div style="font-size:11.5px; color:#c0392b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">Sequence stopped · ${RB.esc(S.playError)}</div>` : '';
+  return rows + err;
+}
+
 const act = {
   show: () => RB.invoke('show_board'),
   replay: () => RB.invoke('replay'),
+  resend: () => { RB.invoke('send_message', { target: S.settings.sendTarget, message: { characters: S.display } }).catch(() => {}); RB.invoke('close_window', { label: 'tray' }); },
   pin: () => { RB.invoke('update_settings', { patch: { mode: S.settings.mode === 'float' ? 'toast' : 'float' } }); RB.invoke('show_board'); },
   pause: () => { RB.invoke('update_settings', { patch: { polling: !S.settings.polling } }); RB.invoke('close_window', { label: 'tray' }); },
+  compose: () => RB.invoke('open_window', { view: 'compose' }),
   history: () => RB.invoke('open_window', { view: 'history' }),
   settings: () => RB.invoke('open_window', { view: 'settings' }),
   setup: () => RB.invoke('open_window', { view: 'setup' }),
   quit: () => RB.invoke('quit')
 };
 RB.delegate(menu, 'click', Object.fromEntries(Object.entries(act).map(([k, f]) => [k, () => f()])));
+RB.delegate(menu, 'click', { stopSeq: el => RB.invoke('stop_sequence', { target: el.dataset.v }) });
 
 document.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
   if (e.key === 'Escape') RB.invoke('close_window', { label: 'tray' });
   else if (mod && k === 'b') act.show();
   else if (mod && k === ',') act.settings();
+  else if (mod && k === 'n') act.compose();
   else if (mod && k === 'q') act.quit();
 });
 
