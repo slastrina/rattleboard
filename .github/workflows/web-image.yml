@@ -66,8 +66,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Docker Hub only lets a token with the "Read, Write, Delete" scope edit the overview,
+      # so a narrower token still publishes the image and just skips this.
       - name: Docker Hub overview
         if: github.ref_type == 'tag' && env.DOCKERHUB_ENABLED == 'true'
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
