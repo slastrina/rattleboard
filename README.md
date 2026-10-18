@@ -2,7 +2,7 @@
 
 A split-flap message board for your Mac, PC or Linux desktop, or for any browser from a container on your home server. Rattleboard sits in your macOS menu bar or your Windows or Linux system tray. When a message arrives, the board flips into view (with the clatter, if you like) and then tucks away again. Pin it to the desktop, or run a spare computer full screen as a dedicated board.
 
-Compose messages and sequences and send them to every board you own. Scripts can post to its built-in API, and it can mirror another Rattleboard, or a [Vestaboard](https://www.vestaboard.com) if you have one.
+Compose messages and sequences and send them to every board you own. Scripts can post to its built-in API, AI agents like Claude Code, Cursor and Codex can post to it as a tool call ([MCP](#agents-mcp)), and it can mirror another Rattleboard, or a [Vestaboard](https://www.vestaboard.com) if you have one.
 
 [Rattleboard Web](#rattleboard-web-docker) runs the board in a container and shows it in any browser: a wall tablet, a TV, a Home Assistant dashboard.
 
@@ -33,6 +33,7 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
 - **Local API or Cloud API.** Read the board directly over your Wi-Fi, or through `cloud.vestaboard.com` from anywhere.
 - **Built-in API server.** Your own apps and scripts send Rattleboard messages over your network, and it also accepts the Vestaboard Local API request format. See [API server](#api-server).
 - **Compose and Send.** Write a message as text or paint it tile by tile, preview it in flaps, then show it here or send it to a TV or computer running Rattleboard, or to a real Vestaboard: one board, a group of them, or all at once. See [Compose](#compose).
+- **Works with AI agents.** Claude Code, opencode, Cursor, Codex, Gemini CLI, Claude Desktop and VS Code can post to the board as a tool call (MCP), for example when a long task finishes or they need your input. Set it up from Settings → Agents. See [Agents (MCP)](#agents-mcp).
 - **Sequences.** Play several messages in turn, each held for a while once its flaps settle, once or on a loop.
 - **Pair a phone.** Show a QR code that the Rattleboard phone app scans to add this board.
 - **Notification forwarding (Windows).** Put notifications from the apps you choose on a board. See [Notification forwarding](#notification-forwarding-windows).
@@ -394,6 +395,9 @@ Rattleboards also answer a few requests of their own under `/rattleboard/`. They
 | `POST /rattleboard/sequence` | `{"name":"…","loop":true,"frames":[…]}` (up to 256 KB) | `201 {"status":"ok","id":"seq-…","frames":2}` |
 | `GET /rattleboard/sequence` | — | `{"running":true,"id":"seq-…","name":"Morning","frame":2,"frames":5,"loop":true}` or `{"running":false}` |
 | `DELETE /rattleboard/sequence` | — | `204`; the current frame stays on the board |
+| `GET /rattleboard/boards` | — | `{"boards":[{"target":"this","name":"This board","kind":"this","rows":6,"cols":22,…}],"groups":[…]}` (desktop) |
+| `POST /rattleboard/send` | `{"target":"<board id>" or "group:<id>" or "all","message":{…}}` | `{"deliveries":[{"name","status","error"}]}`, sent as Compose sends it (desktop) |
+| `POST /mcp` | JSON-RPC (MCP) | See [Agents (MCP)](#agents-mcp) |
 
 `platform` is `macos`, `windows`, `linux` or `web` ([Rattleboard Web](#rattleboard-web-docker)). A real Vestaboard answers `404` or `401` to these, which is how apps tell the two apart. The `/rattleboard/sources` endpoints are under [Sources and plugins](#sources-api).
 
@@ -418,6 +422,175 @@ The tray menu shows a playing sequence ("Playing ‘Morning’ 2/5") with a **St
 **Settings → API server → Show pairing code** shows a QR code that the Rattleboard phone app (or the phone's camera) scans to add this board. It needs **Other devices** turned on, and offers to turn it on. The code holds this computer's name and network address, the board's size and the API key, so it's shown only when you ask and disappears after two minutes. **Copy link** copies the same `rattleboard://pair?…` link, which another Rattleboard desktop can paste under **Settings → Boards → Pair link**.
 
 With **Other devices** on, Rattleboard also announces itself on your network (as `Rattleboard (<computer name>)`, an `_http._tcp` service) so other Rattleboards can find it.
+
+## Agents (MCP)
+
+AI agent apps can put things on your board as tool calls. Claude Code, opencode, Claude Desktop, Cursor, Codex CLI, Gemini CLI and VS Code are supported. Rattleboard speaks the [Model Context Protocol](https://modelcontextprotocol.io) (MCP), so an agent can post "Tests passed" when a long run finishes, "Need your input" when it's stuck, or a status that goes away by itself.
+
+### Quick start
+
+1. Open **Settings → Agents** and click **Connect** next to your agent app. Rattleboard shows you exactly what it will change in that app's settings file, and makes the change only when you click **Confirm**.
+2. Start a new session in the agent app and ask it:
+
+   > When you finish, put DONE on my Rattleboard.
+
+To set it up by hand instead, add Rattleboard as a stdio MCP server. Here it is for Claude Code (`~/.claude.json`, or run `claude mcp add --scope user rattleboard -- /Applications/Rattleboard.app/Contents/MacOS/rattleboard --mcp`):
+
+```json
+{
+  "mcpServers": {
+    "rattleboard": {
+      "type": "stdio",
+      "command": "/Applications/Rattleboard.app/Contents/MacOS/rattleboard",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+That path is for macOS. On Windows and Linux, use the path shown at the bottom of **Settings → Agents**. Rattleboard has to be running, with **Settings → API server** on. **Connect** turns the server on for you, for this computer only.
+
+### Settings → Agents
+
+The tab lists the agent apps it finds on this computer. For each one you get:
+
+- **Connect** adds the Rattleboard MCP server to the app's config. Where the app supports skills, it also installs the [Rattleboard skill](skills/rattleboard/SKILL.md), which teaches the agent when to post and how to keep it short.
+- **Alert me when the agent finishes or needs input** (off by default) adds the app's hooks, so the board shows "Claude Code is done" or "Claude Code needs you" without the agent having to remember to post. The name of the project the agent is working in goes on the line below.
+- **Disconnect** removes exactly what Connect added and nothing else.
+
+Every change follows the same rules:
+
+- You see a before/after preview first, and nothing changes until you click **Confirm**.
+- A timestamped backup of each file you already had is saved next to it (`settings.json.rattleboard-backup-20261019-101500`).
+- Everything else in the file stays as it was, including comments, key order, indentation and trailing commas, in the JSON-with-comments files of VS Code, opencode and Gemini CLI and in Codex's TOML.
+- Connecting twice changes nothing. If the file changed since the preview, nothing is written and you're asked to review it again.
+
+| App | MCP server | Alerts | Skill |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude.json` → `mcpServers` | `Stop` and `Notification` hooks in `~/.claude/settings.json` | `~/.claude/skills/rattleboard/` |
+| opencode | `~/.config/opencode/opencode.json` (or `.jsonc`) → `mcp` | a small plugin, `~/.config/opencode/plugins/rattleboard.js` | `~/.config/opencode/skills/rattleboard/` |
+| Claude Desktop | `claude_desktop_config.json` → `mcpServers` | — | — |
+| Cursor | `~/.cursor/mcp.json` → `mcpServers` | `stop` hook in `~/.cursor/hooks.json` | `~/.cursor/skills/rattleboard/` |
+| Codex CLI | `~/.codex/config.toml` → `[mcp_servers.rattleboard]` | `notify` in the same file, unless another program already uses it | `~/.agents/skills/rattleboard/` |
+| Gemini CLI | `~/.gemini/settings.json` → `mcpServers` | `AfterAgent` and `Notification` hooks in the same file | `~/.gemini/skills/rattleboard/` |
+| VS Code | user `mcp.json` → `servers` | `Stop` hook in `~/.copilot/hooks/rattleboard.json` (a preview feature) | `~/.copilot/skills/rattleboard/` |
+
+Claude Desktop's file is in `~/Library/Application Support/Claude/` on macOS, `%APPDATA%\Claude\` on Windows and `~/.config/Claude/` on Linux. VS Code's `mcp.json` is in `~/Library/Application Support/Code/User/`, `%APPDATA%\Code\User\` or `~/.config/Code/User/`. On Windows, `~` is your user folder. `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME` are honoured. Restart the agent app, or start a new session, after connecting.
+
+### Setting it up by hand
+
+Replace `RATTLEBOARD` below with the path from **Settings → Agents**. On macOS that's `/Applications/Rattleboard.app/Contents/MacOS/rattleboard`.
+
+**Claude Code**: the snippet in the [quick start](#quick-start), or `claude mcp add --scope user rattleboard -- RATTLEBOARD --mcp`.
+
+**opencode** (`~/.config/opencode/opencode.json`):
+
+```json
+{ "mcp": { "rattleboard": { "type": "local", "command": ["RATTLEBOARD", "--mcp"], "enabled": true } } }
+```
+
+**Claude Desktop** (`claude_desktop_config.json`) and **Gemini CLI** (`~/.gemini/settings.json`):
+
+```json
+{ "mcpServers": { "rattleboard": { "command": "RATTLEBOARD", "args": ["--mcp"] } } }
+```
+
+**Cursor** (`~/.cursor/mcp.json`):
+
+```json
+{ "mcpServers": { "rattleboard": { "type": "stdio", "command": "RATTLEBOARD", "args": ["--mcp"] } } }
+```
+
+**VS Code** (run **MCP: Open User Configuration**):
+
+```json
+{ "servers": { "rattleboard": { "type": "stdio", "command": "RATTLEBOARD", "args": ["--mcp"] } } }
+```
+
+**Codex CLI** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.rattleboard]
+command = "RATTLEBOARD"
+args = ["--mcp"]
+```
+
+For alerts by hand, have a hook run `RATTLEBOARD --notify "Claude Code is done" --color green --hook`. `--notify` posts one message using the key from your keychain, so the key never goes into a hook file. `--seconds 20` makes it a status that goes away again. `--hook` reads the hook's JSON from stdin to add the project name, and never fails the hook. Codex's `notify = ["RATTLEBOARD", "--notify", "Codex is done", "--color", "green"]` works as is, because the JSON that Codex appends is understood.
+
+### Remote boards
+
+An agent can write to a board on another device, such as a TV, another computer, a [Rattleboard Web](#rattleboard-web-docker) container or a real board. There are three ways to set that up.
+
+**1. Through the Rattleboard on this computer (the default).** Save the other board in **Settings → Boards**, and agents can reach it: `list_boards` shows your saved boards and groups, and `send_message` and `send_layout` take `board: "Kitchen TV"` (or a group's name, or `"all"`). They go out through the same path as Compose's **Send**, so this works for TVs and computers running Rattleboard, for Rattleboard Web, and for real boards on their Local or Cloud API. In **Settings → Agents**, **Sends to** sets each agent app's default board. It is written into that app's config as `--mcp --target <board>`, and into its alert hooks too, so calls that don't name a board go there. `show_status`, `play_sequence` and `get_board` always use this computer's board.
+
+**2. Straight to another Rattleboard, with no app running here.** This suits a server, or a computer that isn't running Rattleboard itself:
+
+```sh
+rattleboard --mcp --url http://192.168.1.20:7070
+rattleboard --notify "Backup done" --url http://192.168.1.20:7070
+```
+
+All six tools then act on that board. `--url` takes `http://` or `https://` and an address, with no path. The key is found like this:
+
+1. If a board saved in **Settings → Boards** on this computer has that address, its key comes from the keychain. This is the way to do it: nothing secret is written anywhere.
+2. Otherwise the key comes from the `RATTLEBOARD_KEY` environment variable. Putting it in an agent's config (`"env": {"RATTLEBOARD_KEY": "…"}`) stores the key **in plain text** in that file, so save the board in Settings → Boards instead if you can.
+
+The key is never printed. `--target` works here too, to reach that Rattleboard's own saved boards.
+
+**3. Rattleboard Web's HTTP endpoint**, for agent apps that support remote (HTTP) MCP servers. It's `POST /mcp` with `Authorization: Bearer <key>`, where the key comes from `docker exec rattleboard rattleboard-web key`. Each of these stores the key in that app's config file, in plain text unless the app says otherwise:
+
+```sh
+# Claude Code
+claude mcp add --transport http --scope user rattleboard http://<server>:7070/mcp --header "Authorization: Bearer <key>"
+```
+
+```jsonc
+// Cursor (~/.cursor/mcp.json)
+{ "mcpServers": { "rattleboard": { "url": "http://<server>:7070/mcp", "headers": { "Authorization": "Bearer <key>" } } } }
+
+// VS Code (mcp.json): asks for the key once and keeps it in VS Code's secret storage
+{
+  "inputs": [{ "type": "promptString", "id": "rattleboard-key", "description": "Rattleboard API key", "password": true }],
+  "servers": { "rattleboard": { "type": "http", "url": "http://<server>:7070/mcp", "headers": { "Authorization": "Bearer ${input:rattleboard-key}" } } }
+}
+
+// opencode (~/.config/opencode/opencode.json)
+{ "mcp": { "rattleboard": { "type": "remote", "url": "http://<server>:7070/mcp", "headers": { "Authorization": "Bearer <key>" } } } }
+
+// Gemini CLI (~/.gemini/settings.json)
+{ "mcpServers": { "rattleboard": { "httpUrl": "http://<server>:7070/mcp", "headers": { "Authorization": "Bearer <key>" } } } }
+```
+
+```toml
+# Codex CLI (~/.codex/config.toml): the key is read from the environment, not the file
+[mcp_servers.rattleboard]
+url = "http://<server>:7070/mcp"
+bearer_token_env_var = "RATTLEBOARD_KEY"
+```
+
+Claude Desktop only adds remote servers through its Connectors settings, and those need a public HTTPS address. Use option 2 (`--mcp --url`) there instead. A desktop Rattleboard answers `/mcp` too, on its own API server.
+
+### Tools
+
+| Tool | What it does |
+| --- | --- |
+| `send_message` | `{text, color?, size?, strategy?, board?}`: text that stays until something replaces it. `color` adds a chip (red, orange, yellow, green, blue, violet, white or black), and `size` is standard, compact or large. `board` is "this" (the default), a saved board or group by name from **Settings → Boards**, or "all". |
+| `show_status` | `{text, seconds?, color?}`: a temporary status (15 s by default). It plays a two-frame [sequence](#rattleboard-endpoints), your text and then what was on the board before, so the previous message comes back. Starting it stops any sequence that was playing. |
+| `send_layout` | `{characters, board?}`: an exact grid of character codes 0–71, up to 12 × 40. |
+| `list_boards` | This board, your saved boards and groups, with their kinds and sizes. |
+| `play_sequence` | `{frames: [{text or characters, hold}], loop?}`: 1–100 frames, as in `POST /rattleboard/sequence`. |
+| `get_board` | What the board shows now, as text and as codes. |
+
+The tool descriptions tell the model the board's limits: 6 rows of 22 characters unless it's set otherwise, the characters it can show, and the character codes. A message that doesn't fit is still sent, and the tool's answer says it was cut off.
+
+The same tools are served over HTTP at `POST /mcp` on the API server and on [Rattleboard Web](#rattleboard-web-docker). That endpoint uses MCP's Streamable HTTP transport with JSON answers and needs the API key as `Authorization: Bearer <key>`. Requests from web pages on other sites are refused. Both transports accept the `initialize` handshake (protocol versions 2024-11-05 to 2025-11-25) and the stateless 2026-07-28 version with `server/discover`.
+
+### Security
+
+- **Local by default.** `rattleboard --mcp` talks only to the API server on `127.0.0.1`, and agents don't need **Other devices** on. Other boards are reached through the app's Send, or with `--url` only when you set that up ([Remote boards](#remote-boards)).
+- **The key stays in your keychain.** `--mcp` and `--notify` read the API key from the OS credential store each time, the same way the app does. Settings → Agents never writes it into an agent's config, a hook or a skill, and never appears in a tool's answer or a log. After **New key**, connected agents pick up the new key on their own.
+- **Write-only to the board.** The tools can show messages and read what the board shows. They can't change settings, sources, plugins or keys, and can't read your other boards' keys.
+- **Nothing hidden.** Every edit to an agent's files is previewed, backed up and reversible with **Disconnect**.
 
 ## Sources and plugins
 

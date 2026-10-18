@@ -3174,6 +3174,7 @@ version = "0.5.0"
 dependencies = [
  "block2",
  "chrono",
+ "dirs 6.0.0",
  "futures-util",
  "libloading",
  "objc2",
@@ -3188,6 +3189,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tokio",
+ "toml_edit 0.25.17+spec-1.1.0",
  "url",
  "windows",
  "zbus",
@@ -4638,6 +4640,7 @@ dependencies = [
  "indexmap 2.14.2",
  "toml_datetime 1.1.2+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

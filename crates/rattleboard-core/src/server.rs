@@ -30,6 +30,11 @@
 //!   GET    /rattleboard/sources/preview/{id}[?refresh=1]     {"characters": [[...]], "reason"}
 //!   GET    /rattleboard/sources/upnext                       [{"at", "instanceId", "title", "reason"}]
 //!   POST   /rattleboard/sources/next                         moves the rotation on now
+//!
+//! Agents, on boards that have them (the desktop):
+//!   GET    /rattleboard/boards    -> {"boards": [{"target", "name", "kind", "rows", "cols"}], "groups": [...]}
+//!   POST   /rattleboard/send      {"target": "<id>" | "group:<id>" | "all", "message": {...}} -> {"deliveries": [...]}
+//!   POST   /mcp                   MCP (Streamable HTTP, JSON responses); see `mcp.rs`
 
 use crate::sequence::{self, Sequence};
 use crate::vestaboard::{self, Grid, Transition};
@@ -117,7 +122,19 @@ pub trait Board: Send + Sync + 'static {
     fn index(&self) -> Option<Response> {
         None
     }
+    /// This board, saved boards and groups, for `GET /rattleboard/boards`; None answers 404
+    fn boards(&self) -> Option<Value> {
+        None
+    }
+    /// Sends a message (a POST body) to a saved board or group, as Compose does; None
+    /// answers 404
+    fn send_to(&self, _target: String, _message: Value) -> Option<SendFut> {
+        None
+    }
 }
+
+/// How a send to saved boards went: {"deliveries": [{"target", "name", "status", "error"}]}
+pub type SendFut = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
 
 #[derive(Clone)]
 struct Ctx {
@@ -152,6 +169,9 @@ pub fn router(board: std::sync::Arc<dyn Board>, extra: Router) -> Router {
         .route("/rattleboard/sources/preview/{id}", get(preview_get).options(preflight))
         .route("/rattleboard/sources/upnext", get(upnext_get).options(preflight))
         .route("/rattleboard/sources/next", routing::post(next_post).options(preflight))
+        .route("/rattleboard/boards", get(boards_get).options(preflight))
+        .route("/rattleboard/send", routing::post(send_post).options(preflight))
+        .route("/mcp", routing::post(mcp_post).get(mcp_other).delete(mcp_other).options(preflight))
         .with_state(ctx)
         .merge(extra)
         .fallback(|| async { err(StatusCode::NOT_FOUND, "Not found") })
@@ -488,7 +508,7 @@ async fn cors(method: Method, mut res: Response) -> Response {
     h.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
         HeaderValue::from_static(
-            "content-type, authorization, x-vestaboard-local-api-key, x-vestaboard-read-write-key, x-vestaboard-token",
+            "content-type, authorization, x-vestaboard-local-api-key, x-vestaboard-read-write-key, x-vestaboard-token, mcp-protocol-version, mcp-session-id",
         ),
     );
     h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"));
@@ -496,6 +516,113 @@ async fn cors(method: Method, mut res: Response) -> Response {
         h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
     }
     res
+}
+
+// ---------------------------------------------------------------- agents
+
+async fn boards_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
+    if !authorized(&ctx, &h) {
+        return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
+    }
+    match ctx.board.boards() {
+        Some(v) => Json(v).into_response(),
+        None => err(StatusCode::NOT_FOUND, "Not found"),
+    }
+}
+
+async fn send_post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
+    if !authorized(&ctx, &h) {
+        return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
+    }
+    let v = match json_body(&body) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    let (Some(target), Some(message)) = (v.get("target").and_then(|t| t.as_str()), v.get("message")) else {
+        return err(StatusCode::BAD_REQUEST, "Send {\"target\": \"...\", \"message\": {...}}");
+    };
+    match ctx.board.send_to(target.to_string(), message.clone()) {
+        None => err(StatusCode::NOT_FOUND, "Not found"),
+        Some(f) => match f.await {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => err(StatusCode::BAD_REQUEST, &e),
+        },
+    }
+}
+
+/// MCP clients aren't browsers: a page from another site may not drive the board's tools
+/// (DNS rebinding), even with the key.
+fn local_origin(h: &HeaderMap) -> bool {
+    let Some(o) = h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else { return true };
+    let host = url::Url::parse(o).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
+}
+
+/// MCP's Streamable HTTP transport, answered with plain JSON: a request gets 200 and its
+/// answer, a notification 202.
+async fn mcp_post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
+    if !local_origin(&h) {
+        return err(StatusCode::FORBIDDEN, "Cross-site requests can't use MCP");
+    }
+    if !authorized(&ctx, &h) {
+        return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
+    }
+    if let Some(v) = h.get("mcp-protocol-version").and_then(|v| v.to_str().ok()) {
+        if !crate::mcp::supported(v) {
+            return err(StatusCode::BAD_REQUEST, "Unsupported MCP-Protocol-Version");
+        }
+    }
+    match crate::mcp::handle_text(&ctx, &String::from_utf8_lossy(&body)).await {
+        Some(answer) => Json(answer).into_response(),
+        None => StatusCode::ACCEPTED.into_response(),
+    }
+}
+
+/// No server-sent events or sessions here.
+async fn mcp_other() -> Response {
+    let mut r = err(StatusCode::METHOD_NOT_ALLOWED, "Use POST");
+    r.headers_mut().insert(header::ALLOW, HeaderValue::from_static("POST, OPTIONS"));
+    r
+}
+
+/// The board in-process, for `/mcp`.
+impl crate::mcp::Backend for Ctx {
+    fn info(&self) -> crate::mcp::Fut<'_, Result<Value, String>> {
+        Box::pin(async move {
+            let shown = self.board.current().0;
+            let adaptive = self.board.adaptive();
+            let (rows, cols) = if adaptive && !shown.is_empty() { vestaboard::dims_of(&shown) } else { self.board.dims() };
+            Ok(json!({ "name": self.board.name(), "board": { "rows": rows, "cols": cols }, "adaptive": adaptive }))
+        })
+    }
+    fn current(&self) -> crate::mcp::Fut<'_, Result<Grid, String>> {
+        Box::pin(async move { Ok(self.board.current().0) })
+    }
+    fn post(&self, body: Value) -> crate::mcp::Fut<'_, Result<(), String>> {
+        Box::pin(async move {
+            let (g, tr) = message(&body, self.board.dims(), self.board.adaptive())?;
+            self.board.post(g, tr);
+            Ok(())
+        })
+    }
+    fn play(&self, seq: Value) -> crate::mcp::Fut<'_, Result<(), String>> {
+        Box::pin(async move {
+            let seq = sequence::parse(&seq, self.board.dims(), self.board.adaptive())?;
+            self.board.play(seq);
+            Ok(())
+        })
+    }
+    fn boards(&self) -> crate::mcp::Fut<'_, Result<Option<Value>, String>> {
+        Box::pin(async move { Ok(self.board.boards()) })
+    }
+    fn send_to(&self, target: String, body: Value) -> crate::mcp::Fut<'_, Result<Value, String>> {
+        Box::pin(async move {
+            match self.board.send_to(target, body) {
+                Some(f) => f.await,
+                None => Err("This board has no saved boards".into()),
+            }
+        })
+    }
 }
 
 /// The address other devices on the network would use, found without sending anything.
