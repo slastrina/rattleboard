@@ -81,11 +81,11 @@ Rattleboard for iPhone, iPad, Apple TV, Android and Android TV is on its way to 
 
 The first launch opens a short setup:
 
-- **Local network** (recommended). Mirror another Rattleboard on your Wi-Fi: a TV, desktop or phone. Setup lists the Rattleboards it finds on your network; you need the other board's address (for example `192.168.1.20:7070`) and its API key, from its **Settings → API server**. Rattleboard calls `GET http://<address>/local-api/message`.
+- **Standalone board** (recommended). Needs nothing: this computer is the board. Setup asks what it should do: **Show sources** (a rotation of clocks, countdowns, weather, news and quotes; pick a few starters, change them later in **Settings → Sources**) and **Accept messages** (turns on the [API server](#api-server), shows the address, a `curl` example and the phone pairing code). In **Settings → Connection** this is **Read from: Virtual board**.
+- **Mirror another board.** Mirror another Rattleboard on your Wi-Fi: a TV, desktop or phone. Setup lists the Rattleboards it finds on your network; you need the other board's address (for example `192.168.1.20:7070`) and its API key, from its **Settings → API server**. Rattleboard calls `GET http://<address>/local-api/message`.
   - This also works with a Vestaboard's Local API: enter its IP address (port 7000 is assumed) and the **Local API key** Vestaboard issues when you enable the Local API for your board.
 - **Cloud.** For a Vestaboard through the cloud. Needs a **Cloud API token**; see [Vestaboard's API docs](https://docs.vestaboard.com) for how to get one. Rattleboard calls `GET https://cloud.vestaboard.com/`.
 - **Demo.** Needs nothing.
-- **Virtual board.** Needs nothing. The board shows only what apps send to the [API server](#api-server).
 
 You can change the source any time in **Settings → Connection**. A mirrored board takes the size of the board it reads.
 

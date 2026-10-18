@@ -9,7 +9,7 @@ const L = {
   showKey: false,
   secrets: { localKey: '', cloudToken: '', serverKey: '' },
   showServerKey: false, copied: '',
-  step: 0, setupSource: 'local', scan: 'idle', found: [], setupBoard: -1,
+  step: 0, setupSource: 'virtual', scan: 'idle', found: [], setupBoard: -1, su: null, suBusy: false, suError: '', suRotation: null,
   test: 'idle', testError: '', testLayout: null,
   // Settings → Boards: the add form's fields (keys stay in memory only until they're saved)
   addMode: 'nearby', form: { host: '', key: '', name: '', link: '', token: '' }, found2: undefined, adding: false, boardMsg: null,
@@ -531,36 +531,123 @@ function resend(key, target) {
 
 // ---------------------------------------------------------------- setup
 
+// The steps, by flow: a standalone board (Read from: Virtual board) asks what it should do and
+// then helps get that going; mirroring another board, the cloud or the demo keep their own.
+const FEEDS = [['bbc', 'BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'], ['hn', 'Hacker News', 'https://hnrss.org/frontpage'], ['', 'Other feed', '']];
+const CD_PRESETS = [['nye', "New Year's Eve"], ['christmas', 'Christmas'], ['halloween', 'Halloween'], ['', 'My own date']];
+const newSetupChoices = () => ({
+  sources: true, messages: true,
+  clock: true, quote: true, weather: false, city: '', countdown: false, cdPreset: 'nye', cdTitle: '', cdDate: '',
+  news: false, feed: 'bbc', feedUrl: ''
+});
+function setupSteps() {
+  if (L.setupSource !== 'virtual') return [['use', 'Connection'], ['find', 'Find board'], ['popup', 'Popup'], ['done', 'Done']];
+  const u = L.su;
+  return [['use', 'Use'], ['what', 'Set up'], ...(u.sources || u.messages ? [['start', 'Get started']] : []), ['popup', 'Popup'], ['done', 'Done']];
+}
+const setupKey = () => (setupSteps()[L.step] || ['use'])[0];
+const checkRow = (on, act, title, text, v = '') => `<div data-act="${act}" data-v="${v}" style="display:flex; gap:10px; align-items:flex-start; cursor:pointer">
+    <div style="width:16px; height:16px; margin-top:1px; border-radius:4px; flex:none; display:flex; align-items:center; justify-content:center; color:#fff; font-size:11px; font-weight:700; background:${on ? RB.ACC : '#fff'}; box-shadow:${on ? 'none' : 'inset 0 0 0 1.5px rgba(0,0,0,.3)'}">${on ? '✓' : ''}</div>
+    <div style="display:flex; flex-direction:column; gap:2px"><span style="font-weight:600">${title}</span>${text ? `<span class="hint" style="line-height:1.45; text-wrap:pretty">${text}</span>` : ''}</div></div>`;
+
+// Step 3 of a standalone board: starter sources, and how to send it a message.
+function setupStart() {
+  const u = L.su, s = S.settings, sv = S.server;
+  let out = '';
+  if (u.sources) {
+    const chips = (list, cur, act) => `<div style="display:flex; flex-wrap:wrap; gap:6px">${list.map(([v, l]) => `<button class="chip ${cur === v ? 'on' : ''}" data-act="${act}" data-v="${v}">${l}</button>`).join('')}</div>`;
+    out += `<div style="font-size:17px; font-weight:600">Pick some sources</div>
+      <div style="display:flex; flex-direction:column; gap:12px; padding:14px; border-radius:10px; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.1)">
+        ${checkRow(u.clock, 'suPick', 'Clock', 'The time, in big digits', 'clock')}
+        ${checkRow(u.quote, 'suPick', 'Quote of the day', 'A public-domain quote each day', 'quote')}
+        ${checkRow(u.weather, 'suPick', 'Weather', 'Now and today, from Open-Meteo', 'weather')}
+        ${u.weather ? `<div style="margin-left:26px; display:flex; align-items:center; gap:8px"><input class="field" style="width:220px" value="${esc(u.city)}" data-su="city" placeholder="City, e.g. Melbourne"></div>` : ''}
+        ${checkRow(u.countdown, 'suPick', 'Countdown', 'Days to a holiday or a date of your own, with a celebration on the day', 'countdown')}
+        ${u.countdown ? `<div style="margin-left:26px; display:flex; flex-direction:column; gap:8px">${chips(CD_PRESETS, u.cdPreset, 'suCd')}
+          ${u.cdPreset ? '' : `<div style="display:flex; gap:8px; flex-wrap:wrap"><input class="field" style="width:200px" value="${esc(u.cdTitle)}" data-su="cdTitle" placeholder="Name, e.g. Launch day"><input class="field" type="date" style="width:160px" value="${esc(u.cdDate)}" data-su="cdDate"></div>`}</div>` : ''}
+        ${checkRow(u.news, 'suPick', 'News feed', 'Headlines from an RSS or Atom feed', 'news')}
+        ${u.news ? `<div style="margin-left:26px; display:flex; flex-direction:column; gap:8px">${chips(FEEDS.map(f => [f[0], f[1]]), u.feed, 'suFeed')}
+          ${u.feed ? '' : `<input class="field" style="width:100%; max-width:380px" value="${esc(u.feedUrl)}" data-su="feedUrl" placeholder="https://example.com/feed.xml">`}</div>` : ''}
+      </div>
+      <div class="hint" style="margin-top:-8px">They take turns on the board. You can change these in Settings → Sources.${L.suError ? ` <span style="color:#c0392b">${esc(L.suError)}</span>` : ''}</div>`;
+  }
+  if (u.messages) {
+    const key = L.secrets.serverKey, base = sv.urls[0] || `http://127.0.0.1:${s.serverPort}`;
+    const curl = k => `curl -X POST ${base}/local-api/message -H "X-Vestaboard-Local-Api-Key: ${k}" -d '{"text": "Hello"}'`;
+    const status = sv.running ? sv.urls.join('  ·  ') : (sv.error || 'Starting…');
+    out += `<div style="font-size:17px; font-weight:600">Send it a message</div>
+      <div class="grid" style="gap:12px 16px">
+        <div class="lbl">Address</div><div class="mono" style="font-size:12px; user-select:text; min-width:0; overflow-wrap:anywhere">${esc(status)}</div>
+        <div class="lbl">API key</div>
+        <div style="display:flex; gap:6px; min-width:0">
+          <input class="field mono" style="width:220px; font-size:12px" readonly value="${esc(L.showServerKey ? key : (key ? RB.mask(key) : 'Created when the server starts'))}">
+          <button class="btn" data-act="showServerKey" ${key ? '' : 'disabled'}>${L.showServerKey ? 'Hide' : 'Show'}</button>
+          <button class="btn" data-act="copyKey" ${key ? '' : 'disabled'}>${L.copied === 'key' ? 'Copied' : 'Copy'}</button>
+        </div>
+        <div class="lbl">Try it</div>
+        <div style="display:flex; gap:8px; align-items:center; min-width:0">
+          <div class="mono" style="flex:1; min-width:0; background:#1d1e21; color:#ecebe6; border-radius:8px; padding:8px 10px; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; user-select:text">${esc(curl(L.showServerKey ? key : RB.mask(key)))}</div>
+          <button class="btn" style="flex:none" data-act="copyCurl" data-curl="${esc(curl(key))}" ${sv.running && key ? '' : 'disabled'}>${L.copied === 'curl' ? 'Copied' : 'Copy'}</button>
+        </div>
+        ${pairRows()}
+      </div>
+      <div class="hint" style="margin-top:-8px; text-wrap:pretty">Scripts, the phone apps and <a href="#" data-act="suHa" style="color:${RB.ACC}; text-decoration:none">Home Assistant</a> send to it the same way. More examples are in Settings → API server.</div>`;
+  }
+  return out;
+}
+
+// Turns the starter picks into rotation entries, skipping any the rotation already has (so
+// running setup again doesn't add a second clock). Uses the same add_source as Settings → Sources.
+function setupStarters() {
+  const u = L.su, feed = FEEDS.find(f => f[0] === u.feed);
+  const want = [
+    u.clock && ['rattleboard.clock', {}],
+    u.quote && ['rattleboard.quote', {}],
+    u.weather && u.city.trim() && ['rattleboard.weather', { city: u.city.trim() }],
+    u.countdown && (u.cdPreset ? ['rattleboard.countdown', { preset: u.cdPreset }]
+      : u.cdTitle.trim() && u.cdDate && ['rattleboard.countdown', { preset: '', title: u.cdTitle.trim(), date: u.cdDate, yearly: false }]),
+    u.news && (feed && feed[2] || u.feedUrl.trim()) && ['rattleboard.rss', { url: feed && feed[2] ? feed[2] : u.feedUrl.trim() }]
+  ].filter(Boolean);
+  return RB.invoke('get_sources').then(d => want.reduce((p, [plugin, settings]) => p.then(() => {
+    const has = d.rotation.some(x => x.plugin === plugin && Object.entries(settings).every(([k, v]) => String((x.settings || {})[k] ?? '') === String(v)));
+    return has ? null : RB.invoke('add_source', { plugin, settings: Object.keys(settings).length ? settings : null });
+  }), Promise.resolve()));
+}
+
 function viewSetup() {
-  const s = S.settings, st = L.step, ACC = RB.ACC;
-  const steps = ['Connection', 'Find board', 'Popup', 'Done'].map((l, i) =>
+  const s = S.settings, st = L.step, ACC = RB.ACC, key = setupKey(), virt = L.setupSource === 'virtual', list = setupSteps();
+  const steps = list.map(([, l], i) =>
     `<div style="flex:1; display:flex; flex-direction:column; gap:6px"><div style="height:3px; border-radius:2px; background:${i <= st ? ACC : 'rgba(0,0,0,.12)'}"></div><div style="font-size:11.5px; color:${i === st ? '#1b1b1d' : '#8a8c91'}">${l}</div></div>`).join('');
   let body = '';
-  if (st === 0) {
+  if (key === 'use') {
     const card = (v, title, tag, text, needs) => `<div data-act="setupSource" data-v="${v}" style="border-radius:10px; padding:14px; background:#fff; box-shadow:${L.setupSource === v ? `0 0 0 2px ${ACC}` : '0 0 0 1px rgba(0,0,0,.12)'}; cursor:pointer; display:flex; flex-direction:column; gap:6px">
-      <div style="display:flex; justify-content:space-between; align-items:center"><span style="font-weight:600">${title}</span><span style="font-size:11px; color:${v === 'local' ? '#2f8a4c' : '#6b6d72'}">${tag}</span></div>
+      <div style="display:flex; justify-content:space-between; align-items:center"><span style="font-weight:600">${title}</span><span style="font-size:11px; color:${v === 'virtual' ? '#2f8a4c' : '#6b6d72'}">${tag}</span></div>
       <div style="color:#55575c; font-size:12.5px; line-height:1.45">${text}</div>
       <div class="mono" style="font-size:11px; color:#6b6d72">${needs}</div></div>`;
-    body = `<div style="font-size:20px; font-weight:600; letter-spacing:-.01em">Mirror your board on this computer</div>
-      <div style="color:#55575c; line-height:1.5; max-width:520px; text-wrap:pretty">Rattleboard checks your board in the background. When the message changes, the board flips into view and tucks away again. How should it read the board?</div>
+    body = `<div style="font-size:20px; font-weight:600; letter-spacing:-.01em">How will you use Rattleboard?</div>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px">
-        ${card('local', 'Local network', 'Recommended', 'Mirror another Rattleboard on your Wi‑Fi: a TV, desktop or phone. Also works with a Vestaboard’s Local API.', 'Needs: its address and key')}
-        ${card('cloud', 'Cloud', '', 'Works from anywhere, including when this computer is away from home.', 'Needs: Cloud API token')}
-        ${card('demo', 'Demo', 'No board needed', 'Flips through sample messages every 20 seconds so you can try Rattleboard first.', 'Needs: nothing')}
-        ${card('virtual', 'Virtual board', 'For developers', 'No real board: your own apps and scripts send messages to Rattleboard’s Vestaboard-compatible API.', 'Needs: nothing')}
+        ${card('virtual', 'Standalone board', 'Recommended', 'This computer is the board. Show a rotation of clocks, countdowns, weather, news and quotes, and let your apps and phone send it messages.', 'Needs: nothing')}
+        ${card('local', 'Mirror another board', '', 'Show what another Rattleboard on your Wi‑Fi shows: a TV, desktop or phone. Also works with a Vestaboard’s Local API.', 'Needs: its address and key')}
+        ${card('cloud', 'Cloud', '', 'Mirror a board through the Vestaboard Cloud API. Works from anywhere, including away from home.', 'Needs: Cloud API token')}
+        ${card('demo', 'Demo', 'No setup', 'Flips through sample messages every 20 seconds so you can try Rattleboard first.', 'Needs: nothing')}
       </div>`;
-  } else if (st === 1) {
-    if (L.setupSource === 'virtual') {
-      body = `<div style="font-size:17px; font-weight:600">Run Rattleboard as a virtual board</div>
-        <div style="color:#55575c; line-height:1.5; max-width:520px">Rattleboard starts a small API server that speaks the Vestaboard Local, Read/Write and Cloud API formats. Point your apps at it and the board flips when they post.</div>
-        <div style="display:grid; grid-template-columns:130px minmax(0,1fr); gap:12px; align-items:center">
-          <div class="lbl">Board</div>${modelSeg()}
-          <div class="lbl">Name</div>${nameField()}
-          <div class="lbl">Port</div><input class="field" style="justify-self:start; width:90px" value="${s.serverPort}" data-field="serverPort" inputmode="numeric">
-          <div class="lbl">Address</div><div class="mono" style="font-size:12px; user-select:text">${esc(S.server.urls[0] || 'Starting…')}${S.server.error ? ` <span style="color:#c0392b">${esc(S.server.error)}</span>` : ''}</div>
-        </div>
-        <div class="hint">You'll find the API key and examples in Settings → API server.</div>`;
-    } else if (L.setupSource === 'demo') {
+  } else if (key === 'what') {
+    const u = L.su;
+    body = `<div style="font-size:17px; font-weight:600">What should it do?</div>
+      <div style="display:flex; flex-direction:column; gap:14px">
+        ${checkRow(u.sources, 'suSources', 'Show sources', 'Rotate clocks, countdowns, weather, news and quotes.')}
+        ${checkRow(u.messages, 'suMessages', 'Accept messages', 'Turn on the API server so scripts, Home Assistant and the phone apps can send to it.')}
+        ${u.messages ? `<div style="margin-left:26px">${checkRow(s.serverLan, 'serverLan', 'From other devices too', 'Lets phones, tablets, TVs and other computers on your network reach it, not only this computer. Pairing a phone needs this.')}</div>` : ''}
+        ${!u.sources && !u.messages ? '<div class="hint">With neither, it shows only what you send from Compose. You can change all of this later in Settings.</div>' : ''}
+      </div>
+      <div style="display:grid; grid-template-columns:130px minmax(0,1fr); gap:12px; align-items:center">
+        <div class="lbl">Board</div>${modelSeg()}
+        <div class="lbl">Name</div>${nameField()}
+      </div>`;
+  } else if (key === 'start') {
+    body = setupStart();
+  } else if (key === 'find') {
+    if (L.setupSource === 'demo') {
       body = `<div style="font-size:17px; font-weight:600">Try it with sample messages</div>
         <div style="color:#55575c; line-height:1.5; max-width:520px">Rattleboard will flip to a new sample message every 20 seconds. Switch to your real board any time in Settings → Connection.</div>
         <div style="display:grid; grid-template-columns:130px minmax(0,1fr); gap:12px; align-items:center">
@@ -575,7 +662,7 @@ function viewSetup() {
           <div style="display:flex; flex-direction:column; gap:2px"><span style="font-weight:600">${esc(f.name)}</span><span style="font-size:11.5px; color:#6b6d72">${esc(f.ip)}</span></div></div>`;
       }).join('');
       const scanMsg = L.scan === 'scanning' ? 'Searching your network…' : L.scan === 'done' && !L.found.length ? 'Nothing answered. Enter the address of a Rattleboard or a Vestaboard below.' : '';
-      body = `<div style="font-size:17px; font-weight:600">Find your board</div>
+      body = `<div style="font-size:17px; font-weight:600">Find the board to mirror</div>
         <div style="display:flex; flex-direction:column; border-radius:8px; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.1)">
           ${scanMsg ? `<div style="padding:14px; color:#6b6d72">${scanMsg}</div>` : ''}${found}
         </div>
@@ -594,17 +681,17 @@ function viewSetup() {
         <div style="color:#6b6d72; font-size:12px">Rattleboard reads <span class="mono">cloud.vestaboard.com</span> and only reacts when the message id changes.</div>`;
     }
     const dot = L.test === 'ok' ? '#34b05a' : L.test === 'testing' ? '#e0a526' : L.test === 'error' ? '#e0553f' : '#b9bbc0';
-    const text = L.test === 'ok' ? (L.setupSource === 'demo' ? 'Demo ready' : L.setupSource === 'virtual' ? 'API server running' : 'Connected') : L.test === 'testing' ? 'Reaching your board…' : L.test === 'error' ? L.testError : 'Not tested yet';
+    const text = L.test === 'ok' ? (L.setupSource === 'demo' ? 'Demo ready' : 'Connected') : L.test === 'testing' ? 'Reaching your board…' : L.test === 'error' ? L.testError : 'Not tested yet';
     body += `<div style="display:flex; align-items:center; gap:12px">
         <button class="btn" style="font-size:12.5px; padding:5px 12px" data-act="setupTest">Test connection</button>
         <div style="display:flex; align-items:center; gap:6px; color:#55575c"><div class="dot" style="background:${dot}"></div>${esc(text)}</div>
       </div>`;
-    if (L.test === 'ok' && L.testLayout && L.setupSource !== 'virtual') {
+    if (L.test === 'ok' && L.testLayout) {
       body += `<div style="display:flex; align-items:center; gap:14px">
         <div style="background:${RB.fin(s.finish).frame}; padding:8px; border-radius:6px; display:flex; flex-direction:column; gap:3px; flex:none">${RB.mini(L.testLayout, S)}</div>
         <div style="color:#55575c; font-size:12.5px; line-height:1.45">Detected a ${sizeName(S.rows, S.cols).replace(' · ', ' board, ')}. This is what it shows right now.</div></div>`;
     }
-  } else if (st === 2) {
+  } else if (key === 'popup') {
     body = `<div style="font-size:17px; font-weight:600">Where should it appear?</div>
       <div style="display:grid; grid-template-columns:130px minmax(0,1fr); gap:16px; align-items:center">
         ${placementRows()}
@@ -613,8 +700,13 @@ function viewSetup() {
         <div class="lbl">Board</div>${modelSeg()}
       </div>`;
   } else {
+    const rot = (L.suRotation || []).filter(x => x.enabled).map(x => x.label || x.name);
     const summary = [
-      ['Reading from', s.source === 'local' ? `Local network · ${s.host}` : s.source === 'demo' ? 'Demo · sample messages' : s.source === 'virtual' ? `Virtual board · ${S.server.urls[0] || 'API server'}` : 'Cloud API'],
+      ['Reading from', s.source === 'local' ? `Local network · ${s.host}` : s.source === 'demo' ? 'Demo · sample messages' : s.source === 'virtual' ? 'Nothing: this is a standalone board' : 'Cloud API'],
+      ...(virt ? [
+        ['Sources', rot.length ? rot.join(', ') : 'None yet'],
+        ['Messages', s.serverEnabled ? (S.server.urls[0] || 'API server on') : 'Off']
+      ] : []),
       ...(s.source === 'demo' || s.source === 'virtual' ? [] : [['Checks every', s.pollEvery + ' s']]),
       s.mode === 'float' ? ['Shows as', 'Pinned widget · drag it anywhere, resize from its corner']
         : s.mode === 'fullscreen' ? ['Shows as', `Full screen · ${S.os === 'mac' ? '⌃⌘F' : 'F11'} or Esc to leave`]
@@ -624,12 +716,48 @@ function viewSetup() {
       <div style="display:grid; grid-template-columns:130px minmax(0,1fr); gap:10px 16px">${summary.map(([k, v]) => `<div style="color:#6b6d72">${k}</div><div>${esc(v)}</div>`).join('')}</div>
       <div style="color:#55575c; line-height:1.5">Rattleboard now lives in your ${S.os === 'mac' ? 'menu bar' : 'system tray'}. Click its icon any time for the latest message, history and settings.</div>`;
   }
+  const last = st === list.length - 1;
   return `<div class="hdr" style="display:flex; gap:6px; padding:16px 24px 0">${steps}</div>
     <div class="scroll"><div style="padding:20px 24px 8px; display:flex; flex-direction:column; gap:16px">${body}</div></div>
     <div class="hdr" style="display:flex; justify-content:space-between; padding:14px 24px 18px; border-top:1px solid rgba(0,0,0,.06)">
       <button class="btn" style="font-size:13px; padding:5px 14px; opacity:${st === 0 ? 0.4 : 1}" data-act="back">Back</button>
-      <button class="primary" data-act="next">${st === 3 ? 'Finish' : 'Continue'}</button>
+      <button class="primary" data-act="next" ${L.suBusy ? 'disabled' : ''}>${last ? 'Finish' : L.suBusy ? 'Adding…' : 'Continue'}</button>
     </div>`;
+}
+
+// Continue: what leaving each step does.
+function setupNext() {
+  const key = setupKey(), list = setupSteps();
+  if (L.step === list.length - 1) return RB.invoke('finish_setup');
+  const go = () => { L.step = Math.min(L.step + 1, setupSteps().length - 1); render(true); };
+  if (key === 'use') {
+    L.test = 'idle'; L.testLayout = null;
+    if (L.setupSource === 'virtual') {
+      save({ source: 'virtual', pollEvery: 2, serverEnabled: L.su.messages });
+    } else {
+      save(sourcePatch(L.setupSource));
+      if (L.setupSource === 'local' && L.scan === 'idle') {
+        L.scan = 'scanning';
+        RB.invoke('scan_boards').then(f => {
+          L.found = f; L.scan = 'done';
+          if (f.length && (!S.settings.host || S.settings.host === 'vestaboard.local')) { L.setupBoard = 0; save({ host: f[0].ip }); }
+          render(true);
+        });
+      }
+    }
+    return go();
+  }
+  if (key === 'what') { save({ serverEnabled: L.su.messages }); return go(); }
+  if (key === 'start' && L.su.sources) {
+    L.suBusy = true; L.suError = ''; render(true);
+    return setupStarters()
+      .then(() => RB.invoke('get_sources')).then(d => { L.suRotation = d.rotation; L.suBusy = false; go(); })
+      .catch(e => { L.suBusy = false; L.suError = String(e); render(true); });
+  }
+  if (setupSteps()[L.step + 1] && setupSteps()[L.step + 1][0] === 'done' && L.setupSource === 'virtual' && !L.suRotation) {
+    return RB.invoke('get_sources').then(d => { L.suRotation = d.rotation; go(); });
+  }
+  go();
 }
 
 // ---------------------------------------------------------------- render loop
@@ -643,15 +771,17 @@ const contentHeight = () => [...root.children].reduce((h, el) => h + (el.classLi
 // moves or resizes it. After that the user can resize it freely and the middle scrolls.
 function fitWindow(v) {
   // Sources can run long; its tab scrolls rather than making every tab that tall.
-  const keys = v === 'settings' ? tabs().filter(t => t !== 'sources') : v === 'setup' ? [0, 1, 2, 3] : [null];
-  const saved = v === 'settings' ? L.tab : L.step;
+  // Setup: every step of both flows (a standalone board's "Get started" step scrolls).
+  const keys = v === 'settings' ? tabs().filter(t => t !== 'sources')
+    : v === 'setup' ? [['local', 0], ['local', 1], ['local', 2], ['local', 3], ['virtual', 0], ['virtual', 1], ['virtual', 3]] : [null];
+  const saved = v === 'settings' ? L.tab : [L.step, L.setupSource];
   let h = 0;
   for (const k of keys) {
-    if (v === 'settings') L.tab = k; else if (v === 'setup') L.step = k;
+    if (v === 'settings') L.tab = k; else if (v === 'setup') [L.setupSource, L.step] = k;
     root.innerHTML = draw(v);
     h = Math.max(h, contentHeight());
   }
-  if (v === 'settings') L.tab = saved; else if (v === 'setup') L.step = saved;
+  if (v === 'settings') L.tab = saved; else if (v === 'setup') [L.step, L.setupSource] = saved;
   RB.invoke('panel_resize', { width: WIDTH[v] || 600, height: Math.min(Math.ceil(h), v === 'history' ? 560 : 9999) });
 }
 
@@ -677,13 +807,17 @@ document.addEventListener('focusout', () => setTimeout(render, 0));
 
 function setView(v) {
   L.view = v;
-  if (v === 'setup') Object.assign(L, { step: 0, test: 'idle', testLayout: null, setupSource: S ? S.settings.source : 'local' });
+  if (v === 'setup') Object.assign(L, { step: 0, test: 'idle', testLayout: null, setupSource: setupDefault(), su: newSetupChoices(), suBusy: false, suError: '', suRotation: null });
   if (v === 'settings' && L.tab === 'boards' && L.addMode === 'nearby') scanNearby();
   if (v === 'settings' && L.tab === 'display') loadScreens();
   if (v === 'settings' && L.tab === 'sources') srcOpen();
   render(true);
 }
 RB.listen('rb://view', e => setView(e.payload));
+
+// Setup starts on a standalone board, or, run again, on what this board does now.
+const setupDefault = () => (S && S.settings.setupDone ? S.settings.source : 'virtual');
+L.su = newSetupChoices();
 
 // Switching source also picks a sensible check interval; a virtual board needs its server.
 const sourcePatch = v => Object.assign({ source: v, pollEvery: v === 'cloud' ? 15 : 2 }, v === 'virtual' ? { serverEnabled: true } : {});
@@ -781,23 +915,13 @@ RB.delegate(root, 'click', {
   pickBoard: el => { const i = +el.dataset.v; L.setupBoard = i; save({ host: L.found[i].ip }); },
   setupTest: testFlow,
   back: () => { L.step = Math.max(0, L.step - 1); render(true); },
-  next: () => {
-    if (L.step === 3) return RB.invoke('finish_setup');
-    L.step++;
-    if (L.step === 1) {
-      save(sourcePatch(L.setupSource));
-      L.test = 'idle'; L.testLayout = null;
-      if (L.setupSource === 'local' && L.scan === 'idle') {
-        L.scan = 'scanning';
-        RB.invoke('scan_boards').then(f => {
-          L.found = f; L.scan = 'done';
-          if (f.length && (!S.settings.host || S.settings.host === 'vestaboard.local')) { L.setupBoard = 0; save({ host: f[0].ip }); }
-          render(true);
-        });
-      }
-    }
-    render(true);
-  }
+  next: setupNext,
+  suSources: () => { L.su.sources = !L.su.sources; render(true); },
+  suMessages: () => { L.su.messages = !L.su.messages; render(true); },
+  suPick: el => { L.su[el.dataset.v] = !L.su[el.dataset.v]; render(true); },
+  suCd: el => { L.su.cdPreset = el.dataset.v; render(true); },
+  suFeed: el => { L.su.feed = el.dataset.v; render(true); },
+  suHa: (el, e) => { e.preventDefault(); RB.invoke('open_docs', { section: 'home-assistant' }); }
 });
 
 // Text fields commit when they lose focus (or on Enter); sliders update live and save on release.
@@ -819,6 +943,7 @@ root.addEventListener('change', e => {
     const id = t.dataset.notifyApp, rest = S.settings.notifyApps.filter(a => a.id !== id);
     return save({ notifyApps: t.checked ? [...rest, { id, name: t.dataset.name }] : rest });
   }
+  if (t.dataset.su) { L.su[t.dataset.su] = t.value; return; }
   const f = t.dataset.field; if (!f) return;
   const v = t.value;
   if (f === 'localKey' || f === 'cloudToken') {
@@ -843,6 +968,7 @@ root.addEventListener('change', e => {
   }
 });
 root.addEventListener('input', e => {
+  if (e.target.dataset.su) L.su[e.target.dataset.su] = e.target.value;
   if (e.target.dataset.form) { L.form[e.target.dataset.form] = e.target.value; if (e.target.dataset.form === 'link') L.pairConfirm = null; }
   const f = e.target.dataset.field;
   if (f === 'hideSec') document.getElementById('hideLabel').textContent = e.target.value + ' s';
@@ -871,7 +997,7 @@ RB.onState(snap => {
   if (L.pairWait && S.settings.serverLan && S.server.running && S.server.urls.length > 1) { L.pairWait = false; showPair(); }
   // The pairing code shows the old address and key once either changes.
   if (L.pair && ((wasLan && !S.settings.serverLan) || !S.server.running)) L.pair = null;
-  if (first && L.view === 'setup') L.setupSource = S.settings.source;
+  if (first && L.view === 'setup') L.setupSource = setupDefault();
   render();
 });
 setInterval(() => { if (L.view === 'settings' && L.tab === 'connection') render(); }, 1000);

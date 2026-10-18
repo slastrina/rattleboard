@@ -2245,6 +2245,17 @@ fn open_kofi(app: AppHandle) {
     let _ = app.opener().open_url(KOFI, None::<&str>);
 }
 
+/// Opens a section of the README on GitHub, e.g. "home-assistant". Only a plain anchor name
+/// is accepted, so the address can't be steered anywhere else.
+#[tauri::command]
+fn open_docs(app: AppHandle, section: String) {
+    use tauri_plugin_opener::OpenerExt;
+    if section.is_empty() || section.len() > 60 || !section.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+        return;
+    }
+    let _ = app.opener().open_url(format!("https://github.com/slastrina/rattleboard#{section}"), None::<&str>);
+}
+
 #[tauri::command]
 fn open_window(app: AppHandle, view: String) {
     open_panel(&app, &view);
@@ -2464,6 +2475,7 @@ pub fn run() {
             hide_pointer,
             open_site,
             open_kofi,
+            open_docs,
             updates::check_for_updates,
             updates::open_update,
             get_sources,
