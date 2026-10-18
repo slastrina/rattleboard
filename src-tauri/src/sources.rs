@@ -1642,6 +1642,10 @@ fn tick(i: &mut Inner, ctx: &Ctx) -> Vec<Action> {
         }
     }
     out.push(show(i, card, How::Ambient, ctx, dwell, None));
+    if force {
+        // A manual Next doesn't count against the hourly cap.
+        i.flips.pop_back();
+    }
     out
 }
 

@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "id": "org.hnrss.frontpage",
+  "name": "Hacker News",
+  "description": "New stories from the Hacker News front page",
+  "kind": "rss",
+  "fetch": { "url": "https://hnrss.org/frontpage", "every": "15m" },
+  "card": { "chip": "orange", "pages": 2 },
+  "alertWhen": ["keyword:outage"],
+  "maxItems": 10,
+  "dwell": "45s"
+}

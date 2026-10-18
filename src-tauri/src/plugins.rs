@@ -1376,6 +1376,19 @@ mod tests {
         assert!(parse(&text, false).unwrap_err().contains("10s"));
     }
 
+    /// The examples in plugins/examples are valid manifests.
+    #[test]
+    fn examples() {
+        for (src, kind) in [
+            (include_str!("../../plugins/examples/hacker-news.rattleboard-plugin.json"), "rss"),
+            (include_str!("../../plugins/examples/iss-position.rattleboard-plugin.json"), "json"),
+            (include_str!("../../plugins/examples/git-status.rattleboard-plugin.json"), "command"),
+        ] {
+            let m = parse(&serde_json::from_str(src).unwrap(), false).unwrap();
+            assert_eq!(m.kind, kind);
+        }
+    }
+
     #[test]
     fn durations_and_schedules() {
         for (s, n) in [("30s", 30), ("15m", 900), ("1h", 3600), ("1h30m", 5400), ("90", 90), ("0", 0)] {

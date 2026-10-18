@@ -4,8 +4,8 @@ document.documentElement.classList.add(navigator.userAgent.includes('Mac') ? 'ma
 
 let S = null;
 const L = {
-  view: (location.hash || '#settings').slice(1),
-  tab: 'display',
+  view: (location.hash || '#settings').slice(1).split('/')[0],
+  tab: (location.hash.split('/')[1]) || 'display',
   showKey: false,
   secrets: { localKey: '', cloudToken: '', serverKey: '' },
   showServerKey: false, copied: '',
@@ -138,6 +138,8 @@ function viewSettings() {
     body = viewApi();
   } else if (L.tab === 'boards') {
     body = viewBoards();
+  } else if (L.tab === 'sources') {
+    body = viewSources();
   } else if (L.tab === 'notify') {
     body = viewNotify();
   } else {
@@ -181,9 +183,9 @@ function viewSettings() {
     <div class="hdr hint" style="display:flex; gap:6px; padding:10px 24px 12px; border-top:1px solid rgba(0,0,0,.06); font-size:11.5px">
       <span>Rattleboard v${esc(S.version)}</span>·<a href="#" data-act="site" style="color:${RB.ACC}; text-decoration:none">iokig.com</a>·<span>Not affiliated with or endorsed by Vestaboard, Inc.</span></div>`;
 }
-const TAB_NAMES = { display: 'Display', behavior: 'Behavior', connection: 'Connection', api: 'API server', boards: 'Boards', notify: 'Notifications' };
+const TAB_NAMES = { display: 'Display', behavior: 'Behavior', connection: 'Connection', api: 'API server', boards: 'Boards', sources: 'Sources', notify: 'Notifications' };
 // Notification forwarding exists only where the OS lets apps read notifications (Windows).
-const tabs = () => ['display', 'behavior', 'connection', 'api', 'boards', ...(S && S.notify.supported ? ['notify'] : [])];
+const tabs = () => ['display', 'behavior', 'connection', 'api', 'boards', 'sources', ...(S && S.notify.supported ? ['notify'] : [])];
 function viewApi() {
   const s = S.settings, sv = S.server, key = L.secrets.serverKey;
   const base = sv.urls[0] || `http://127.0.0.1:${s.serverPort}`;
@@ -608,7 +610,8 @@ const contentHeight = () => [...root.children].reduce((h, el) => h + (el.classLi
 // The window is sized once per view, to fit its tallest tab or step, so switching tabs never
 // moves or resizes it. After that the user can resize it freely and the middle scrolls.
 function fitWindow(v) {
-  const keys = v === 'settings' ? tabs() : v === 'setup' ? [0, 1, 2, 3] : [null];
+  // Sources can run long; its tab scrolls rather than making every tab that tall.
+  const keys = v === 'settings' ? tabs().filter(t => t !== 'sources') : v === 'setup' ? [0, 1, 2, 3] : [null];
   const saved = v === 'settings' ? L.tab : L.step;
   let h = 0;
   for (const k of keys) {
@@ -623,7 +626,7 @@ function fitWindow(v) {
 function render(force) {
   if (!S) return;
   const a = document.activeElement;
-  if (!force && (pointerDown || (a && ((a.tagName === 'INPUT' && a.type !== 'range' && a.type !== 'checkbox') || a.tagName === 'TEXTAREA')))) return;
+  if (!force && (pointerDown || SR.dragging || (a && ((a.tagName === 'INPUT' && a.type !== 'range' && a.type !== 'checkbox') || a.tagName === 'TEXTAREA')))) return;
   const v = L.view;
   if (v !== lastView) { lastView = v; fitWindow(v); }
   // Keep the scroll position across live re-renders, but start each tab or step at the top.
@@ -634,6 +637,7 @@ function render(force) {
   const sc2 = root.querySelector('.scroll');
   if (sc2) sc2.scrollTop = top;
   if (v === 'compose') composeAfter();
+  if (v === 'settings' && L.tab === 'sources') sourcesAfter();
 }
 document.addEventListener('pointerdown', () => (pointerDown = true), true);
 document.addEventListener('pointerup', () => { pointerDown = false; setTimeout(render, 0); }, true);
@@ -644,6 +648,7 @@ function setView(v) {
   if (v === 'setup') Object.assign(L, { step: 0, test: 'idle', testLayout: null, setupSource: S ? S.settings.source : 'local' });
   if (v === 'settings' && L.tab === 'boards' && L.addMode === 'nearby') scanNearby();
   if (v === 'settings' && L.tab === 'display') loadScreens();
+  if (v === 'settings' && L.tab === 'sources') srcOpen();
   render(true);
 }
 RB.listen('rb://view', e => setView(e.payload));
@@ -669,6 +674,7 @@ RB.delegate(root, 'click', {
     L.tab = el.dataset.v; L.showKey = false; render(true);
     if (L.tab === 'display') loadScreens();
     if (L.tab === 'boards' && L.addMode === 'nearby' && L.found2 !== null) scanNearby();
+    if (L.tab === 'sources') srcOpen();
   },
   model: el => save({ model: el.dataset.v }),
   adaptive: el => save({ adaptive: el.dataset.v === 'auto' }),

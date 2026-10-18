@@ -405,13 +405,13 @@ fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
     // A fixed board takes on the size of a board it mirrors (posted messages arrive fitted to
     // it already); an adaptive one just shows each message at its own size.
     let detected = vestaboard::dims_of(&layout);
-    let setup_done = {
+    let (setup_done, stays) = {
         let mut s = st.settings.lock().unwrap();
         if !s.adaptive && s.dims() != detected {
             s.set_dims(detected);
             s.save(&st.settings_path);
         }
-        s.setup_done
+        (s.setup_done, s.floating() || s.fullscreen())
     };
     // Ask the window system first: on macOS that call waits for the main thread, which may
     // itself be waiting for `rt`, so it must never happen while a lock is held.
@@ -448,7 +448,9 @@ fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
         save_history(&st);
     }
     broadcast(app);
-    if setup_done && loud {
+    // A source's next card never pops the board up, but a pinned or full-screen board is on
+    // screen anyway, so it's made sure of.
+    if setup_done && (loud || stays) {
         present_board(app, false);
     }
 }
@@ -2571,7 +2573,12 @@ pub fn run() {
             notify::start(&h);
             let h2 = h.clone();
             tauri::async_runtime::spawn(async move { restart_server(&h2).await });
-            if !setup_done {
+            // Debug profiles: RATTLEBOARD_OPEN=settings/sources opens a window at launch, for
+            // trying things out (and screenshots) without clicking through the tray.
+            let open = profile().and(std::env::var("RATTLEBOARD_OPEN").ok());
+            if let Some(view) = open {
+                open_panel(&h, &view);
+            } else if !setup_done {
                 open_panel(&h, "setup");
             } else if full {
                 // Once the event loop runs and the window exists on screen.

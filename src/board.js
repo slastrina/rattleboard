@@ -108,6 +108,10 @@ function render() {
   $('pinBtn').textContent = float ? 'Unpin' : 'Pin';
   $('pinBtn').title = float ? 'Go back to popping up in a corner' : 'Keep it on screen, wherever you put it';
   $('pinBtn').classList.toggle('on', float);
+  // Next shows while sources are running.
+  const next = !!(S.sources && S.sources.active);
+  $('nextBtn').style.display = next ? '' : 'none';
+  $('ovNext').style.display = next ? '' : 'none';
   $('bar').style.opacity = counting ? 1 : 0;
   $('fill').style.width = (ui.total ? (ui.remaining / ui.total) * 100 : 0) + '%';
   renderOverlay();
@@ -138,9 +142,11 @@ function hide() {
 }
 
 RB.onState(snap => {
-  const wasStaying = stays(), wasFull = full();
+  const first = !S, wasStaying = stays(), wasFull = full();
   S = snap;
-  if (full()) ui.visible = true;
+  // Pinned or full screen, the board is always up, even if it was presented before this
+  // page was listening.
+  if (full() || (first && floating())) ui.visible = true;
   // Unpinned, or out of full screen: the toast starts counting down from where it is now.
   if (wasStaying && !stays() && ui.visible && !ui.flipping) startCountdown(false);
   if (full() !== wasFull) { pair = null; renderPair(); if (full()) wake(); }
@@ -177,6 +183,7 @@ RB.delegate(document.body, 'click', {
     ui.visible = true; startCountdown(float);
   },
   replay: () => RB.invoke('replay'),
+  next: () => RB.invoke('sources_next'),
   hide,
   exitFull: () => RB.invoke('toggle_fullscreen'),
   site: () => { if (ov.shown) RB.invoke('open_site'); },
@@ -222,6 +229,7 @@ function renderOverlay() {
   const status = !s.polling ? 'Checking paused'
     : S.conn === 'error' ? (S.error || "Can't reach the board")
     : p ? `Playing ${p.name ? `‘${p.name}’` : 'sequence'} ${p.frame}/${p.frames}`
+    : S.sources && S.sources.active && S.sources.showing ? `Showing ${S.sources.showing}`
     : S.lastChangeAt ? `Changed ${RB.ago(Date.now() - S.lastChangeAt)}` : 'Waiting for a message';
   $('ovText').textContent = `${s.boardName || 'Vestaboard'} · ${RB.sourceLabel(S)} · ${status}`;
   $('ovDot').style.background = !s.polling ? '#9a9ca1' : S.conn === 'error' ? '#e0553f' : ui.flipping ? '#f2c230' : '#3fbf6a';
@@ -279,6 +287,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 'F11') { e.preventDefault(); RB.invoke('toggle_fullscreen'); }
   // macOS catches Esc before the page does (see fullscreen.rs); this is for Windows.
   else if (e.key === 'Escape' && full()) RB.invoke('toggle_fullscreen');
+  // Arrow keys move the rotation on, as a TV remote's do.
+  else if (e.key === 'ArrowRight' && S && S.sources && S.sources.active) RB.invoke('sources_next');
 });
 
 // Dragging: move the native window with the pointer; the backend snaps on release.

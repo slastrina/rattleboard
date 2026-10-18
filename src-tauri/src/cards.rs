@@ -94,8 +94,10 @@ fn standard(chip: u8, name: &str, time: &str, body: &str, pages: usize, rows: us
         c = 2;
     }
     let time = parse(time);
-    // The time goes in the corner when the name still has room for a few letters.
-    let show_time = !time.is_empty() && cols >= c + time.len() + 5;
+    // The time goes in the corner when the whole name still fits beside it (or, for a long
+    // name, a good part of it); otherwise the name has the row.
+    let name_len = parse(name).len();
+    let show_time = !time.is_empty() && (cols >= c + name_len + 1 + time.len() || (name_len > cols - c && cols >= c + time.len() + 12));
     let room = cols - c - if show_time { time.len() + 1 } else { 0 };
     let name = clip(parse(name), room);
     head[c..c + name.len()].copy_from_slice(&name);
@@ -321,9 +323,12 @@ mod tests {
         let g = f.render(6, 22).remove(0);
         assert_eq!(text(&g[0]), "# HACKER NEWS     9:41");
         assert!(g[1..].iter().any(|r| text(r).contains("SHOW HN")));
-        // Compact: the name is clipped at a word, the time still fits
+        // Compact: the whole name rather than the time
         let g = f.render(3, 15).remove(0);
-        assert_eq!(text(&g[0]), "# HACKER   9:41");
+        assert_eq!(text(&g[0]), "# HACKER NEWS  ");
+        let w = Face::Standard { chip: 65, name: "Melbourne".into(), time: "10:37".into(), body: String::new(), pages: 1 };
+        assert_eq!(text(&w.render(3, 15)[0][0]), "# MELBOURNE    ");
+        assert_eq!(text(&w.render(6, 22)[0][0]), "# MELBOURNE      10:37");
         assert_eq!(g.len(), 3);
         // Long text continues on a second page instead of being cut
         let long = Face::Standard { chip: 64, name: "News".into(), time: String::new(), body: "word ".repeat(40), pages: 2 };

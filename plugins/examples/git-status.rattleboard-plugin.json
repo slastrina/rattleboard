@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "id": "com.example.git-status",
+  "name": "Git status",
+  "description": "The branch and changed files of a repository on this computer. Change the path in args to your repository's folder.",
+  "kind": "command",
+  "run": {
+    "path": "/usr/bin/git",
+    "args": ["-C", "/Users/you/code/project", "status", "--short", "--branch"],
+    "every": "5m",
+    "timeout": "10s"
+  },
+  "card": { "align": "left", "chip": "violet", "pages": 2 },
+  "dwell": "30s"
+}
