@@ -35,6 +35,7 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
 - **Pair a phone.** Show a QR code that the Rattleboard phone app scans to add this board.
 - **Notification forwarding (Windows).** Put notifications from the apps you choose on a board. See [Notification forwarding](#notification-forwarding-windows).
 - **Demo mode.** No board yet? It flips through sample messages so you can try everything.
+- **Sources.** Left to itself, the board takes turns showing a clock, the weather, countdowns, news feeds, your calendar, a quote of the day or anything a plugin fetches, calmly, and it can drive your other boards too. See [Sources and plugins](#sources-and-plugins).
 - **Message history.** Shows recent changes. **Flip again** replays any of them here, **Send to** sends that exact layout to a saved board, and **Edit** opens it in Compose.
 
 ## Install
@@ -141,7 +142,7 @@ Everything else keeps working in full screen: the API server, sequences, Compose
 
 ### Where your keys go
 
-Keys and tokens are stored only in your operating system's credential store: the macOS Keychain or the Windows Credential Manager. That includes the key of every saved board in **Settings → Boards**, each under its own entry. They are never written to a file, logged, or sent anywhere except the board they belong to. Non-secret files live in the app's config folder: `settings.json` (finish, size, corner and so on), `boards.json` (saved boards' names, addresses and sizes), `groups.json` and `drafts.json` (Compose drafts); `history.json` and `recent.json` (messages sent from Compose) sit in the app's data folder.
+Keys and tokens are stored only in your operating system's credential store: the macOS Keychain or the Windows Credential Manager. That includes the key of every saved board in **Settings → Boards**, each under its own entry. They are never written to a file, logged, or sent anywhere except the board they belong to. The same goes for each source's secrets (a feed token, a private calendar address), one entry per source and secret. Non-secret files live in the app's config folder: `settings.json` (finish, size, corner and so on), `boards.json` (saved boards' names, addresses and sizes), `groups.json`, `drafts.json` (Compose drafts), `sources.json` (the rotation and how sources run) and `plugins.json` (installed plugin manifests); `history.json`, `recent.json` (messages sent from Compose) and `seen.json` (feed items already shown) sit in the app's data folder.
 
 ## API server
 
@@ -188,12 +189,12 @@ Rattleboards also answer a few requests of their own under `/rattleboard/`. They
 
 | Request | Body | Response |
 | --- | --- | --- |
-| `GET /rattleboard/info` | — | `{"app":"rattleboard","protocol":2,"version":"0.2.0","platform":"macos","name":"…","board":{"rows":6,"cols":22},"adaptive":true,"features":["sequence","strategy"]}` |
+| `GET /rattleboard/info` | — | `{"app":"rattleboard","protocol":3,"version":"0.3.0","platform":"macos","name":"…","board":{"rows":6,"cols":22},"adaptive":true,"features":["sequence","strategy","sources"]}` |
 | `POST /rattleboard/sequence` | `{"name":"…","loop":true,"frames":[…]}` (up to 256 KB) | `201 {"status":"ok","id":"seq-…","frames":2}` |
 | `GET /rattleboard/sequence` | — | `{"running":true,"id":"seq-…","name":"Morning","frame":2,"frames":5,"loop":true}` or `{"running":false}` |
 | `DELETE /rattleboard/sequence` | — | `204`; the current frame stays on the board |
 
-A real Vestaboard answers `404` or `401` to these, which is how apps tell the two apart.
+A real Vestaboard answers `404` or `401` to these, which is how apps tell the two apart. The `/rattleboard/sources` endpoints are under [Sources and plugins](#sources-api).
 
 A sequence has 1–100 frames. Each frame is `characters` or `text` (with an optional size hint), as in a normal post, with `hold` (1–3600 seconds) and an optional transition. With **Match each message**, each frame can have its own size. A frame is held for `hold` seconds after its flaps finish, so it's never cut off mid-flip. Without `"loop": true`, the last frame stays up. Starting a sequence replaces the one playing; any normal message stops it.
 
@@ -216,6 +217,168 @@ The tray menu shows a playing sequence ("Playing ‘Morning’ 2/5") with a **St
 **Settings → API server → Show pairing code** shows a QR code that the Rattleboard phone app (or the phone's camera) scans to add this board. It needs **Other devices** turned on, and offers to turn it on. The code holds this computer's name and network address, the board's size and the API key, so it's shown only when you ask and disappears after two minutes. **Copy link** copies the same `rattleboard://pair?…` link, which another Rattleboard desktop can paste under **Settings → Boards → Pair link**.
 
 With **Other devices** on, Rattleboard also announces itself on your network (as `Rattleboard (<computer name>)`, an `_http._tcp` service) so other Rattleboards can find it.
+
+## Sources and plugins
+
+When nothing else is going on, Rattleboard can run a **rotation** of sources: each takes its turn on the board, then the next comes round. Set it up in **Settings → Sources**.
+
+- **Built in:** a clock, countdowns, the weather, RSS and Atom feeds, a calendar (iCal address), any JSON API, a message of the day and a quote of the day. See [Built-in sources](#built-in-sources).
+- **Plugins:** a `.rattleboard-plugin.json` file adds a source of your own: a feed, a JSON API, a text card, or (on this computer, once you allow it) a program's output. See [Plugin manifests](#plugin-manifests).
+- Everything runs on this computer. There's no cloud service, and nothing is sent anywhere but the sources' own addresses.
+
+### The rotation
+
+- Each source in the rotation has an on/off switch, a **weight** (1–10: how often it comes round, relative to the others), how long it **shows for**, a colour chip, and an optional **schedule** (for example the clock only overnight, news 7–9 am on weekdays). Drag ⋮⋮ to reorder. You can add the same plugin more than once, say a countdown each for two birthdays.
+- **In turn** shows them in order, spreading out the heavier ones; **Shuffle** picks at random, never the same twice running.
+- **Next** moves on at once and restarts that card's time: in Settings, in the tray menu, on the board's hover bar, in full screen's controls, or with the → key on the board.
+- **Up next** lists the coming hour, and why each card comes up: "Ambient", "after the held message", "after quiet hours", "Alert · Standup starts at 9:30".
+- The **preview** shows any source's card in real flaps, as it would look right now.
+
+### Priorities
+
+- **Ambient:** the rotation. Its cards never pop the board up or fill Message History; a pinned or full-screen board simply changes.
+- **Message:** anything else put on the board (Compose, the API, a sequence, a forwarded notification) holds the rotation for 30 minutes by default (**Hold messages for**), then it carries on.
+- **Alert:** a feed item mentioning one of your alert words, an event starting in 10 minutes, a countdown's day, or a command plugin asking for it. It interrupts for a minute (**Alerts stay up**), then the board goes back to whatever it showed before, a held message included.
+
+### Calm by default
+
+- Feed items show **once**. Rattleboard remembers what it has shown (`seen.json`), so nothing flips up twice, even after a restart. A newly added feed shows its newest item and remembers the rest.
+- A **burst** of more than three new items becomes one digest card: "5 NEW - HACKER NEWS" with the newest headline.
+- At most 30 **card changes an hour** (adjustable); a clock ticking over to the next minute doesn't count, and neither does pressing Next.
+- **Quiet hours** stop anything new going up overnight. Feed alerts that come in then are let go; a celebration or the day's quote waits until morning.
+- Each feed source can keep only items **with** some words, **skip** items with others, and **alert** on others.
+- While this board **mirrors** another board (or the demo), sources are paused, unless **Show sources while mirroring** is on. A **Virtual board** with a source turned on runs its rotation by itself, forever.
+
+### Built-in sources
+
+| Source | What it shows |
+| --- | --- |
+| **Clock** | Big digits made of tiles (time and date below), time and date, or a world clock of up to 3 cities (looked up by name, or given as a time zone like `Europe/London`). Re-drawn as the minute changes. |
+| **Countdown** | "12 DAYS TO SAM'S BIRTHDAY"; on the last day hours, and in the last hour a minute ticker if you like. One-off or every year, or a preset: New Year's Eve, Christmas, Halloween. On the day: a celebration card ("HAPPY BIRTHDAY SAM", between bands of colour), once, as an alert. |
+| **Weather** | Now, today's high and low, rain and wind for a city, from [Open-Meteo](https://open-meteo.com) (no key needed). °C or °F. |
+| **RSS or Atom feed** | New stories from any feed address. |
+| **Calendar (iCal)** | Your next event (recurring events included), and an alert 10 minutes before it starts. Use the "secret address in iCal format" from Google Calendar, iCloud or Outlook; it's kept in the credential store like a password. |
+| **JSON URL** | Any JSON API, no code: the address, an optional path to a list of items, paths to the title and body, and an optional card template. |
+| **Message of the day** | Your own list of messages, a different one each day. |
+| **Quote of the day** | One of 600+ public-domain quotes (authors who died before 1955), the same on every board each day, picked from those that fit the board with their "- AUTHOR" line. Choose any, work, calm, funny or wisdom; in the rotation, or once a day at a set time as a message; and add your own ("text - author", one per line), mixed in or on their own. The list is `data/quotes.json`. |
+
+### Showing sources on other boards
+
+**Show sources on** picks where the cards go: this board (the default) and any saved boards or groups, including real Vestaboards on the Local or Cloud API. A desktop running Rattleboard then works as a **hub**.
+
+- Every board gets each card laid out for its own size: a Compact board gets the Compact layout, and a quote that fits it.
+- A real Vestaboard gets a card at most every 5 s on its Local API and 15 s on the Cloud, as Vestaboard's limits require; a card that a newer one replaces while it waits is dropped. Other Rattleboards take cards as fast as they come.
+- The hourly cap applies to each board.
+- A board that's offline is retried later (30 s, then 1, 2, 4 minutes and so on, up to 10) and never holds up the rotation or the other boards.
+
+```mermaid
+flowchart LR
+  P["Plugins<br/><small>feeds · weather · calendar</small>"] --> H["Hub<br/><small>a desktop or TV running Sources</small>"]
+  H --> T["This board"]
+  H --> R["Another Rattleboard<br/><small>a TV, an old laptop</small>"]
+  H -.->|"≥ 5 s Local, ≥ 15 s Cloud"| V["Vestaboard"]
+```
+
+### Plugin manifests
+
+A plugin is one JSON file, `*.rattleboard-plugin.json`:
+
+```json
+{
+  "format": 1,
+  "id": "com.example.hn",
+  "name": "Hacker News",
+  "description": "Top stories",
+  "kind": "rss",
+  "fetch": { "url": "https://hnrss.org/frontpage", "every": "15m" },
+  "card": { "chip": "orange", "pages": 2 },
+  "alertWhen": ["keyword:launch", "keyword:outage"],
+  "maxItems": 5,
+  "dwell": "30s",
+  "schedule": { "days": ["mon", "tue", "wed", "thu", "fri"], "from": "07:00", "to": "10:00" },
+  "settings": [{ "key": "city", "label": "City", "type": "text", "default": "Melbourne" }],
+  "secrets": [{ "key": "token", "label": "API token" }]
+}
+```
+
+| Field | |
+| --- | --- |
+| `format` | `1` |
+| `id` | 3–100 letters, digits, dots, dashes or underscores, like `com.example.news`. Installing a manifest with the same id updates it. `rattleboard.` is kept for the built-ins. |
+| `name`, `description` | Shown in Settings → Sources |
+| `kind` | `rss` (RSS and Atom), `json`, `ical`, `text`, or `command` (this computer only) |
+| `fetch` | `url`, optional `method` (`GET` or `POST`) and `headers`, and `every` (at least `1m`, default `15m`). For `rss`, `json` and `ical`. The address must be `https://`, or `http://` to a host on your own network (a private IP address, `localhost`, `*.local`, `*.lan`, `*.home.arpa` or a single-word name). Each fetch has 10 s, and the answer may be up to 2 MB. |
+| `pick` | For `json`: JSONPath for `items` (optional: without it the whole document is one card), and for each item's `id`, `title`, `body` and `time`. The supported subset is `$`, `.key`, `['key']`, `[n]` and `[*]`. RSS, Atom and iCal need no `pick`. |
+| `card` | `template` (laid out over the whole board with the standard text layout; colour codes like `{r}` or `{63}` work), `chip` (a colour: red, orange, yellow, green, blue, violet, white or black), `align` (`center` or `left`) and `pages` (1–3: long text continues on more cards rather than being cut; words are never split). Without a template, the card has the source's name and the time across the top and the item below. |
+| `priority` | `ambient` (default) or `alert`: every new item interrupts |
+| `alertWhen` | `["keyword:launch"]`: new items mentioning one of these interrupt |
+| `maxItems` | 1–50 items per fetch (default 10) |
+| `dwell` | How long its card shows, `10s` to `1h`; each source in the rotation can override it |
+| `schedule` | Days (`mon`…`sun`; none means every day) and `from`/`to` (HH:MM, may run past midnight) |
+| `settings` | Fields shown in Settings → Sources: `key`, `label`, `type` (`text`, `number`, `toggle`, `select` with `options`, `date`, `time` or `lines`) and `default` |
+| `secrets` | Fields kept in the credential store: `key` and `label` |
+| `run` | For `command`: `path` (the program's full path), `args`, `every` (at least `10s`, default `5m`) and `timeout` (1–60 s, default 10 s) |
+
+Unknown fields are ignored, so a newer manifest still loads; anything invalid is refused with a message saying what's wrong.
+
+**Placeholders** can go in `fetch.url`, `fetch.headers` and `card.template`:
+
+| Placeholder | |
+| --- | --- |
+| `{{settings.city}}` | A setting's value (URL-encoded inside a URL) |
+| `{{secret.token}}` | A secret, from the credential store. Only in `fetch.url` and `fetch.headers`: never in a template, never logged, and never sent back over the API. |
+| `{{name}}`, `{{title}}`, `{{body}}` | The source's name, and the item's title and body |
+| `{{time}}`, `{{time:HH:mm}}` | The item's time (for an event, its start) |
+| `{{now}}`, `{{now:ddd d MMM}}` | The time now. Formats use `yyyy yy MMMM MMM MM M dddd ddd dd d HH H hh h mm ss tt`; `[text]` is literal. |
+
+**Kinds:**
+
+- **`rss`, `json`, `ical`** fetch `fetch.url`. Feed items (RSS, or JSON with an items path) show once each; a JSON value without items, and a calendar's next event, show as they are now.
+- **`text`** fetches nothing: its card is its template, re-drawn every `every` (at least `10s`), for example `"{{now:dddd}}\nTAKE THE BINS OUT"`.
+- **`command`** runs a program on this computer and puts what it prints on the board: plain text, or JSON `{"text": "…", "priority": "alert", "id": "…"}` or `{"characters": [[…]]}`. There's no shell; it gets no input, and only the first 64 KB of its output is read. It's stopped at its timeout. **It never runs until you allow it here**: Settings shows the full path and arguments first, and changing the file in any way needs allowing again. Importing a command plugin never turns it on, and the API and plugin links refuse command plugins.
+
+### Sharing plugins
+
+- **Import:** drop a `.rattleboard-plugin.json` file on Settings → Sources, or choose it with **Import…**. In **Add source…**, a `rattleboard://plugin?url=https://…` link shows what the plugin is and asks before installing it (command plugins are refused from links).
+- **Export:** a plugin's manifest, or one source with its settings (never its secrets), saved to your Downloads folder.
+- Examples in [`plugins/examples`](plugins/examples): [Hacker News](plugins/examples/hacker-news.rattleboard-plugin.json) (RSS), [ISS position](plugins/examples/iss-position.rattleboard-plugin.json) (a keyless JSON API) and [git status](plugins/examples/git-status.rattleboard-plugin.json) (a command; change the folder in `args` to your repository's).
+
+### Sources API
+
+Rattleboards with sources (protocol 3, `"sources"` in `features`) can be set up remotely, from the phone apps for example. Every request needs the API key, and CORS is open as for the other endpoints.
+
+| Request | Body | Response |
+| --- | --- | --- |
+| `GET /rattleboard/sources` | — | `{"plugins": [...], "rotation": [...], "quietHours": {...}, "holdMinutes": 30, "flipsPerHour": 30, "alertSeconds": 60, "shuffle": false, "showWhileMirroring": false, "clock24": false, "targets": ["this"], "status": {...}}`. Each source's secrets appear only as `{"token": {"set": true}}`. |
+| `PUT /rattleboard/sources/rotation` | `{"rotation": [...]}` and/or any of the settings above | `200` and the same as `GET`; `400` with what's wrong. Command sources can't be added or turned on here (`403`). |
+| `POST /rattleboard/sources/plugins` | A manifest | `201 {"status":"ok","id":"…"}`; `400` if invalid; `403` for a command plugin |
+| `DELETE /rattleboard/sources/plugins/{id}` | — | `204`, along with its sources and their secrets; `400` for a built-in |
+| `PUT /rattleboard/sources/instances/{id}/secrets` | `{"token": "…"}` (`""` clears one) | `204`. The value goes to the credential store and is never sent back. |
+| `GET /rattleboard/sources/preview/{id}` | — | `{"characters": [[…]], "pages": [...], "reason": "…"}`: what it would show now, at this board's size |
+| `GET /rattleboard/sources/upnext` | — | `[{"at": 1792323882607, "instanceId": "…", "title": "Weather", "reason": "Ambient"}, …]` |
+| `POST /rattleboard/sources/next` | — | `{"status":"ok"}`: moves the rotation on now |
+
+A source in the rotation looks like this (`plugin` is a plugin's id; the rest is optional):
+
+```json
+{"id": "weather", "plugin": "rattleboard.weather", "name": "Weather", "enabled": true, "weight": 1, "dwell": "5m",
+ "schedule": {"days": ["sat", "sun"], "from": "07:00", "to": "12:00"}, "settings": {"city": "Melbourne", "units": "celsius"},
+ "chip": "yellow", "include": [], "exclude": [], "alertWords": []}
+```
+
+```sh
+# A clock, the weather and a countdown, with quiet hours
+curl -X PUT http://127.0.0.1:7070/rattleboard/sources/rotation \
+  -H "X-Vestaboard-Local-Api-Key: $RATTLEBOARD_KEY" \
+  -d '{"rotation": [
+        {"plugin": "rattleboard.clock", "dwell": "2m"},
+        {"plugin": "rattleboard.weather", "settings": {"city": "Melbourne"}},
+        {"plugin": "rattleboard.countdown", "settings": {"title": "Sam'"'"'s birthday", "date": "1990-10-30", "yearly": true}}
+      ], "quietHours": {"enabled": true, "from": "22:00", "to": "07:00"}}'
+
+curl http://127.0.0.1:7070/rattleboard/sources/upnext -H "X-Vestaboard-Local-Api-Key: $RATTLEBOARD_KEY"
+curl -X POST http://127.0.0.1:7070/rattleboard/sources/next -H "X-Vestaboard-Local-Api-Key: $RATTLEBOARD_KEY"
+```
 
 ## Transitions
 
@@ -284,7 +447,7 @@ npm run dev      # run with hot reload
 npm run build    # produce installers in src-tauri/target/release/bundle
 ```
 
-To try changes without touching your own settings and keys, run a debug build with `RATTLEBOARD_PROFILE=<name>`: it uses config and data folders of its own (`…rattleboard.<name>`) and keeps its keys in a `secrets.json` there instead of the credential store. Release builds ignore it.
+To try changes without touching your own settings and keys, run a debug build with `RATTLEBOARD_PROFILE=<name>`: it uses config and data folders of its own (`…rattleboard.<name>`) and keeps its keys in a `secrets.json` there instead of the credential store. Profiles can run side by side (give each its own API port), and `RATTLEBOARD_OPEN=settings/sources` opens a window at launch. Release builds ignore both.
 
 The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The Rust side, in `src-tauri/src/`, handles polling, the keychain, the tray icon and window placement.
 
@@ -295,11 +458,18 @@ The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The Rust si
 | `src/tray.*` | The menu-bar / tray popover |
 | `src/panel.*` | Settings, Message History and first-run setup |
 | `src/compose.js` | Compose: the editor, sequences and drafts |
+| `src/sources.js` | Settings → Sources |
 | `src-tauri/src/vestaboard.rs` | Local and Cloud API clients, text layout, transitions, plus demo messages |
 | `src-tauri/src/server.rs` | The built-in Vestaboard-compatible API server and the `/rattleboard/` endpoints |
 | `src-tauri/src/sequence.rs` | Sequence validation |
 | `src-tauri/src/boards.rs` | Saved boards, pair links, network discovery |
 | `src-tauri/src/send.rs` | Groups, and sending to several boards at once |
+| `src-tauri/src/sources.rs` | The sources engine: rotation, priorities, calm rules, Up next |
+| `src-tauri/src/plugins.rs` | Plugin manifests, placeholders, fetching, feed and calendar parsing, commands |
+| `src-tauri/src/builtins.rs` | Clock, countdowns, weather, message and quote of the day |
+| `src-tauri/src/cards.rs` | Laying cards out for any board size |
+| `data/quotes.json` | The public-domain quotes, shared with the phone and TV apps |
+| `plugins/examples/` | Example plugins |
 | `src-tauri/src/notify.rs` | Notification forwarding (Windows) |
 | `src-tauri/src/fullscreen.rs` | Full screen: picking the display, keep-awake, hiding the pointer |
 | `src-tauri/src/secrets.rs` | OS credential store |
@@ -309,7 +479,7 @@ The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The Rust si
 Pushing a version tag builds the macOS (universal) and Windows installers in GitHub Actions and attaches them to a GitHub Release. The macOS build is signed and notarized when the Developer ID secrets listed in `.github/workflows/release.yml` are set on the repository.
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 ## Credits
