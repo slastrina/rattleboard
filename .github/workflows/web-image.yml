@@ -2,7 +2,8 @@ name: Rattleboard Web image
 
 # Push a tag like v0.4.0 to build the Rattleboard Web container for amd64, arm64 and arm/v7
 # (32-bit Raspberry Pi OS) and publish it as ghcr.io/slastrina/rattleboard-web:0.4.0 (and
-# :0.4, :latest).
+# :0.4, :latest), and as slastrina/rattleboard-web on Docker Hub when the DOCKERHUB_TOKEN
+# secret and DOCKERHUB_USERNAME variable are set. DOCKERHUB.md becomes the Docker Hub overview.
 # Run it by hand from the Actions tab to build every platform without publishing.
 on:
   push:
@@ -17,6 +18,8 @@ jobs:
   image:
     name: Build and publish
     runs-on: ubuntu-latest
+    env:
+      DOCKERHUB_ENABLED: ${{ secrets.DOCKERHUB_TOKEN != '' && vars.DOCKERHUB_USERNAME != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,10 +34,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        if: github.ref_type == 'tag' && env.DOCKERHUB_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/slastrina/rattleboard-web
+          images: |
+            ghcr.io/slastrina/rattleboard-web
+            name=docker.io/${{ vars.DOCKERHUB_USERNAME }}/rattleboard-web,enable=${{ env.DOCKERHUB_ENABLED == 'true' }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -53,3 +65,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Docker Hub overview
+        if: github.ref_type == 'tag' && env.DOCKERHUB_ENABLED == 'true'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_USERNAME }}/rattleboard-web
+          short-description: Split-flap message board for any browser, with the Rattleboard API and Sources.
+          readme-filepath: DOCKERHUB.md

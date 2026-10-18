@@ -58,7 +58,7 @@ Or download the latest installer from [Releases](https://github.com/slastrina/ra
 | Linux x86_64 (other distributions) | `Rattleboard_x.y.z_amd64.AppImage` | `chmod +x` it, then run it; see [Linux](#linux) |
 | Raspberry Pi 4/5 and other arm64 Linux (64-bit Raspberry Pi OS Bookworm, Debian 12, Ubuntu 22.04+) | `Rattleboard_x.y.z_arm64.deb` or `Rattleboard_x.y.z_aarch64.AppImage` | `sudo apt install ./Rattleboard_x.y.z_arm64.deb`; see [Raspberry Pi](#raspberry-pi) |
 
-For a server or a NAS, [Rattleboard Web](#rattleboard-web-docker) runs as a container: `docker run -p 7070:7070 -v rattleboard:/data ghcr.io/slastrina/rattleboard-web`.
+For a server or a NAS, [Rattleboard Web](#rattleboard-web-docker) runs as a container: `docker run -p 7070:7070 -v rattleboard:/data slastrina/rattleboard-web`.
 
 ## Connecting your board
 
@@ -145,10 +145,10 @@ Rattleboard Web is a Rattleboard that runs in a container on a home server, a NA
 
 ```sh
 docker run -d --name rattleboard --restart unless-stopped \
-  -p 7070:7070 -v rattleboard:/data ghcr.io/slastrina/rattleboard-web
+  -p 7070:7070 -v rattleboard:/data slastrina/rattleboard-web
 ```
 
-Open `http://<server>:7070/` in a browser for the board. The image is small (about 15 MB, a static binary on a distroless base) and built for amd64 and arm64, and from the release after 0.4.0 also for 32-bit arm (arm/v7). On a Raspberry Pi, see [Raspberry Pi](#raspberry-pi).
+Open `http://<server>:7070/` in a browser for the board. The image is small (about 15 MB, a static binary on a distroless base) and built for amd64 and arm64, and from the release after 0.4.0 also for 32-bit arm (arm/v7). On a Raspberry Pi, see [Raspberry Pi](#raspberry-pi). It is on Docker Hub as `slastrina/rattleboard-web` and on GitHub as `ghcr.io/slastrina/rattleboard-web`; both are the same image.
 
 - **The board page** fills the window with the board, fitted to whatever size and shape the screen is, on a dark background (light for the white finish). Tap or click once for full screen. The pointer hides after 3 seconds without movement, and the page keeps the screen awake with the browser's Wake Lock, which browsers only allow on `https://` addresses or `localhost` (on plain `http://` from another device, set the tablet or kiosk browser itself to stay awake). The small "iokig.com" credit stays in the corner, as in the desktop's full screen.
 - **Live on every screen.** Each browser gets every change pushed to it as it happens (Server-Sent Events), so any number of screens can watch one board and flip together. A screen that loses the connection shows a small red dot and reconnects by itself.
@@ -294,7 +294,7 @@ Instead of the desktop app, run the board as a container and show it in Chromium
 ```sh
 curl -fsSL https://get.docker.com | sh
 sudo docker run -d --name rattleboard --restart unless-stopped \
-  -p 7070:7070 -v rattleboard:/data ghcr.io/slastrina/rattleboard-web
+  -p 7070:7070 -v rattleboard:/data slastrina/rattleboard-web
 ```
 
 To open the board full screen at login, create `~/.config/autostart/rattleboard-kiosk.desktop`:
@@ -671,7 +671,7 @@ The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The desktop
 
 ### Releasing
 
-Pushing a version tag builds the macOS (universal), Windows and Linux x86_64 and arm64 (`.deb`, AppImage) installers in GitHub Actions and attaches them to a GitHub Release, and publishes the Rattleboard Web image to `ghcr.io/slastrina/rattleboard-web` for amd64, arm64 and arm/v7. The macOS build is signed and notarized when the Developer ID secrets listed in `.github/workflows/release.yml` are set on the repository.
+Pushing a version tag builds the macOS (universal), Windows and Linux x86_64 and arm64 (`.deb`, AppImage) installers in GitHub Actions and attaches them to a GitHub Release, and publishes the Rattleboard Web image to Docker Hub (`slastrina/rattleboard-web`, when the `DOCKERHUB_TOKEN` secret and `DOCKERHUB_USERNAME` variable are set) and to `ghcr.io/slastrina/rattleboard-web`, for amd64, arm64 and arm/v7. The macOS build is signed and notarized when the Developer ID secrets listed in `.github/workflows/release.yml` are set on the repository.
 
 ```sh
 git tag v0.4.0 && git push origin v0.4.0
