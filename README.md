@@ -512,13 +512,66 @@ args = ["--mcp"]
 
 For alerts by hand, have a hook run `RATTLEBOARD --notify "Claude Code is done" --color green --hook`. `--notify` posts one message using the key from your keychain, so the key never goes into a hook file. `--seconds 20` makes it a status that goes away again. `--hook` reads the hook's JSON from stdin to add the project name, and never fails the hook. Codex's `notify = ["RATTLEBOARD", "--notify", "Codex is done", "--color", "green"]` works as is, because the JSON that Codex appends is understood.
 
+### Remote boards
+
+An agent can write to a board on another device, such as a TV, another computer, a [Rattleboard Web](#rattleboard-web-docker) container or a real board. There are three ways to set that up.
+
+**1. Through the Rattleboard on this computer (the default).** Save the other board in **Settings → Boards**, and agents can reach it: `list_boards` shows your saved boards and groups, and `send_message` and `send_layout` take `board: "Kitchen TV"` (or a group's name, or `"all"`). They go out through the same path as Compose's **Send**, so this works for TVs and computers running Rattleboard, for Rattleboard Web, and for real boards on their Local or Cloud API. In **Settings → Agents**, **Sends to** sets each agent app's default board. It is written into that app's config as `--mcp --target <board>`, and into its alert hooks too, so calls that don't name a board go there. `show_status`, `play_sequence` and `get_board` always use this computer's board.
+
+**2. Straight to another Rattleboard, with no app running here.** This suits a server, or a computer that isn't running Rattleboard itself:
+
+```sh
+rattleboard --mcp --url http://192.168.1.20:7070
+rattleboard --notify "Backup done" --url http://192.168.1.20:7070
+```
+
+All six tools then act on that board. `--url` takes `http://` or `https://` and an address, with no path. The key is found like this:
+
+1. If a board saved in **Settings → Boards** on this computer has that address, its key comes from the keychain. This is the way to do it: nothing secret is written anywhere.
+2. Otherwise the key comes from the `RATTLEBOARD_KEY` environment variable. Putting it in an agent's config (`"env": {"RATTLEBOARD_KEY": "…"}`) stores the key **in plain text** in that file, so save the board in Settings → Boards instead if you can.
+
+The key is never printed. `--target` works here too, to reach that Rattleboard's own saved boards.
+
+**3. Rattleboard Web's HTTP endpoint**, for agent apps that support remote (HTTP) MCP servers. It's `POST /mcp` with `Authorization: Bearer <key>`, where the key comes from `docker exec rattleboard rattleboard-web key`. Each of these stores the key in that app's config file, in plain text unless the app says otherwise:
+
+```sh
+# Claude Code
+claude mcp add --transport http --scope user rattleboard http://<server>:7070/mcp --header "Authorization: Bearer <key>"
+```
+
+```jsonc
+// Cursor (~/.cursor/mcp.json)
+{ "mcpServers": { "rattleboard": { "url": "http://<server>:7070/mcp", "headers": { "Authorization": "Bearer <key>" } } } }
+
+// VS Code (mcp.json): asks for the key once and keeps it in VS Code's secret storage
+{
+  "inputs": [{ "type": "promptString", "id": "rattleboard-key", "description": "Rattleboard API key", "password": true }],
+  "servers": { "rattleboard": { "type": "http", "url": "http://<server>:7070/mcp", "headers": { "Authorization": "Bearer ${input:rattleboard-key}" } } }
+}
+
+// opencode (~/.config/opencode/opencode.json)
+{ "mcp": { "rattleboard": { "type": "remote", "url": "http://<server>:7070/mcp", "headers": { "Authorization": "Bearer <key>" } } } }
+
+// Gemini CLI (~/.gemini/settings.json)
+{ "mcpServers": { "rattleboard": { "httpUrl": "http://<server>:7070/mcp", "headers": { "Authorization": "Bearer <key>" } } } }
+```
+
+```toml
+# Codex CLI (~/.codex/config.toml): the key is read from the environment, not the file
+[mcp_servers.rattleboard]
+url = "http://<server>:7070/mcp"
+bearer_token_env_var = "RATTLEBOARD_KEY"
+```
+
+Claude Desktop only adds remote servers through its Connectors settings, and those need a public HTTPS address. Use option 2 (`--mcp --url`) there instead. A desktop Rattleboard answers `/mcp` too, on its own API server.
+
 ### Tools
 
 | Tool | What it does |
 | --- | --- |
 | `send_message` | `{text, color?, size?, strategy?, board?}`: text that stays until something replaces it. `color` adds a chip (red, orange, yellow, green, blue, violet, white or black), and `size` is standard, compact or large. `board` is "this" (the default), a saved board or group by name from **Settings → Boards**, or "all". |
 | `show_status` | `{text, seconds?, color?}`: a temporary status (15 s by default). It plays a two-frame [sequence](#rattleboard-endpoints), your text and then what was on the board before, so the previous message comes back. Starting it stops any sequence that was playing. |
-| `send_layout` | `{characters}`: an exact grid of character codes 0–71, up to 12 × 40. |
+| `send_layout` | `{characters, board?}`: an exact grid of character codes 0–71, up to 12 × 40. |
 | `list_boards` | This board, your saved boards and groups, with their kinds and sizes. |
 | `play_sequence` | `{frames: [{text or characters, hold}], loop?}`: 1–100 frames, as in `POST /rattleboard/sequence`. |
 | `get_board` | What the board shows now, as text and as codes. |
@@ -529,8 +582,8 @@ The same tools are served over HTTP at `POST /mcp` on the API server and on [Rat
 
 ### Security
 
-- **Local only.** `rattleboard --mcp` talks only to the API server on `127.0.0.1`. Agents don't need **Other devices** on.
-- **The key stays in your keychain.** `--mcp` and `--notify` read the API key from the OS credential store each time, the same way the app does. It is never written into an agent's config, a hook or a skill, and never appears in a tool's answer or a log. After **New key**, connected agents pick up the new key on their own.
+- **Local by default.** `rattleboard --mcp` talks only to the API server on `127.0.0.1`, and agents don't need **Other devices** on. Other boards are reached through the app's Send, or with `--url` only when you set that up ([Remote boards](#remote-boards)).
+- **The key stays in your keychain.** `--mcp` and `--notify` read the API key from the OS credential store each time, the same way the app does. Settings → Agents never writes it into an agent's config, a hook or a skill, and never appears in a tool's answer or a log. After **New key**, connected agents pick up the new key on their own.
 - **Write-only to the board.** The tools can show messages and read what the board shows. They can't change settings, sources, plugins or keys, and can't read your other boards' keys.
 - **Nothing hidden.** Every edit to an agent's files is previewed, backed up and reversible with **Disconnect**.
 

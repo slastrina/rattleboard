@@ -1,25 +1,32 @@
 //! The command-line modes, decided before anything of the app starts (no window, tray or
 //! single-instance check):
 //!
-//!   rattleboard --mcp                 an MCP server on stdio, for agent apps
-//!   rattleboard --notify "<text>" [--color green] [--seconds 20] [--hook]
-//!                                     one message, for agent apps' hooks
+//!   rattleboard --mcp [--target <board>] [--url <http://host:port>]
+//!       an MCP server on stdio, for agent apps
+//!   rattleboard --notify "<text>" [--color green] [--seconds 20] [--hook] [--target …] [--url …]
+//!       one message, for agent apps' hooks
 //!
-//! Both talk to the running app's API server on this computer, with the key from the OS
-//! credential store, so the key never has to be written into an agent's config. Neither
-//! prints the key, and `--notify` prints nothing on stdout (some hooks read it).
+//! By default both talk to the running app's API server on this computer, with the key from
+//! the OS credential store, so the key never has to be written into an agent's config.
+//! `--target` makes calls that name no board go to a saved board or group (by id or name) via
+//! the app's Send. `--url` talks to another Rattleboard directly instead, with no app needed
+//! here: its key is the matching saved board's (from the credential store) or else
+//! $RATTLEBOARD_KEY. Neither mode prints a key, and `--notify` prints nothing on stdout (some
+//! hooks read it).
 
-use rattleboard_core::{mcp, secrets, settings::Settings};
+use rattleboard_core::boards::{self, SavedBoard};
+use rattleboard_core::{mcp, secrets, settings::Settings, vestaboard};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
 const IDENTIFIER: &str = "io.github.slastrina.rattleboard";
+pub const KEY_ENV: &str = "RATTLEBOARD_KEY";
 
 /// Runs a command-line mode if the arguments ask for one, returning its exit code.
 pub fn main() -> Option<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("--mcp") => Some(run_mcp()),
+        Some("--mcp") => Some(run_mcp(&args[1..])),
         Some("--notify") => Some(run_notify(&args[1..])),
         _ => None,
     }
@@ -30,26 +37,137 @@ fn config_dir() -> PathBuf {
     crate::profile_dir(dirs::config_dir().unwrap_or_default().join(IDENTIFIER))
 }
 
-/// The local API server's address and key, read fresh each time.
-fn locate() -> (String, String) {
-    let cfg = config_dir();
-    let s = Settings::load(&cfg.join("settings.json"));
-    (format!("http://127.0.0.1:{}", s.server_port), secrets::get(secrets::SERVER_KEY))
+/// Where the tools go: `--target` and `--url`, shared by both modes.
+#[derive(Debug, Default, PartialEq)]
+pub struct Route {
+    pub target: Option<String>,
+    pub url: Option<String>,
 }
 
-fn backend() -> mcp::Http {
+impl Route {
+    /// Takes `--target`/`--url` and its value if `a` is one; Ok(false) if it isn't.
+    fn take(&mut self, a: &str, it: &mut std::slice::Iter<String>) -> Result<bool, String> {
+        match a {
+            "--target" => {
+                let t = it.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).ok_or("--target needs a saved board or group")?;
+                self.target = Some(t);
+            }
+            "--url" => self.url = Some(check_url(it.next().ok_or("--url needs an address, like http://192.168.1.20:7070")?)?),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
+/// A Rattleboard's base address: http or https, a host, an optional port, nothing else.
+pub fn check_url(s: &str) -> Result<String, String> {
+    let bad = || format!("--url needs a Rattleboard's address, like http://192.168.1.20:7070 (got \"{s}\")");
+    let u = url::Url::parse(s.trim()).map_err(|_| bad())?;
+    if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none_or(str::is_empty) {
+        return Err(bad());
+    }
+    if !u.username().is_empty() || u.password().is_some() || u.query().is_some() || u.fragment().is_some() || !u.path().trim_end_matches('/').is_empty() {
+        return Err(format!("{} (just the address: no path, query or user name)", bad()));
+    }
+    let host = u.host_str().unwrap_or_default();
+    Ok(match u.port() {
+        Some(p) => format!("{}://{host}:{p}", u.scheme()),
+        None => format!("{}://{host}", u.scheme()),
+    })
+}
+
+/// Where a remote Rattleboard's key came from.
+#[derive(Debug, PartialEq)]
+pub enum KeyFrom {
+    /// The saved board with this name, from the credential store
+    SavedBoard(String),
+    /// $RATTLEBOARD_KEY
+    Env,
+    Nowhere,
+}
+
+/// The saved board at `url`, if there is one: same host and port (a saved board's default
+/// port is 7070).
+fn saved_board<'a>(url: &str, saved: &'a [SavedBoard]) -> Option<&'a SavedBoard> {
+    let u = url::Url::parse(url).ok()?;
+    let want = (u.host_str()?.to_lowercase(), u.port_or_known_default()?);
+    saved.iter().filter(|b| b.kind == "rattleboard").find(|b| {
+        url::Url::parse(&vestaboard::base_url(&b.host, boards::RATTLEBOARD_PORT))
+            .ok()
+            .and_then(|s| Some((s.host_str()?.to_lowercase(), s.port_or_known_default()?)))
+            == Some(want.clone())
+    })
+}
+
+/// The key for `url`: the saved board's own (from the credential store, via `get`) first,
+/// then $RATTLEBOARD_KEY.
+pub fn remote_key(url: &str, saved: &[SavedBoard], get: &dyn Fn(&str) -> String, env: Option<String>) -> (String, KeyFrom) {
+    if let Some(b) = saved_board(url, saved) {
+        let k = get(&secrets::board_account(&b.id));
+        if !k.is_empty() {
+            return (k, KeyFrom::SavedBoard(b.name.clone()));
+        }
+    }
+    match env.map(|e| e.trim().to_string()).filter(|e| !e.is_empty()) {
+        Some(k) => (k, KeyFrom::Env),
+        None => (String::new(), KeyFrom::Nowhere),
+    }
+}
+
+fn backend(route: &Route) -> mcp::Http {
     if crate::profile().is_some() {
         secrets::use_file(config_dir().join("secrets.json"));
     }
-    mcp::Http::locating(Box::new(locate))
+    let mut b = match route.url.clone() {
+        None => mcp::Http::locating(Box::new(|| {
+            // The local API server's address and key, read fresh each time.
+            let s = Settings::load(&config_dir().join("settings.json"));
+            (format!("http://127.0.0.1:{}", s.server_port), secrets::get(secrets::SERVER_KEY))
+        })),
+        Some(url) => {
+            let u = url.clone();
+            let mut b = mcp::Http::locating(Box::new(move || {
+                let saved = boards::load(&config_dir().join("boards.json"));
+                let (key, _) = remote_key(&u, &saved, &secrets::get, std::env::var(KEY_ENV).ok());
+                (u.clone(), key)
+            }));
+            b.unreachable = format!("Couldn't reach the Rattleboard at {url}. Check that it's running with its API server on (and Other devices on, if it's another computer).");
+            b.no_key = format!(
+                "No key for {url}. Add that Rattleboard in Settings → Boards on this computer, so its key is kept in the keychain, or set {KEY_ENV}."
+            );
+            b
+        }
+    };
+    b.target = route.target.clone();
+    b
 }
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime")
 }
 
-fn run_mcp() -> i32 {
-    let b = backend();
+pub const MCP_USAGE: &str = "Usage: rattleboard --mcp [--target <saved board or group>] [--url http://host:7070]";
+
+pub fn parse_mcp(args: &[String]) -> Result<Route, String> {
+    let mut r = Route::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if !r.take(a, &mut it)? {
+            return Err(format!("Unknown option {a}"));
+        }
+    }
+    Ok(r)
+}
+
+fn run_mcp(args: &[String]) -> i32 {
+    let route = match parse_mcp(args) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{e}\n{MCP_USAGE}");
+            return 2;
+        }
+    };
+    let b = backend(&route);
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     match runtime().block_on(mcp::serve(&b, input, tokio::io::stdout())) {
         Ok(()) => 0,
@@ -69,16 +187,20 @@ pub struct Notify {
     pub hook: bool,
     /// A JSON payload as the last argument (Codex's notify)
     pub payload: Option<Value>,
+    pub route: Route,
 }
 
-pub const NOTIFY_USAGE: &str = "Usage: rattleboard --notify \"<text>\" [--color red|orange|yellow|green|blue|violet|white|black] [--seconds 3-3600] [--hook]";
+pub const NOTIFY_USAGE: &str = "Usage: rattleboard --notify \"<text>\" [--color red|orange|yellow|green|blue|violet|white|black] [--seconds 3-3600] [--hook] [--target <saved board or group>] [--url http://host:7070]";
 
 /// `--notify`'s arguments (after `--notify`).
 pub fn parse_notify(args: &[String]) -> Result<Notify, String> {
-    let mut n = Notify { text: String::new(), color: None, seconds: None, hook: false, payload: None };
+    let mut n = Notify { text: String::new(), color: None, seconds: None, hook: false, payload: None, route: Route::default() };
     let mut it = args.iter();
     let mut words: Vec<&str> = vec![];
     while let Some(a) = it.next() {
+        if n.route.take(a, &mut it)? {
+            continue;
+        }
         match a.as_str() {
             "--color" | "--colour" => n.color = Some(it.next().ok_or("--color needs a colour")?.clone()),
             "--seconds" => {
@@ -95,6 +217,9 @@ pub fn parse_notify(args: &[String]) -> Result<Notify, String> {
     if n.text.is_empty() {
         return Err("Say what to show".into());
     }
+    if n.seconds.is_some() && n.route.target.is_some() {
+        return Err("--seconds shows a status on this board (or the --url one), so it can't go with --target".into());
+    }
     Ok(n)
 }
 
@@ -107,6 +232,7 @@ fn project(payload: Option<&Value>) -> Option<String> {
 }
 
 /// The tool call `--notify` makes: a message that stays, or with --seconds one that goes.
+/// (--target reaches it as the backend's default target.)
 pub fn notify_call(n: &Notify, stdin: Option<Value>) -> (&'static str, Map<String, Value>) {
     let payload = n.payload.clone().or(stdin);
     let text = match project(payload.as_ref()) {
@@ -142,7 +268,7 @@ fn run_notify(args: &[String]) -> i32 {
         serde_json::from_str::<Value>(&s).ok()
     });
     let (tool, call) = notify_call(&n, stdin.flatten());
-    let b = backend();
+    let b = backend(&n.route);
     match runtime().block_on(mcp::call_tool(&b, tool, &call)) {
         Ok(_) => 0,
         Err(e) => {
@@ -168,7 +294,7 @@ mod tests {
     #[test]
     fn notify_arguments() {
         let n = parse_notify(&args(&["Build passed", "--color", "green"])).unwrap();
-        assert_eq!(n, Notify { text: "Build passed".into(), color: Some("green".into()), seconds: None, hook: false, payload: None });
+        assert_eq!(n, Notify { text: "Build passed".into(), color: Some("green".into()), seconds: None, hook: false, payload: None, route: Route::default() });
         let (tool, a) = notify_call(&n, None);
         assert_eq!(tool, "send_message");
         assert_eq!(Value::Object(a), json!({"text": "Build passed", "color": "green"}));
@@ -188,12 +314,48 @@ mod tests {
         assert_eq!(n.payload.as_ref().unwrap()["type"], "agent-turn-complete");
         assert_eq!(notify_call(&n, None).1["text"], "Codex is done\napi");
 
+        // where it goes
+        let n = parse_notify(&args(&["Done", "--target", "group:g1", "--url", "http://TV.local:7070/"])).unwrap();
+        assert_eq!(n.route, Route { target: Some("group:g1".into()), url: Some("http://tv.local:7070".into()) });
+
         assert!(parse_notify(&args(&[])).is_err());
         assert!(parse_notify(&args(&["--color", "green"])).is_err());
         assert!(parse_notify(&args(&["x", "--color"])).is_err());
         assert!(parse_notify(&args(&["x", "--seconds", "1"])).is_err());
         assert!(parse_notify(&args(&["x", "--loud"])).is_err());
+        assert!(parse_notify(&args(&["x", "--target"])).is_err());
+        assert!(parse_notify(&args(&["x", "--seconds", "10", "--target", "tv"])).is_err());
         // text that merely starts with a brace is still text
         assert_eq!(parse_notify(&args(&["{63} Done"])).unwrap().text, "{63} Done");
+    }
+
+    #[test]
+    fn mcp_arguments() {
+        assert_eq!(parse_mcp(&[]).unwrap(), Route::default());
+        assert_eq!(parse_mcp(&args(&["--target", "Kitchen TV"])).unwrap().target.as_deref(), Some("Kitchen TV"));
+        assert_eq!(parse_mcp(&args(&["--url", "https://board.example.com"])).unwrap().url.as_deref(), Some("https://board.example.com"));
+        for bad in ["ftp://x", "tv.local:7070", "http://", "http://x/mcp", "http://u:p@x", "http://x?k=1", "file:///etc/passwd"] {
+            assert!(parse_mcp(&args(&["--url", bad])).is_err(), "{bad}");
+        }
+        assert!(parse_mcp(&args(&["--url"])).is_err());
+        assert!(parse_mcp(&args(&["--verbose"])).is_err());
+    }
+
+    #[test]
+    fn remote_key_order() {
+        let tv = SavedBoard { id: "tv1".into(), name: "Kitchen TV".into(), kind: "rattleboard".into(), host: "192.168.1.20".into(), rows: 6, cols: 22, adaptive: false };
+        let real = SavedBoard { id: "vb".into(), name: "Hall".into(), kind: "local".into(), host: "192.168.1.30:7070".into(), ..tv.clone() };
+        let saved = [tv, real];
+        let store = |acct: &str| if acct == "board-tv1" { "tv-key".to_string() } else { String::new() };
+        let env = || Some("env-key".to_string());
+        // the saved board's key first (its port defaults to 7070)
+        assert_eq!(remote_key("http://192.168.1.20:7070", &saved, &store, env()), ("tv-key".into(), KeyFrom::SavedBoard("Kitchen TV".into())));
+        // another port, another host, or not a Rattleboard: the environment
+        assert_eq!(remote_key("http://192.168.1.20:8080", &saved, &store, env()).1, KeyFrom::Env);
+        assert_eq!(remote_key("http://192.168.1.30:7070", &saved, &store, env()).1, KeyFrom::Env);
+        // a saved board without a key in the store falls through too
+        let nokey = |_: &str| String::new();
+        assert_eq!(remote_key("http://192.168.1.20:7070", &saved, &nokey, env()), ("env-key".into(), KeyFrom::Env));
+        assert_eq!(remote_key("http://192.168.1.20:7070", &saved, &nokey, Some("  ".into())), (String::new(), KeyFrom::Nowhere));
     }
 }

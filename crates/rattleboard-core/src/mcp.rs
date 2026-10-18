@@ -53,6 +53,10 @@ pub trait Backend: Send + Sync {
     fn boards(&self) -> Fut<'_, Result<Option<Value>, String>>;
     /// A message for a saved board or group ("<id>", "group:<id>", "all"); the deliveries
     fn send_to(&self, target: String, body: Value) -> Fut<'_, Result<Value, String>>;
+    /// Where send_message and send_layout go when the call names no board (`--target`)
+    fn default_target(&self) -> Option<String> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------- tools
@@ -101,7 +105,7 @@ pub fn tools() -> Value {
                     "color": color_schema("as an accent"),
                     "size": { "type": "string", "enum": ["standard", "compact", "large"], "description": "Lay the text out for a board size: standard 6x22 (default), compact 3x15, large 8x30. Boards set to match each message take this size; others use their own." },
                     "strategy": strategy_schema(),
-                    "board": { "type": "string", "description": "Which board: \"this\" (the board on this computer, the default), or the name of a saved board or group from list_boards, or \"all\"." }
+                    "board": { "type": "string", "description": "Which board: \"this\" (this board, the default unless the user set another), or the name of a saved board or group from list_boards, or \"all\"." }
                 },
                 "required": ["text"],
                 "additionalProperties": false
@@ -127,7 +131,7 @@ pub fn tools() -> Value {
         {
             "name": "send_layout",
             "title": "Send an exact layout",
-            "description": format!("Puts an exact grid of character codes on this computer's board, for pixel-art, charts or precise placement. Rows are arrays of integers 0-71, all the same length, from 1x1 up to 12 rows x 40 columns (6x22 fills a standard board). {CODES} For ordinary words use send_message instead."),
+            "description": format!("Puts an exact grid of character codes on the board, for pixel-art, charts or precise placement. Rows are arrays of integers 0-71, all the same length, from 1x1 up to 12 rows x 40 columns (6x22 fills a standard board). {CODES} For ordinary words use send_message instead."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -136,7 +140,8 @@ pub fn tools() -> Value {
                         "items": { "type": "array", "minItems": 1, "maxItems": 40, "items": { "type": "integer", "minimum": 0, "maximum": 71 } },
                         "description": "Rows of character codes, top to bottom."
                     },
-                    "strategy": strategy_schema()
+                    "strategy": strategy_schema(),
+                    "board": { "type": "string", "description": "Which board, as for send_message: \"this\" (the default), a saved board or group from list_boards, or \"all\"." }
                 },
                 "required": ["characters"],
                 "additionalProperties": false
@@ -311,14 +316,22 @@ async fn send_message(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
         body.insert("cols".into(), json!(cl));
     }
     c.strategy(&mut body)?;
-    let board = c.str("board")?.map(str::trim).filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("this") && !s.eq_ignore_ascii_case("this board"));
+    deliver(b, c, body, Some(&text), hint).await
+}
+
+/// Sends a message body to the board the call names, or the default target, or this board.
+async fn deliver(b: &dyn Backend, c: &Call<'_>, body: Map<String, Value>, text: Option<&str>, hint: Option<(usize, usize)>) -> Result<Value, String> {
+    let named = c.str("board")?.map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let here = |s: &str| s.eq_ignore_ascii_case("this") || s.eq_ignore_ascii_case("this board");
+    let board = named.or_else(|| b.default_target()).filter(|s| !here(s));
     let Some(want) = board else {
         let size = layout_size(b, hint).await;
         b.post(Value::Object(body)).await?;
-        return Ok(json!({ "text": format!("Sent to this board.{}", fit_note(&text, size)), "structured": { "sent": ["This board"] } }));
+        let note = text.map(|t| fit_note(t, size)).unwrap_or_default();
+        return Ok(json!({ "text": format!("Sent to this board.{note}"), "structured": { "sent": ["This board"] } }));
     };
     let list = b.boards().await?.ok_or("This board has no saved boards; leave out board to send to it")?;
-    let target = resolve(&list, want)?;
+    let target = resolve(&list, &want)?;
     let out = b.send_to(target, Value::Object(body)).await?;
     let deliveries = out.get("deliveries").and_then(|d| d.as_array()).cloned().unwrap_or_default();
     let mut ok = vec![];
@@ -369,9 +382,10 @@ async fn send_layout(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
     let mut body = Map::new();
     body.insert("characters".into(), json!(g));
     c.strategy(&mut body)?;
-    b.post(Value::Object(body)).await?;
     let (r, cl) = vestaboard::dims_of(&g);
-    Ok(json!({ "text": format!("Sent a {r} x {cl} layout to this board.") }))
+    let mut out = deliver(b, c, body, None, None).await?;
+    out["text"] = json!(format!("{r} x {cl} layout. {}", out["text"].as_str().unwrap_or_default()));
+    Ok(out)
 }
 
 async fn list_boards(b: &dyn Backend) -> Result<Value, String> {
@@ -501,6 +515,11 @@ pub async fn handle(b: &dyn Backend, msg: Value) -> Option<Value> {
     let mut answer = handle_method(b, method, id, &params).await;
     if stateless && answer.get("result").is_some_and(|r| r.is_object()) {
         answer["result"]["resultType"] = json!("complete");
+        // Lists say how long a client may cache them; ours never change while running.
+        if method.ends_with("/list") {
+            answer["result"]["ttlMs"] = json!(300_000);
+            answer["result"]["cacheScope"] = json!("public");
+        }
     }
     Some(answer)
 }
@@ -605,6 +624,11 @@ pub type Locate = Box<dyn Fn() -> (String, String) + Send + Sync>;
 pub struct Http {
     locate: Locate,
     client: reqwest::Client,
+    /// The default target (`--target`)
+    pub target: Option<String>,
+    /// Said when the server can't be reached, or has no key here
+    pub unreachable: String,
+    pub no_key: String,
 }
 
 impl Http {
@@ -616,30 +640,33 @@ impl Http {
 
     pub fn locating(locate: Locate) -> Self {
         let client = reqwest::Client::builder().timeout(Duration::from_secs(45)).no_proxy().build().unwrap_or_default();
-        Http { locate, client }
+        Http { locate, client, target: None, unreachable: NOT_RUNNING.into(), no_key: NOT_RUNNING.into() }
     }
 
     async fn req(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<(u16, Value), String> {
         let (base, key) = (self.locate)();
         if key.is_empty() {
-            return Err(NOT_RUNNING.into());
+            return Err(self.no_key.clone());
         }
         let mut r = self.client.request(method, format!("{base}{path}")).bearer_auth(&key);
         if let Some(b) = body {
             r = r.json(&b);
         }
-        let res = r.send().await.map_err(|e| if e.is_timeout() { "Rattleboard didn't answer in time.".to_string() } else { NOT_RUNNING.to_string() })?;
+        let res = r.send().await.map_err(|e| if e.is_timeout() { "Rattleboard didn't answer in time.".to_string() } else { self.unreachable.clone() })?;
         let status = res.status().as_u16();
         let v: Value = res.json().await.unwrap_or(Value::Null);
         match status {
             200..=299 => Ok((status, v)),
-            401 => Err("Rattleboard rejected the API key. Open Rattleboard and check Settings → API server.".into()),
+            401 => Err(format!("{} rejected the API key. Check the key in Settings → API server there.", if self.unreachable == NOT_RUNNING { "Rattleboard" } else { "That Rattleboard" })),
             _ => Err(v.get("error").and_then(|e| e.as_str()).map(String::from).unwrap_or_else(|| format!("Rattleboard answered HTTP {status}"))),
         }
     }
 }
 
 impl Backend for Http {
+    fn default_target(&self) -> Option<String> {
+        self.target.clone()
+    }
     fn info(&self) -> Fut<'_, Result<Value, String>> {
         Box::pin(async move { self.req(reqwest::Method::GET, "/rattleboard/info", None).await.map(|r| r.1) })
     }
@@ -788,6 +815,9 @@ mod tests {
         let r = handle(&b, json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"_meta": meta, "name": "send_message", "arguments": {"text": "Stateless"}}})).await.unwrap();
         assert_eq!((r["result"]["resultType"].as_str(), r["result"]["isError"].as_bool()), (Some("complete"), Some(false)));
         assert_eq!(*m.shown.lock().unwrap(), vestaboard::text_layout("Stateless", 6, 22));
+        let r = handle(&b, json!({"jsonrpc": "2.0", "id": 9, "method": "tools/list", "params": {"_meta": meta}})).await.unwrap();
+        assert_eq!((r["result"]["ttlMs"].as_u64(), r["result"]["cacheScope"].as_str()), (Some(300_000), Some("public")));
+        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 6);
         let r = handle(&b, json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2099-01-01"}}})).await.unwrap();
         assert_eq!(r["error"]["code"], -32022);
         assert_eq!(r["error"]["data"]["requested"], "2099-01-01");
@@ -884,6 +914,17 @@ mod tests {
         // "this" goes straight to this board
         handle(&b, call("send_message", json!({"text": "Here", "board": "this"}))).await.unwrap();
         assert_eq!(m.posts.lock().unwrap().len(), 1);
+
+        // A default target (--target): calls without a board go there, "this" still here
+        let mut t = Http::new(&format!("http://{}", _h.addr), "secret-key-123");
+        t.target = Some("group:g1".into());
+        handle(&t, call("send_message", json!({"text": "Default"}))).await.unwrap();
+        assert_eq!(m.sent.lock().unwrap().last().unwrap().0, "group:g1");
+        let r = handle(&t, call("send_layout", json!({"characters": [[1, 2]]}))).await.unwrap();
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("1 x 2 layout. Sent to Kitchen TV"), "{r}");
+        assert_eq!(m.sent.lock().unwrap().last().unwrap().1, json!({"characters": [[1, 2]]}));
+        handle(&t, call("send_message", json!({"text": "Here", "board": "this"}))).await.unwrap();
+        assert_eq!(m.posts.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]

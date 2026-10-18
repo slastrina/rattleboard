@@ -101,14 +101,25 @@ impl Env {
     }
 }
 
-/// How agent apps start Rattleboard: this executable, and in a debug build its profile.
-#[derive(Clone, Debug)]
+/// How agent apps start Rattleboard: this executable, in a debug build its profile, and
+/// the saved board or group messages go to by default (`--target`).
+#[derive(Clone, Debug, Default)]
 pub struct Launch {
     pub exe: String,
     pub profile: Option<String>,
+    pub target: Option<String>,
 }
 
 impl Launch {
+    /// `--mcp`, and `--target <t>` when there's a default target
+    fn mcp_args(&self) -> Vec<String> {
+        let mut a = vec!["--mcp".to_string()];
+        if let Some(t) = &self.target {
+            a.extend(["--target".to_string(), t.clone()]);
+        }
+        a
+    }
+
     fn env(&self) -> Option<J> {
         self.profile.as_ref().map(|p| J::o(vec![("RATTLEBOARD_PROFILE", J::s(p.clone()))]))
     }
@@ -126,7 +137,8 @@ impl Launch {
             (Some(p), Os::Mac | Os::Linux) => format!("RATTLEBOARD_PROFILE={} ", q(p)),
             _ => String::new(),
         };
-        format!("{env}{} --notify {} --color {color} --hook", q(&self.exe), q(text))
+        let target = self.target.as_ref().map(|t| format!(" --target {}", q(t))).unwrap_or_default();
+        format!("{env}{} --notify {} --color {color} --hook{target}", q(&self.exe), q(text))
     }
 }
 
@@ -194,7 +206,7 @@ fn stdio_server(l: &Launch, with_type: bool) -> J {
         o.push(("type".to_string(), J::s("stdio")));
     }
     o.push(("command".to_string(), J::s(l.exe.clone())));
-    o.push(("args".to_string(), J::strs(&["--mcp"])));
+    o.push(("args".to_string(), J::A(l.mcp_args().into_iter().map(J::S).collect())));
     if let Some(e) = l.env() {
         o.push(("env".to_string(), e));
     }
@@ -211,6 +223,7 @@ fn opencode_plugin(l: &Launch) -> String {
         Some(p) => serde_json::json!({ "RATTLEBOARD_PROFILE": p }),
         None => serde_json::json!({}),
     };
+    let more: Vec<String> = l.target.iter().flat_map(|t| ["--target".to_string(), t.clone()]).collect();
     format!(
         r#"// Added by Rattleboard (Settings → Agents → opencode); disconnecting there removes it.
 // Puts a short card on your Rattleboard when opencode is done or needs you.
@@ -219,10 +232,11 @@ import {{ basename }} from "node:path";
 
 const EXE = {exe};
 const ENV = {env};
+const MORE = {more};
 
 function tell(text, color) {{
   try {{
-    spawn(EXE, ["--notify", text, "--color", color], {{ stdio: "ignore", detached: true, env: {{ ...process.env, ...ENV }} }}).unref();
+    spawn(EXE, ["--notify", text, "--color", color, ...MORE], {{ stdio: "ignore", detached: true, env: {{ ...process.env, ...ENV }} }}).unref();
   }} catch {{}}
 }}
 
@@ -237,7 +251,8 @@ export const Rattleboard = async ({{ directory }}) => {{
 }};
 "#,
         exe = Value::String(l.exe.clone()),
-        env = env
+        env = env,
+        more = serde_json::to_string(&more).unwrap()
     )
 }
 
@@ -264,6 +279,9 @@ pub fn all(env: &Env, l: &Launch) -> Vec<Harness> {
     let copilot = h.join(".copilot");
     let mcp = |at: &str, value: J| Piece::Member { at: path(&[at]), key: SERVER.into(), value };
     let mut codex_argv = vec![l.exe.clone(), "--notify".into(), "Codex is done".into(), "--color".into(), "green".into()];
+    if let Some(t) = &l.target {
+        codex_argv.extend(["--target".to_string(), t.clone()]);
+    }
     if let (Some(p), Os::Mac | Os::Linux) = (&l.profile, os) {
         codex_argv.splice(0..0, ["env".to_string(), format!("RATTLEBOARD_PROFILE={p}")]);
     }
@@ -298,7 +316,7 @@ pub fn all(env: &Env, l: &Launch) -> Vec<Harness> {
             mcp_file: oc_file.clone(),
             pieces: vec![
                 (Part::Mcp, oc_file, {
-                    let mut o = vec![("type", J::s("local")), ("command", J::strs(&[&l.exe, "--mcp"])), ("enabled", J::B(true))];
+                    let mut o = vec![("type", J::s("local")), ("command", J::A(std::iter::once(l.exe.clone()).chain(l.mcp_args()).map(J::S).collect())), ("enabled", J::B(true))];
                     if let Some(e) = l.env() {
                         o.push(("environment", e));
                     }
@@ -341,7 +359,7 @@ pub fn all(env: &Env, l: &Launch) -> Vec<Harness> {
             mcp_file: codex.join("config.toml"),
             pieces: vec![
                 (Part::Mcp, codex.join("config.toml"), Piece::TomlServer {
-                    argv: vec![l.exe.clone(), "--mcp".into()],
+                    argv: std::iter::once(l.exe.clone()).chain(l.mcp_args()).collect(),
                     env: l.profile.clone().map(|p| ("RATTLEBOARD_PROFILE".to_string(), p)),
                 }),
                 (Part::Alerts, codex.join("config.toml"), Piece::TomlNotify { argv: codex_argv }),
@@ -590,6 +608,32 @@ pub fn plan(h: &Harness, want: Want, state: &State) -> Result<Vec<Change>, Strin
     Ok(out)
 }
 
+/// The `--target` the MCP entry passes now, if any.
+pub fn current_target(h: &Harness) -> Option<String> {
+    let text = read(&h.mcp_file)?;
+    let args: Vec<String> = h.pieces.iter().find_map(|(part, file, piece)| {
+        if *part != Part::Mcp || *file != h.mcp_file {
+            return None;
+        }
+        let strs = |v: &Value| v.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect::<Vec<_>>());
+        match piece {
+            Piece::Member { at, key, .. } => {
+                let v = jsonc::value_of(&text, &jsonc::parse(&text).ok()?);
+                let e = at.iter().try_fold(&v, |v, k| v.get(k))?.get(key)?.clone();
+                strs(e.get("args").unwrap_or(&Value::Null)).or_else(|| strs(e.get("command")?))
+            }
+            Piece::TomlServer { .. } => {
+                let d = toml_doc(&text, file).ok()?;
+                let a = d.get("mcp_servers")?.get(SERVER)?.get("args")?.as_array()?;
+                Some(a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+            }
+            _ => None,
+        }
+    })?;
+    let i = args.iter().position(|a| a == "--target")?;
+    args.get(i + 1).cloned()
+}
+
 /// Whether each part is in place now.
 pub fn status(h: &Harness) -> (bool, bool) {
     let mut mcp = false;
@@ -692,7 +736,7 @@ mod tests {
     }
 
     fn launch() -> Launch {
-        Launch { exe: "/Applications/Rattleboard.app/Contents/MacOS/rattleboard".into(), profile: None }
+        Launch { exe: "/Applications/Rattleboard.app/Contents/MacOS/rattleboard".into(), ..Default::default() }
     }
 
     fn write(c: &[Change]) {
@@ -871,7 +915,7 @@ mod tests {
         assert_eq!(f("opencode"), home.join(".config/opencode/opencode.json"));
         assert_eq!(f("codex"), PathBuf::from("/opt/codex/config.toml"));
         let win = Env { os: Os::Windows, home: "C:/Users/Sam".into(), appdata: Some("C:/Users/Sam/AppData/Roaming".into()), xdg_config: None, codex_home: None, claude_config_dir: None };
-        let l = Launch { exe: "C:\\Users\\Sam\\AppData\\Local\\Rattleboard\\rattleboard.exe".into(), profile: None };
+        let l = Launch { exe: "C:\\Users\\Sam\\AppData\\Local\\Rattleboard\\rattleboard.exe".into(), ..Default::default() };
         let hs = all(&win, &l);
         let f = |id: &str| hs.iter().find(|h| h.id == id).unwrap().mcp_file.clone();
         assert_eq!(f("claude-desktop"), PathBuf::from("C:/Users/Sam/AppData/Roaming/Claude/claude_desktop_config.json"));
@@ -879,7 +923,7 @@ mod tests {
         assert_eq!(f("claude-code"), PathBuf::from("C:/Users/Sam/.claude.json"));
         assert_eq!(f("opencode"), PathBuf::from("C:/Users/Sam/.config/opencode/opencode.json"));
         assert_eq!(l.notify_cmd(Os::Windows, "Done", "green"), "\"C:\\Users\\Sam\\AppData\\Local\\Rattleboard\\rattleboard.exe\" --notify \"Done\" --color green --hook");
-        let p = Launch { exe: "/tmp/rb $x".into(), profile: Some("agentstest".into()) };
+        let p = Launch { exe: "/tmp/rb $x".into(), profile: Some("agentstest".into()), target: None };
         assert_eq!(p.notify_cmd(Os::Mac, "Done", "green"), "RATTLEBOARD_PROFILE=\"agentstest\" \"/tmp/rb \\$x\" --notify \"Done\" --color green --hook");
     }
 
@@ -892,11 +936,38 @@ mod tests {
         let home = PathBuf::from(std::env::var("RB_AGENTS_HOME").expect("RB_AGENTS_HOME"));
         assert!(home.starts_with(std::env::temp_dir()) || home.to_string_lossy().contains("/tmp/"), "only a temporary folder");
         let env = Env { os: Os::Mac, home, appdata: None, xdg_config: None, codex_home: None, claude_config_dir: None };
-        let l = Launch { exe: std::env::var("RB_EXE").expect("RB_EXE"), profile: std::env::var("RATTLEBOARD_PROFILE").ok() };
+        let l = Launch { exe: std::env::var("RB_EXE").expect("RB_EXE"), profile: std::env::var("RATTLEBOARD_PROFILE").ok(), target: None };
         for h in all(&env, &l).iter().filter(|h| h.installed()) {
             let c = plan(h, Want { mcp: true, alerts: true }, &State::new()).unwrap();
             write(&c);
             println!("{}: {:?}", h.id, status(h));
+        }
+    }
+
+    #[test]
+    fn default_target() {
+        let (_t, env) = tmp("target");
+        for d in [".claude", ".codex", ".config/opencode"] {
+            std::fs::create_dir_all(env.home.join(d)).unwrap();
+        }
+        let l = Launch { target: Some("group:g1".into()), ..launch() };
+        for h in all(&env, &l).iter().filter(|h| ["claude-code", "codex", "opencode"].contains(&h.id)) {
+            let c = plan(h, Want { mcp: true, alerts: true }, &State::new()).unwrap();
+            write(&c);
+            assert_eq!(current_target(h).as_deref(), Some("group:g1"), "{}", h.id);
+            for ch in &c {
+                let t = ch.after.as_deref().unwrap_or_default();
+                if t.contains("--notify") {
+                    assert!(t.contains("--target") && t.contains("group:g1"), "{}: {t}", h.id);
+                }
+            }
+            // back to this board: the entry is replaced in place
+            let c = plan(h, Want { mcp: true, alerts: true }, &State::new());
+            assert!(c.unwrap().is_empty());
+            let plain = all(&env, &launch());
+            let h2 = plain.iter().find(|x| x.id == h.id).unwrap();
+            write(&plan(h2, Want { mcp: true, alerts: true }, &State::new()).unwrap());
+            assert_eq!(current_target(h2), None, "{}", h.id);
         }
     }
 

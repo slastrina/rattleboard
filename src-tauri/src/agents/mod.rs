@@ -71,14 +71,14 @@ pub fn api_send(app: &AppHandle, target: String, message: Value) -> server::Send
 
 // ---------------------------------------------------------------- Settings → Agents
 
-fn launch() -> Launch {
+fn launch(target: Option<String>) -> Launch {
     let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok().or(Some(p))).unwrap_or_default();
     let mut exe = exe.to_string_lossy().to_string();
     // canonicalize() on Windows gives a \\?\ path, which some apps can't start.
     if let Some(s) = exe.strip_prefix(r"\\?\") {
         exe = s.to_string();
     }
-    Launch { exe, profile: crate::profile() }
+    Launch { exe, profile: crate::profile(), target }
 }
 
 fn state_path(app: &AppHandle) -> Option<PathBuf> {
@@ -121,6 +121,8 @@ pub struct HarnessView {
     skill: bool,
     /// Why alerts can't be turned on here, if they can't
     alerts_blocked: Option<String>,
+    /// The saved board or group calls without a board go to; None is this board
+    target: Option<String>,
     config: String,
     note: &'static str,
 }
@@ -135,7 +137,7 @@ pub struct AgentsView {
 
 #[tauri::command]
 pub fn agents_list() -> AgentsView {
-    let l = launch();
+    let l = launch(None);
     let hs = harness::all(&Env::system(), &l);
     let harnesses = hs
         .iter()
@@ -152,6 +154,7 @@ pub fn agents_list() -> AgentsView {
                 alerts_on,
                 skill: h.has(harness::Part::Skill),
                 alerts_blocked: blocked,
+                target: harness::current_target(h),
                 config: h.mcp_file.to_string_lossy().to_string(),
                 note: h.note,
             }
@@ -186,16 +189,32 @@ fn fingerprint(changes: &[Change]) -> String {
     format!("{:016x}", h.finish())
 }
 
-fn plan_for(app: &AppHandle, id: &str, mcp: bool, alerts: bool) -> Result<Vec<Change>, String> {
-    let hs = harness::all(&Env::system(), &launch());
+/// A default target the user picked: this board (None), a saved board's id or "group:<id>".
+fn check_target(app: &AppHandle, target: Option<String>) -> Result<Option<String>, String> {
+    let Some(t) = target.filter(|t| !t.is_empty() && t != HERE) else { return Ok(None) };
+    let st = app.state::<AppState>();
+    let known = if let Some(g) = t.strip_prefix(send::GROUP_PREFIX) {
+        st.groups.lock().unwrap().iter().any(|x| x.id == g)
+    } else {
+        t == send::ALL || st.boards.lock().unwrap().iter().any(|b| b.id == t)
+    };
+    if known {
+        Ok(Some(t))
+    } else {
+        Err("That board or group was removed".into())
+    }
+}
+
+fn plan_for(app: &AppHandle, id: &str, mcp: bool, alerts: bool, target: Option<String>) -> Result<Vec<Change>, String> {
+    let hs = harness::all(&Env::system(), &launch(check_target(app, target)?));
     let h = hs.iter().find(|h| h.id == id).ok_or("Unknown agent app")?;
     harness::plan(h, Want { mcp, alerts: alerts && mcp }, &load_state(app))
 }
 
 /// What connecting (or disconnecting, or switching alerts) would change, file by file.
 #[tauri::command]
-pub fn agents_preview(app: AppHandle, id: String, mcp: bool, alerts: bool) -> Result<Preview, String> {
-    let changes = plan_for(&app, &id, mcp, alerts)?;
+pub fn agents_preview(app: AppHandle, id: String, mcp: bool, alerts: bool, target: Option<String>) -> Result<Preview, String> {
+    let changes = plan_for(&app, &id, mcp, alerts, target)?;
     let files = changes
         .iter()
         .map(|c| FilePreview {
@@ -221,8 +240,8 @@ fn backup(path: &std::path::Path) -> Result<(), String> {
 /// Makes the changes the preview showed, after backing up each file it edits. If any file
 /// changed since the preview, nothing is written and the preview has to be looked at again.
 #[tauri::command]
-pub fn agents_apply(app: AppHandle, id: String, mcp: bool, alerts: bool, token: String) -> Result<AgentsView, String> {
-    let changes = plan_for(&app, &id, mcp, alerts)?;
+pub fn agents_apply(app: AppHandle, id: String, mcp: bool, alerts: bool, target: Option<String>, token: String) -> Result<AgentsView, String> {
+    let changes = plan_for(&app, &id, mcp, alerts, target)?;
     if fingerprint(&changes) != token {
         return Err("A file changed since the preview. Look it over again, then confirm.".into());
     }

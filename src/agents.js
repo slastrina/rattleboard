@@ -7,8 +7,16 @@ const AG = {
   // { id, name, mcp, alerts, files, token } while a preview waits for Confirm
   preview: null, busy: false,
   // { id, ok, text } after a change, shown under that app
-  msg: null
+  msg: null,
+  // The default target picked for an app that isn't connected yet
+  targets: {}
 };
+
+// Where tool calls that name no board go: this board, a saved board, a group or all.
+const agTargets = () => [['this', 'This board'],
+  ...(S.boards || []).map(b => [b.id, b.name]),
+  ...(S.groups || []).map(g => ['group:' + g.id, g.name + ' (group)']),
+  ...((S.boards || []).length ? [['all', 'All boards']] : [])];
 
 function agentsOpen() {
   if (AG.loading) return;
@@ -19,13 +27,13 @@ function agentsOpen() {
     .finally(() => { AG.loading = false; render(true); });
 }
 
-function agentsAsk(id, mcp, alerts) {
+function agentsAsk(id, mcp, alerts, target) {
   const h = AG.data.harnesses.find(x => x.id === id);
   AG.msg = null; AG.busy = true; render(true);
-  RB.invoke('agents_preview', { id, mcp, alerts })
+  RB.invoke('agents_preview', { id, mcp, alerts, target: target || null })
     .then(p => {
       if (!p.files.length) { AG.msg = { id, ok: true, text: 'Nothing to change: it’s already set up that way.' }; return; }
-      AG.preview = { id, name: h.name, mcp, alerts, files: p.files, token: p.token };
+      AG.preview = { id, name: h.name, mcp, alerts, target: target || null, files: p.files, token: p.token };
     })
     .catch(e => { AG.msg = { id, ok: false, text: String(e) }; })
     .finally(() => { AG.busy = false; render(true); });
@@ -34,7 +42,7 @@ function agentsAsk(id, mcp, alerts) {
 function agentsConfirm() {
   const p = AG.preview; if (!p) return;
   AG.busy = true; render(true);
-  RB.invoke('agents_apply', { id: p.id, mcp: p.mcp, alerts: p.alerts, token: p.token })
+  RB.invoke('agents_apply', { id: p.id, mcp: p.mcp, alerts: p.alerts, target: p.target, token: p.token })
     .then(d => {
       AG.data = d; AG.preview = null;
       const h = d.harnesses.find(x => x.id === p.id);
@@ -79,6 +87,16 @@ function agentsRow(h) {
           : `<div class="tog ${h.alertsOn ? 'on' : ''}" data-act="agAlerts" data-v="${h.id}" style="${busy ? 'pointer-events:none; opacity:.5' : ''}"><div></div></div>
              <span class="hint">Alert me when the agent finishes or needs input</span>`}
       </div>` : '';
+  const opts = agTargets(), cur = h.connected ? (h.target || 'this') : (AG.targets[h.id] || 'this');
+  const known = opts.some(o => o[0] === cur);
+  const picker = opts.length > 1 || cur !== 'this'
+    ? `<div style="grid-column:1 / -1; display:flex; align-items:center; gap:10px; padding-left:18px">
+        <span class="hint">Sends to</span>
+        <select class="field" data-agtarget="${h.id}" ${busy ? 'disabled' : ''} title="Where messages go when the agent doesn't name a board">
+          ${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+          ${known ? '' : `<option value="${esc(cur)}" selected>${esc(cur)} (removed)</option>`}
+        </select>
+      </div>` : '';
   return `<div style="display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; align-items:center; padding:10px 0; border-top:1px solid rgba(0,0,0,.07)">
     <div style="display:flex; align-items:center; gap:8px; min-width:0">
       <div class="dot" style="background:${dot}"></div>
@@ -90,7 +108,7 @@ function agentsRow(h) {
     ${h.connected
       ? `<button class="btn" data-act="agDisconnect" data-v="${h.id}" ${busy ? 'disabled' : ''}>Disconnect</button>`
       : `<button class="btn" data-act="agConnect" data-v="${h.id}" ${busy ? 'disabled' : ''}>Connect</button>`}
-    ${alerts}${msg}
+    ${picker}${alerts}${msg}
   </div>`;
 }
 
@@ -116,13 +134,22 @@ function viewAgents() {
 RB.delegate(root, 'click', {
   agConnect: el => {
     const h = AG.data.harnesses.find(x => x.id === el.dataset.v);
-    agentsAsk(h.id, true, h.alertsOn);
+    agentsAsk(h.id, true, h.alertsOn, AG.targets[h.id]);
   },
   agDisconnect: el => agentsAsk(el.dataset.v, false, false),
   agAlerts: el => {
     const h = AG.data.harnesses.find(x => x.id === el.dataset.v);
-    agentsAsk(h.id, true, !h.alertsOn);
+    agentsAsk(h.id, true, !h.alertsOn, h.target);
   },
   agCancel: () => { AG.preview = null; render(true); },
   agConfirm: agentsConfirm
+});
+
+root.addEventListener('change', e => {
+  const id = e.target.dataset && e.target.dataset.agtarget;
+  if (!id || !AG.data) return;
+  const h = AG.data.harnesses.find(x => x.id === id), t = e.target.value === 'this' ? null : e.target.value;
+  // A connected app's config is changed (with a preview); otherwise it's used when connecting.
+  if (h.connected) agentsAsk(id, true, h.alertsOn, t);
+  else { AG.targets[id] = t; render(true); }
 });
