@@ -1,4 +1,5 @@
 mod boards;
+mod fullscreen;
 mod notify;
 mod secrets;
 mod send;
@@ -19,8 +20,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::image::Image;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalRect, PhysicalSize, RunEvent, State,
-    WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalRect, PhysicalSize, RunEvent,
+    State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tokio::sync::Notify;
@@ -34,6 +35,8 @@ const HISTORY_MAX: usize = 12;
 const RECENT_MAX: usize = 50;
 const TRAY_W: f64 = 336.0;
 const TRAY_PAD: f64 = 14.0;
+/// Rattleboard's page, linked from the tray menu, Settings and full screen
+const SITE: &str = "https://www.iokig.com/rattleboard";
 
 #[cfg(target_os = "macos")]
 const OS: &str = "mac";
@@ -82,6 +85,8 @@ struct Runtime {
     drag_origin: Option<PhysicalPosition<i32>>,
     /// Why the last sequence stopped early, if it did
     play_error: Option<String>,
+    /// The display full screen covers: its position and size
+    covered: Option<(i32, i32, u32, u32)>,
 }
 
 struct Secrets {
@@ -197,6 +202,23 @@ fn device_name() -> String {
     #[cfg(not(target_os = "macos"))]
     let name = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).ok();
     name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Rattleboard".into())
+}
+
+/// Debug builds only: RATTLEBOARD_PROFILE=<name> keeps settings and keys apart from the real
+/// ones, in config and data folders of its own (keys in a file there, see `secrets.rs`), for
+/// trying changes out without touching them.
+pub(crate) fn profile() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var("RATTLEBOARD_PROFILE").ok().filter(|p| !p.is_empty())
+}
+
+fn profile_dir(dir: PathBuf) -> PathBuf {
+    match (profile(), dir.file_name()) {
+        (Some(p), Some(name)) => dir.with_file_name(format!("{}.{p}", name.to_string_lossy())),
+        _ => dir,
+    }
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -451,6 +473,9 @@ fn clamp_to(wa: &PhysicalRect<i32, u32>, size: PhysicalSize<u32>, scale: f64, x:
 fn place_board(app: &AppHandle, size: Option<PhysicalSize<u32>>) {
     let Some(w) = board(app) else { return };
     let s = app.state::<AppState>().settings.lock().unwrap().clone();
+    if s.fullscreen() {
+        return;
+    }
     let size = size.unwrap_or_else(|| w.outer_size().unwrap_or_default());
     let (x, y) = if s.floating() {
         let (cx, cy) = (s.custom.x as i32, s.custom.y as i32);
@@ -475,8 +500,22 @@ fn apply_layering(app: &AppHandle) {
     let Some(w) = board(app) else { return };
     let s = app.state::<AppState>().settings.lock().unwrap().clone();
     let desktop = s.floating() && s.float_layer == "desktop";
+    // Full screen stays above other apps, but not above Settings or Compose opened over it.
+    let top = if s.fullscreen() { app.get_webview_window("panel").is_none() } else { !desktop };
     let _ = w.set_always_on_bottom(desktop);
-    let _ = w.set_always_on_top(!desktop);
+    let _ = w.set_always_on_top(top);
+    if s.fullscreen() && top {
+        over_menu_bar(&w);
+    }
+}
+
+/// A full-screen board on top covers the menu bar and Dock too (on Windows, full screen
+/// already covers the taskbar).
+fn over_menu_bar(_w: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    if let Ok(p) = _w.ns_window() {
+        fullscreen::above_menu_bar(p);
+    }
 }
 
 /// Shows the board window and tells it to flip into view. `countdown` starts the
@@ -509,6 +548,166 @@ fn create_board(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------- full screen
+
+/// Behind the board in full screen: near-black for a black board, light for a white one
+/// (as `--backdrop` in board.html).
+fn backdrop(s: &Settings) -> tauri::window::Color {
+    if s.finish == "white" {
+        tauri::window::Color(0xe4, 0xe2, 0xdc, 255)
+    } else {
+        tauri::window::Color(0x05, 0x05, 0x06, 255)
+    }
+}
+
+fn rect_of(m: &Monitor) -> (i32, i32, u32, u32) {
+    (m.position().x, m.position().y, m.size().width, m.size().height)
+}
+
+/// The display full screen covers: the chosen one, else the main display.
+fn chosen_screen(app: &AppHandle, s: &Settings) -> Option<Monitor> {
+    let all = app.available_monitors().unwrap_or_default();
+    let list: Vec<_> = all.iter().map(|m| (m.name().cloned().unwrap_or_default(), (m.position().x, m.position().y))).collect();
+    let pos = (s.screen_pos.x as i32, s.screen_pos.y as i32);
+    match fullscreen::pick_screen(&list, &s.screen_name, pos) {
+        Some(i) => all.into_iter().nth(i),
+        None => app.primary_monitor().ok().flatten().or_else(|| all.into_iter().next()),
+    }
+}
+
+/// Covers the chosen display with the board, menu bar and dock or taskbar included, and keeps
+/// it awake; again after the display changes, to re-fit it. On the main thread, and never
+/// with a lock held: every call here goes to the window system.
+fn cover_screen(app: &AppHandle) {
+    let Some(w) = board(app) else { return };
+    let s = app.state::<AppState>().settings.lock().unwrap().clone();
+    let Some(m) = chosen_screen(app, &s) else { return };
+    let _ = w.set_focusable(true);
+    let _ = w.set_background_color(Some(backdrop(&s)));
+    apply_layering(app);
+    // Shown first: a hidden window isn't on any display yet.
+    let _ = w.show();
+    #[cfg(target_os = "macos")]
+    {
+        // Simple full screen covers the display the window is on, without a Space of its own.
+        let _ = w.set_simple_fullscreen(false);
+        let _ = w.set_position(m.position().to_logical::<f64>(m.scale_factor()));
+        let _ = w.set_simple_fullscreen(true);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let p = m.position();
+        let _ = w.set_fullscreen_on_monitor(PhysicalPosition::new(p.x as f64, p.y as f64));
+    }
+    focus_board(&w);
+    app.state::<AppState>().rt.lock().unwrap().covered = Some(rect_of(&m));
+    fullscreen::keep_awake(true);
+    let _ = app.emit_to("board", "rb://present", false);
+}
+
+/// Full screen takes keys (Esc, F11): the window, and the page in it.
+fn focus_board(w: &WebviewWindow) {
+    let _ = w.set_focus();
+    let _ = w.as_ref().set_focus();
+}
+
+/// Back from full screen to the pop-up or widget; the display may sleep again.
+fn uncover_screen(app: &AppHandle) {
+    fullscreen::keep_awake(false);
+    app.state::<AppState>().rt.lock().unwrap().covered = None;
+    let Some(w) = board(app) else { return };
+    #[cfg(target_os = "macos")]
+    let _ = w.set_simple_fullscreen(false);
+    #[cfg(not(target_os = "macos"))]
+    let _ = w.set_fullscreen(false);
+    let _ = w.set_focusable(false);
+    let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    apply_layering(app);
+    place_board(app, None);
+}
+
+/// Follows display changes while full screen: a new resolution, or the chosen display going
+/// away (the board moves to the main display), as after unplugging a monitor or waking up.
+async fn watch_screens(app: AppHandle) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if !app.state::<AppState>().settings.lock().unwrap().fullscreen() {
+            continue;
+        }
+        let a = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            // Looked at again here: full screen may have ended while this waited its turn.
+            let st = a.state::<AppState>();
+            let s = st.settings.lock().unwrap().clone();
+            let covered = st.rt.lock().unwrap().covered;
+            if s.fullscreen() && chosen_screen(&a, &s).map(|m| rect_of(&m)) != covered {
+                cover_screen(&a);
+            }
+        });
+    }
+}
+
+/// Tray, menus and keys (F11, and Control-Command-F on macOS): into full screen, or back to
+/// the pop-up or widget it came from.
+#[tauri::command]
+fn toggle_fullscreen(app: AppHandle) {
+    hide_tray(&app);
+    let s = app.state::<AppState>().settings.lock().unwrap().clone();
+    let mode = if s.fullscreen() { s.windowed_mode.clone() } else { "fullscreen".into() };
+    let _ = apply_settings(&app, json!({ "mode": mode }));
+    if s.fullscreen() {
+        present_board(&app, true);
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Screen {
+    name: String,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    primary: bool,
+}
+
+/// The displays full screen can cover, for Settings → Display.
+#[tauri::command]
+fn list_screens(app: AppHandle) -> Vec<Screen> {
+    let main = app.primary_monitor().ok().flatten().map(|m| rect_of(&m));
+    let all = app.available_monitors().unwrap_or_default();
+    all.iter()
+        .map(|m| {
+            let (x, y, width, height) = rect_of(m);
+            Screen { name: m.name().cloned().unwrap_or_default(), x, y, width, height, primary: main == Some((x, y, width, height)) }
+        })
+        .collect()
+}
+
+/// The board page hides the pointer after a while without movement.
+#[tauri::command]
+fn hide_pointer(app: AppHandle) {
+    let _ = app.run_on_main_thread(fullscreen::hide_pointer);
+}
+
+/// macOS's menu, with full screen as Rattleboard's own rather than a Space of its own.
+#[cfg(target_os = "macos")]
+fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem};
+    let menu = Menu::default(app)?;
+    for item in menu.items()? {
+        if let Some(view) = item.as_submenu().filter(|s| s.text().is_ok_and(|t| t == "View")) {
+            view.remove_at(0)?;
+            view.append(&MenuItem::with_id(app, "fullscreen", "Full Screen", true, Some("Ctrl+Cmd+F"))?)?;
+        }
+    }
+    Ok(menu)
+}
+
+/// The Windows tray menu's "Full screen" item, ticked while it is.
+#[cfg(not(target_os = "macos"))]
+struct FullItem(tauri::menu::CheckMenuItem<tauri::Wry>);
+
 // ---------------------------------------------------------------- tray
 
 fn tray_image(unread: bool) -> Option<Image<'static>> {
@@ -524,6 +723,11 @@ fn tray_image(unread: bool) -> Option<Image<'static>> {
 fn refresh_tray_icon(app: &AppHandle) {
     let st = app.state::<AppState>();
     let unread = st.rt.lock().unwrap().unread;
+    #[cfg(not(target_os = "macos"))]
+    if let Some(item) = app.try_state::<FullItem>() {
+        let full = st.settings.lock().unwrap().fullscreen();
+        let _ = item.0.set_checked(full);
+    }
     if let Some(t) = app.tray_by_id("main") {
         let _ = t.set_icon(tray_image(unread));
         #[cfg(target_os = "macos")]
@@ -617,6 +821,7 @@ fn open_panel(app: &AppHandle, view: &str) {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+        lower_fullscreen(app);
         return;
     }
     let url = WebviewUrl::App(format!("panel.html#{view}").into());
@@ -641,6 +846,14 @@ fn open_panel(app: &AppHandle, view: &str) {
                 let _ = w2.set_focus();
             }
         });
+    }
+    lower_fullscreen(app);
+}
+
+/// A full-screen board makes way for Settings or Compose, and comes back when they close.
+fn lower_fullscreen(app: &AppHandle) {
+    if app.state::<AppState>().settings.lock().unwrap().fullscreen() {
+        apply_layering(app);
     }
 }
 
@@ -1438,28 +1651,49 @@ fn get_state(st: State<AppState>) -> Snapshot {
 }
 
 #[tauri::command]
-fn update_settings(app: AppHandle, st: State<AppState>, patch: serde_json::Value) -> Result<(), String> {
+fn update_settings(app: AppHandle, patch: serde_json::Value) -> Result<(), String> {
+    apply_settings(&app, patch)
+}
+
+fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), String> {
+    let st = app.state::<AppState>();
     // Window queries happen before any lock is taken (see show_message).
-    let board_pos = board(&app).filter(|w| w.is_visible().unwrap_or(false)).and_then(|w| w.outer_position().ok());
+    let board_pos = board(app).filter(|w| w.is_visible().unwrap_or(false)).and_then(|w| w.outer_position().ok());
     let (old, new) = {
         let mut s = st.settings.lock().unwrap();
         let old = s.clone();
         let mut new = s.merge(patch)?;
-        if !old.floating() && new.floating() {
+        if old.mode == "toast" && new.floating() {
             // Pinning a visible toast keeps it right where it is.
             if let Some(p) = board_pos {
                 new.custom = Point { x: p.x as f64, y: p.y as f64 };
             }
         }
+        if !old.fullscreen() && new.fullscreen() {
+            new.windowed_mode = old.mode.clone();
+        }
         *s = new.clone();
         new.save(&st.settings_path);
         (old, new)
     };
+    // Into or out of full screen first, so a pop-up or widget is then placed as usual.
+    let screen_moved = old.screen_name != new.screen_name || old.screen_pos != new.screen_pos;
+    if old.fullscreen() != new.fullscreen() || (new.fullscreen() && screen_moved) {
+        if new.fullscreen() {
+            cover_screen(app);
+        } else {
+            uncover_screen(app);
+        }
+    } else if new.fullscreen() && old.finish != new.finish {
+        if let Some(w) = board(app) {
+            let _ = w.set_background_color(Some(backdrop(&new)));
+        }
+    }
     if old.mode != new.mode || old.float_layer != new.float_layer {
-        apply_layering(&app);
+        apply_layering(app);
     }
     if old.mode != new.mode || old.position != new.position || old.custom != new.custom {
-        place_board(&app, None);
+        place_board(app, None);
     }
     if old.mode != new.mode {
         let _ = app.emit_to("board", "rb://mode", ());
@@ -1480,9 +1714,9 @@ fn update_settings(app: AppHandle, st: State<AppState>, patch: serde_json::Value
         st.wake.notify_one();
     }
     if old.launch_login != new.launch_login && new.setup_done {
-        set_autostart(&app, new.launch_login);
+        set_autostart(app, new.launch_login);
     }
-    broadcast(&app);
+    broadcast(app);
     Ok(())
 }
 
@@ -1595,6 +1829,14 @@ fn clear_history(app: AppHandle, st: State<AppState>) {
     broadcast(&app);
 }
 
+/// Opens Rattleboard's page in the default browser. Only ever that one address, so the
+/// pages need no opener permission of their own.
+#[tauri::command]
+fn open_site(app: AppHandle) {
+    use tauri_plugin_opener::OpenerExt;
+    let _ = app.opener().open_url(SITE, None::<&str>);
+}
+
 #[tauri::command]
 fn open_window(app: AppHandle, view: String) {
     open_panel(&app, &view);
@@ -1630,6 +1872,7 @@ fn finish_setup(app: AppHandle, st: State<AppState>) {
 
 #[tauri::command]
 fn quit(app: AppHandle) {
+    fullscreen::keep_awake(false);
     for w in app.webview_windows().values() {
         let _ = w.hide();
     }
@@ -1645,6 +1888,10 @@ fn quit(app: AppHandle) {
 #[tauri::command]
 fn board_resize(app: AppHandle, width: f64, height: f64) {
     let Some(w) = board(&app) else { return };
+    if app.state::<AppState>().settings.lock().unwrap().fullscreen() {
+        // The window is the display's size; the page fits the board into it.
+        return;
+    }
     let size = tauri::LogicalSize::new(width + SHADOW * 2.0, height + SHADOW * 2.0);
     let _ = w.set_size(size);
     // A message of another size resizes the board: a pop-up stays anchored to its corner and a
@@ -1734,12 +1981,22 @@ fn panel_resize(app: AppHandle, width: f64, height: f64) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    #[cfg(target_os = "macos")]
+    fullscreen::no_system_fullscreen_item();
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(app_menu).on_menu_event(|app, e| {
+        if e.id() == "fullscreen" {
+            toggle_fullscreen(app.clone());
+        }
+    });
+    let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let setup = !app.state::<AppState>().settings.lock().unwrap().setup_done;
             open_panel(app, if setup { "setup" } else { "settings" });
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_state,
             update_settings,
@@ -1782,26 +2039,34 @@ pub fn run() {
             notify_request_access,
             set_groups,
             read_pair_link,
+            toggle_fullscreen,
+            list_screens,
+            hide_pointer,
+            open_site,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let cfg = app.path().app_config_dir()?;
-            let data = app.path().app_data_dir()?;
+            let cfg = profile_dir(app.path().app_config_dir()?);
+            let data = profile_dir(app.path().app_data_dir()?);
+            if profile().is_some() {
+                let _ = secrets::PROFILE_FILE.set(cfg.join("secrets.json"));
+            }
             let settings_path = cfg.join("settings.json");
             let history_path = data.join("history.json");
             let boards_path = cfg.join("boards.json");
             let drafts_path = cfg.join("drafts.json");
             let groups_path = cfg.join("groups.json");
             let recent_path = data.join("recent.json");
-            let settings = Settings::load(&settings_path);
+            let settings = Settings::load(&settings_path).at_launch();
             let history: Vec<HistoryEntry> = std::fs::read_to_string(&history_path)
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
             let setup_done = settings.setup_done;
             let floating = settings.floating();
+            let full = settings.fullscreen();
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 rt: Mutex::new(Runtime { history, ..Default::default() }),
@@ -1836,6 +2101,17 @@ pub fn run() {
 
             let h = app.handle().clone();
             create_board(&h)?;
+            #[cfg(target_os = "macos")]
+            if let Some(p) = board(&h).and_then(|w| w.ns_window().ok()) {
+                let a = h.clone();
+                fullscreen::watch_escape(p, move || {
+                    let full = a.state::<AppState>().settings.lock().unwrap().fullscreen();
+                    if full {
+                        toggle_fullscreen(a.clone());
+                    }
+                    full
+                });
+            }
             create_tray_window(&h)?;
 
             let mut tray = TrayIconBuilder::with_id("main")
@@ -1851,21 +2127,28 @@ pub fn run() {
                 });
             #[cfg(not(target_os = "macos"))]
             {
-                use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+                use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+                let full_item = CheckMenuItem::with_id(app, "fullscreen", "Full screen", true, full, Some("F11"))?;
+                app.manage(FullItem(full_item.clone()));
                 let menu = Menu::with_items(
                     app,
                     &[
                         &MenuItem::with_id(app, "show", "Show board", true, None::<&str>)?,
+                        &full_item,
                         &MenuItem::with_id(app, "compose", "Compose…", true, None::<&str>)?,
                         &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &MenuItem::with_id(app, "site", "Rattleboard on iokig.com", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
                         &MenuItem::with_id(app, "quit", "Quit Rattleboard", true, None::<&str>)?,
                     ],
                 )?;
                 tray = tray.menu(&menu).on_menu_event(|app, e| match e.id().as_ref() {
                     "show" => present_board(app, true),
+                    "fullscreen" => toggle_fullscreen(app.clone()),
                     "compose" => open_panel(app, "compose"),
                     "settings" => open_panel(app, "settings"),
+                    "site" => open_site(app.clone()),
                     "quit" => quit(app.clone()),
                     _ => {}
                 });
@@ -1876,11 +2159,16 @@ pub fn run() {
             tray.build(app)?;
 
             tauri::async_runtime::spawn(poll_loop(h.clone()));
+            tauri::async_runtime::spawn(watch_screens(h.clone()));
             notify::start(&h);
             let h2 = h.clone();
             tauri::async_runtime::spawn(async move { restart_server(&h2).await });
             if !setup_done {
                 open_panel(&h, "setup");
+            } else if full {
+                // Once the event loop runs and the window exists on screen.
+                let h2 = h.clone();
+                let _ = h.run_on_main_thread(move || cover_screen(&h2));
             } else if floating {
                 // A floating board is always on screen, even before the first check answers.
                 present_board(&h, false);
@@ -1888,6 +2176,31 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|w, e| {
+            if w.label() == "panel" {
+                if let WindowEvent::Destroyed = e {
+                    // Settings or Compose closed over a full-screen board: it's back on top.
+                    let app = w.app_handle();
+                    if app.state::<AppState>().settings.lock().unwrap().fullscreen() {
+                        if let Some(b) = board(app) {
+                            let _ = b.set_always_on_top(true);
+                            over_menu_bar(&b);
+                            focus_board(&b);
+                        }
+                    }
+                }
+            }
+            if w.label() == "board" {
+                if let WindowEvent::Focused(true) = e {
+                    // A click that brings Rattleboard forward leaves keys with the window, not
+                    // the page, so Esc would go nowhere.
+                    let app = w.app_handle();
+                    if app.state::<AppState>().settings.lock().unwrap().fullscreen() {
+                        if let Some(b) = board(app) {
+                            let _ = b.as_ref().set_focus();
+                        }
+                    }
+                }
+            }
             if w.label() == "tray" {
                 if let WindowEvent::Focused(false) = e {
                     let _ = w.hide();

@@ -24,8 +24,9 @@ function render() {
   const to = s.sendTarget !== 'this' && RB.targets(S).some(t => t[0] === s.sendTarget) && { name: RB.targetName(S, s.sendTarget) };
   const groups = [
     [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
-    [['pin', 'Pin as widget', '', s.mode === 'float'], ['pause', 'Pause checking', '', !s.polling]],
+    [['pin', 'Pin as widget', '', s.mode === 'float'], ['full', 'Full screen', kbd('⌃⌘F', 'F11'), s.mode === 'fullscreen'], ['pause', 'Pause checking', '', !s.polling]],
     [['compose', 'Compose…', kbd('⌘N', 'Ctrl+N')], ['history', 'Message history…', ''], ['settings', 'Settings…', kbd('⌘,', '')], ['setup', 'Run setup again…', '']],
+    [['site', 'Rattleboard on iokig.com', '']],
     [['quit', 'Quit Rattleboard', kbd('⌘Q', '')]]
   ];
   menu.style.margin = mac ? '0 auto' : '0';
@@ -76,11 +77,13 @@ const act = {
   replay: () => RB.invoke('replay'),
   resend: () => { RB.invoke('send_message', { target: S.settings.sendTarget, message: { characters: S.display } }).catch(() => {}); RB.invoke('close_window', { label: 'tray' }); },
   pin: () => { RB.invoke('update_settings', { patch: { mode: S.settings.mode === 'float' ? 'toast' : 'float' } }); RB.invoke('show_board'); },
+  full: () => RB.invoke('toggle_fullscreen'),
   pause: () => { RB.invoke('update_settings', { patch: { polling: !S.settings.polling } }); RB.invoke('close_window', { label: 'tray' }); },
   compose: () => RB.invoke('open_window', { view: 'compose' }),
   history: () => RB.invoke('open_window', { view: 'history' }),
   settings: () => RB.invoke('open_window', { view: 'settings' }),
   setup: () => RB.invoke('open_window', { view: 'setup' }),
+  site: () => { RB.invoke('open_site'); RB.invoke('close_window', { label: 'tray' }); },
   quit: () => RB.invoke('quit')
 };
 RB.delegate(menu, 'click', Object.fromEntries(Object.entries(act).map(([k, f]) => [k, () => f()])));
@@ -89,6 +92,7 @@ RB.delegate(menu, 'click', { stopSeq: el => RB.invoke('stop_sequence', { target:
 document.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
   if (e.key === 'Escape') RB.invoke('close_window', { label: 'tray' });
+  else if (e.key === 'F11') { e.preventDefault(); act.full(); }
   else if (mod && k === 'b') act.show();
   else if (mod && k === ',') act.settings();
   else if (mod && k === 'n') act.compose();

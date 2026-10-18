@@ -28,6 +28,36 @@
   #grip.tr { right: 2px; top: 2px; cursor: nesw-resize; transform: rotate(-90deg); }
   #grip.bl { left: 2px; bottom: 2px; cursor: nesw-resize; transform: rotate(90deg); }
   #fill { height: 100%; width: 0; background: var(--band); border-radius: 2px; transition: width .1s linear; }
+
+  /* Full screen: the window covers a display; the board is fitted and centred on a solid backdrop. */
+  html.full, html.full body { background: var(--backdrop); }
+  html.full body { padding: 0; width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+  html.full #stage { cursor: default; }
+  html.full #chrome, html.full #bar, html.full #grip { display: none; }
+  html.nopointer, html.nopointer * { cursor: none !important; }
+  #overlay, #pair { position: fixed; left: 50%; display: none; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+    opacity: 0; transition: opacity .25s ease, transform .25s cubic-bezier(.2,.8,.2,1); }
+  html.full #overlay, html.full #pair.open { display: flex; }
+  #overlay { bottom: 28px; transform: translate(-50%, 10px); align-items: center; gap: 14px; padding: 8px 8px 8px 16px; border-radius: 14px;
+    background: var(--ov); color: var(--ov-ink); box-shadow: 0 10px 30px rgba(0,0,0,.3), 0 0 0 .5px rgba(0,0,0,.25); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+  #overlay.on { opacity: 1; transform: translate(-50%, 0); }
+  #ovStatus { display: flex; align-items: center; gap: 8px; font-size: 12.5px; white-space: nowrap; max-width: 46vw; overflow: hidden; text-overflow: ellipsis; }
+  #ovDot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  #ovBtns { display: flex; gap: 4px; }
+  #ovBtns button { border: none; font: inherit; font-size: 12.5px; height: 28px; padding: 0 12px; border-radius: 8px; cursor: pointer; color: var(--ov-ink); background: var(--bb); white-space: nowrap; }
+  #ovBtns button:hover { background: var(--bb-on); }
+  #pair { bottom: 92px; transform: translate(-50%, 10px); gap: 18px; align-items: center; padding: 18px; border-radius: 12px; background: #fff; color: #1b1b1d;
+    font-size: 13px; box-shadow: 0 16px 40px rgba(0,0,0,.35), 0 0 0 1px rgba(0,0,0,.1); max-width: min(560px, 90vw); box-sizing: border-box; }
+  #pair.on { opacity: 1; transform: translate(-50%, 0); }
+  #pair .qr { width: 200px; height: 200px; flex: none; display: flex; }
+  #pair .qr svg { width: 100%; height: 100%; }
+  #pair .hint { color: #6b6d72; font-size: 12px; line-height: 1.45; text-wrap: pretty; }
+  /* The free version's credit: always there in full screen, below and right of the board. */
+  #credit { position: fixed; display: none; right: var(--credit-gap); bottom: var(--credit-gap); font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: var(--credit-fs); letter-spacing: .02em; color: var(--credit); pointer-events: none; text-decoration: none; }
+  html.full #credit { display: block; }
+  html.full #credit.live { pointer-events: auto; cursor: pointer; }
+  #pair button { border: 1px solid rgba(0,0,0,.15); background: #fff; border-radius: 6px; font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -43,6 +73,17 @@
   </div>
   <div id="bar"><div id="fill"></div></div>
   <div id="grip" data-nodrag="1" title="Drag to resize"></div>
+</div>
+<div id="pair"></div>
+<a id="credit" data-act="site">iokig.com</a>
+<div id="overlay">
+  <div id="ovStatus"><div id="ovDot"></div><span id="ovText"></span></div>
+  <div id="ovBtns">
+    <button data-act="exitFull">Exit full screen</button>
+    <button data-act="replay">Replay</button>
+    <button data-act="pair">Pair a phone</button>
+    <button data-act="settings">Settings</button>
+  </div>
 </div>
 <script src="shared/common.js"></script>
 <script src="shared/split-flap.js"></script>

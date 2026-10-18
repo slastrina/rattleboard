@@ -50,11 +50,13 @@ function corners() {
     <div style="color:#6b6d72; font-size:12px; line-height:1.45; text-wrap:pretty">${caption}</div></div>`;
 }
 
-const modeSeg = () => seg([['toast', 'Pop-up'], ['float', 'Pinned widget']], S.settings.mode, 'mode');
+const modeSeg = () => seg([['toast', 'Pop-up'], ['float', 'Pinned'], ['fullscreen', 'Full screen']], S.settings.mode, 'mode');
 const modeHint = () => S.settings.mode === 'float'
   ? 'Stays on screen wherever you drop it. Rattleboard remembers its spot and size.'
+  : S.settings.mode === 'fullscreen'
+  ? `Covers the whole display and keeps it awake, like a board on the wall. ${S.os === 'mac' ? '⌃⌘F' : 'F11'} or Esc leaves full screen; move the pointer for controls.`
   : 'Flips into view in a corner when the message changes, then tucks away.';
-const sizeRow = () => `<div class="lbl">Tile size</div>
+const sizeRow = () => S.settings.mode === 'fullscreen' ? '' : `<div class="lbl">Tile size</div>
   <div style="display:flex; align-items:center; gap:10px">${range(0.4, 3, 0.05, S.settings.scale, 'scale')}<span id="scaleLabel" style="font-variant-numeric:tabular-nums; min-width:44px">${Math.round(S.settings.scale * 100)}%</span></div>
   <div></div><div class="hint" style="margin-top:-10px">Or hover over the board and drag its corner handle. A smaller message makes a smaller board at the same tile size.</div>`;
 // Where/how the board shows up, shared by Settings → Display and setup.
@@ -64,8 +66,22 @@ function placementRows() {
     <div style="display:flex; flex-direction:column; gap:6px">${modeSeg()}<span class="hint">${modeHint()}</span></div>
     ${s.mode === 'float'
       ? `<div class="lbl">Layer</div>${seg([['desktop', 'On the desktop'], ['top', 'Above other windows']], s.floatLayer, 'floatLayer')}`
+      : s.mode === 'fullscreen' ? screenRow()
       : `<div class="lbl" style="align-self:start; padding-top:4px">Pop up in</div>${corners()}`}`;
 }
+// Full screen's display, when there's more than one: remembered by name, and by position to
+// tell two of the same model apart. The main display is the default and the fallback.
+function screenRow() {
+  const s = S.settings, list = L.screens || [];
+  if (list.length < 2) return '';
+  const cur = list.findIndex(d => d.name === s.screenName && d.x === s.screenPos.x && d.y === s.screenPos.y);
+  const named = cur < 0 ? list.findIndex(d => d.name === s.screenName) : cur;
+  const opt = (d, i) => `<option value="${i}" ${i === named ? 'selected' : ''}>${esc(d.name || 'Display ' + (i + 1))} · ${d.width} × ${d.height}${d.primary ? ' (main)' : ''}</option>`;
+  return `<div class="lbl">Display</div>
+    <select class="field" style="justify-self:start; width:280px" data-field="screen">
+      <option value="" ${s.screenName && named >= 0 ? '' : 'selected'}>Main display</option>${list.map(opt).join('')}</select>`;
+}
+const loadScreens = () => RB.invoke('list_screens').then(l => { L.screens = l; render(true); });
 // Board size: the presets, or a custom size (validated here and in the backend).
 const presetSeg = (cur, act = 'model', rows = S.settings.rows, cols = S.settings.cols, fields = ['rows', 'cols']) => {
   const presets = seg([...RB.PRESETS.map(([v, l]) => [v, l]), ['custom', 'Custom']], cur, act);
@@ -103,7 +119,8 @@ function viewSettings() {
     </div>`;
   } else if (L.tab === 'behavior') {
     body = `<div class="grid">
-      ${s.mode === 'float' ? `<div></div><div class="hint">The board is pinned as a widget, so it doesn't hide. Pop-up timing applies when you unpin it.</div>` : ''}
+      ${s.mode === 'float' ? `<div></div><div class="hint">The board is pinned as a widget, so it doesn't hide. Pop-up timing applies when you unpin it.</div>`
+        : s.mode === 'fullscreen' ? `<div></div><div class="hint">The board is full screen, so it doesn't hide. Pop-up timing applies when you leave full screen.</div>` : ''}
       <div class="lbl">Hide after</div>
       <div style="display:flex; align-items:center; gap:10px">${range(3, 60, 1, s.hideSec, 'hideSec')}<span id="hideLabel" style="font-variant-numeric:tabular-nums; min-width:44px">${s.hideSec} s</span></div>
       <div class="lbl">Pause on hover</div>
@@ -112,6 +129,10 @@ function viewSettings() {
       <div style="display:flex; align-items:center; gap:10px">${range(0.5, 2, 0.1, s.speed, 'speed')}<span id="speedLabel" style="font-variant-numeric:tabular-nums">${speedLabel(s.speed)}</span></div>
       <div class="lbl">Flap sound</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.sound, 'sound')}<span class="hint">Mechanical clatter while flaps turn</span></div>
+      <div class="lbl">Start at login</div>
+      <div style="display:flex; align-items:center; gap:10px">${tog(s.launchLogin, 'launchLogin')}<span class="hint">Start Rattleboard when I log in</span></div>
+      <div class="lbl">Full screen at launch</div>
+      <div style="display:flex; align-items:center; gap:10px">${tog(s.fullscreenLaunch, 'fullscreenLaunch')}<span class="hint">Open in full screen at launch, for a spare computer used as a board. Otherwise full screen lasts until Rattleboard quits.</span></div>
     </div>`;
   } else if (L.tab === 'api') {
     body = viewApi();
@@ -153,11 +174,12 @@ function viewSettings() {
         ${lines.map(([t, c]) => `<div style="color:${c}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${esc(t)}</div>`).join('')}
         <div style="color:#8e9096; font-family:-apple-system, 'Segoe UI', system-ui, sans-serif; font-size:11.5px; margin-top:6px">${note}</div>
       </div>
-      <div class="lbl">Open at login</div>${tog(s.launchLogin, 'launchLogin')}
     </div>`;
   }
   return `<div class="hdr" style="display:flex; justify-content:center; padding:16px 24px 0">${seg(tabs().map(t => [t, TAB_NAMES[t]]), L.tab, 'tab', 'tabs')}</div>
-    <div class="scroll"><div style="padding:18px 24px 22px">${body}</div></div>`;
+    <div class="scroll"><div style="padding:18px 24px 22px">${body}</div></div>
+    <div class="hdr hint" style="display:flex; gap:6px; padding:10px 24px 12px; border-top:1px solid rgba(0,0,0,.06); font-size:11.5px">
+      <span>Rattleboard v${esc(S.version)}</span>·<a href="#" data-act="site" style="color:${RB.ACC}; text-decoration:none">iokig.com</a>·<span>Not affiliated with or endorsed by Vestaboard, Inc.</span></div>`;
 }
 const TAB_NAMES = { display: 'Display', behavior: 'Behavior', connection: 'Connection', api: 'API server', boards: 'Boards', notify: 'Notifications' };
 // Notification forwarding exists only where the OS lets apps read notifications (Windows).
@@ -552,7 +574,7 @@ function viewSetup() {
     body = `<div style="font-size:17px; font-weight:600">Where should it appear?</div>
       <div style="display:grid; grid-template-columns:130px minmax(0,1fr); gap:16px; align-items:center">
         ${placementRows()}
-        ${s.mode === 'float' ? '' : `<div class="lbl">Hide after</div>
+        ${s.mode !== 'toast' ? '' : `<div class="lbl">Hide after</div>
         <div style="display:flex; align-items:center; gap:10px">${range(3, 60, 1, s.hideSec, 'hideSec')}<span id="hideLabel" style="font-variant-numeric:tabular-nums">${s.hideSec} s</span></div>`}
         <div class="lbl">Board</div>${modelSeg()}
       </div>`;
@@ -561,6 +583,7 @@ function viewSetup() {
       ['Reading from', s.source === 'local' ? `Local network · ${s.host}` : s.source === 'demo' ? 'Demo · sample messages' : s.source === 'virtual' ? `Virtual board · ${S.server.urls[0] || 'API server'}` : 'Cloud API'],
       ...(s.source === 'demo' || s.source === 'virtual' ? [] : [['Checks every', s.pollEvery + ' s']]),
       s.mode === 'float' ? ['Shows as', 'Pinned widget · drag it anywhere, resize from its corner']
+        : s.mode === 'fullscreen' ? ['Shows as', `Full screen · ${S.os === 'mac' ? '⌃⌘F' : 'F11'} or Esc to leave`]
         : ['Pops up', `${RB.posNames[s.position]} · hides after ${s.hideSec} s`]
     ];
     body = `<div style="font-size:20px; font-weight:600">You're set</div>
@@ -620,6 +643,7 @@ function setView(v) {
   L.view = v;
   if (v === 'setup') Object.assign(L, { step: 0, test: 'idle', testLayout: null, setupSource: S ? S.settings.source : 'local' });
   if (v === 'settings' && L.tab === 'boards' && L.addMode === 'nearby') scanNearby();
+  if (v === 'settings' && L.tab === 'display') loadScreens();
   render(true);
 }
 RB.listen('rb://view', e => setView(e.payload));
@@ -643,6 +667,7 @@ const testFlow = () => {
 RB.delegate(root, 'click', {
   tab: el => {
     L.tab = el.dataset.v; L.showKey = false; render(true);
+    if (L.tab === 'display') loadScreens();
     if (L.tab === 'boards' && L.addMode === 'nearby' && L.found2 !== null) scanNearby();
   },
   model: el => save({ model: el.dataset.v }),
@@ -701,6 +726,8 @@ RB.delegate(root, 'click', {
   notifyReturn: el => save({ notifyReturnSec: +el.dataset.v }),
   sound: () => save({ sound: !S.settings.sound }),
   launchLogin: () => save({ launchLogin: !S.settings.launchLogin }),
+  site: (el, e) => { e.preventDefault(); RB.invoke('open_site'); },
+  fullscreenLaunch: () => save({ fullscreenLaunch: !S.settings.fullscreenLaunch }),
   showKey: () => { L.showKey = !L.showKey; render(true); },
   test: () => RB.invoke('test_connection').catch(() => {}),
   clear: () => RB.invoke('clear_history'),
@@ -756,6 +783,10 @@ root.addEventListener('change', e => {
     RB.invoke('set_secret', { kind: f === 'cloudToken' ? 'cloud' : 'local', value: v });
   } else if (f === 'host' || f === 'boardName' || f === 'notifyTarget' || f === 'notifyQuietFrom' || f === 'notifyQuietTo') save({ [f]: v.trim() });
   else if (f === 'hideSec') save({ hideSec: +v });
+  else if (f === 'screen') {
+    const d = v === '' ? null : L.screens[+v];
+    save(d ? { screenName: d.name, screenPos: { x: d.x, y: d.y } } : { screenName: '', screenPos: { x: 0, y: 0 } });
+  }
   else if (f === 'rows' || f === 'cols') {
     const [lo, hi] = f === 'rows' ? [2, 12] : [8, 40], n = Math.round(+v);
     if (n >= lo && n <= hi) save({ [f]: n }); else e.target.value = S.settings[f];
@@ -784,9 +815,11 @@ root.addEventListener('keydown', e => {
 });
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'w') RB.invoke('close_window', { label: 'panel' });
+  else if (e.key === 'F11') { e.preventDefault(); RB.invoke('toggle_fullscreen'); }
 });
 
 loadSecrets();
+loadScreens();
 RB.onState(snap => {
   const first = !S, wasRunning = S && S.server.running, wasLan = S && S.settings.serverLan; S = snap;
   // The server creates its key the first time it starts.

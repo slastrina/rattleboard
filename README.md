@@ -19,9 +19,10 @@ Free and open source under the MIT license. Not affiliated with or endorsed by V
 - **Any message size.** By default the board shows each message at the size it was sent at, from 1 × 1 up to 12 × 40, and the pop-up or widget resizes to fit. Or fix it at Standard (6 × 22), Compact (3 × 15), Large (8 × 30) or a custom size. See [Board sizes](#board-sizes).
 - **Transitions.** Messages can flip in all at once, or in a wave: by column, reverse column, from the edges to the centre, by row, diagonally or at random. See [Transitions](#transitions).
 - **Flap sound.** An optional mechanical clatter, synthesized live while the flaps turn.
-- **Two ways to show it.**
+- **Three ways to show it.**
   - **Pop-up:** a toast that flips into view in the corner of your choice whenever the message changes, then hides after a countdown. The countdown pauses while your pointer is over the board. Drag it toward another corner and it snaps there.
   - **Pinned widget:** stays on screen wherever you drop it, either on the desktop below your windows or above them. Rattleboard remembers its spot.
+  - **Full screen:** the board fills a whole display, for a spare computer used as a board. See [Use a spare computer as a board](#use-a-spare-computer-as-a-board).
 - **Any size.** Hover over the board and drag its corner handle, or use Settings → Display → Size. The size is remembered.
 - **Local API or Cloud API.** Read the board directly over your Wi-Fi, or through `cloud.vestaboard.com` from anywhere.
 - **Built-in API server.** Rattleboard can act as a virtual Vestaboard. Your own apps and scripts send it messages using the same requests they'd send a real board. See [API server](#api-server).
@@ -58,6 +59,20 @@ The first launch opens a short setup:
 - **Virtual board.** Needs nothing. The board shows only what apps send to the [API server](#api-server).
 
 You can change the source any time in **Settings → Connection**. A mirrored board takes the size of the board it reads.
+
+## Use a spare computer as a board
+
+An old Mac, a Windows laptop or a NUC behind a TV makes a good split-flap board. Full screen covers a whole display, menu bar, Dock and taskbar included, with the board centred on a solid background (near-black for the black finish, light for the white one) and scaled to fit with a comfortable margin. Every board size works; with **Match each message**, the tiles rescale whenever a message of another size arrives.
+
+- **Turn it on** in **Settings → Display → Show as → Full screen**, with **Full screen** in the tray menu, or with F11 (and Control-Command-F on macOS). Esc leaves full screen, back to the pop-up or widget you had before.
+- **Pick the display** under **Settings → Display → Display** when there's more than one. Rattleboard remembers it by name, and by position to tell two of the same model apart. If it's unplugged, the board moves to the main display, and it re-fits when the resolution changes.
+- **Controls:** move the mouse or tap the screen for a small bar with the source and status, **Exit full screen**, **Replay**, **Pair a phone** and **Settings**. The bar and the pointer hide again after 3 seconds without movement.
+- **Keep-awake:** while the board is full screen, the display doesn't sleep and the computer doesn't idle to sleep. It never hides, and the pop-up countdown doesn't apply. On macOS, `pmset -g assertions` lists it as "Rattleboard is showing the board full screen".
+- **Running unattended:** in **Settings → Behavior**, turn on **Start at login** and **Full screen at launch**. The computer then starts straight into the board after a restart or a power cut. Without **Full screen at launch**, full screen lasts until Rattleboard quits.
+- **Pairing phones:** **Pair a phone** shows the pairing QR code on the board's own screen (see [Pairing a phone](#pairing-a-phone)), so a phone can add the board without anyone touching the computer. It offers to turn on the API server and **Other devices** if they're off.
+- The free desktop app shows a small "iokig.com" in the corner of the screen in full screen.
+
+Everything else keeps working in full screen: the API server, sequences, Compose, Message History and the tray menu. Settings and Compose open above the board.
 
 ## Board sizes
 
@@ -213,6 +228,8 @@ npm run dev      # run with hot reload
 npm run build    # produce installers in src-tauri/target/release/bundle
 ```
 
+To try changes without touching your own settings and keys, run a debug build with `RATTLEBOARD_PROFILE=<name>`: it uses config and data folders of its own (`…rattleboard.<name>`) and keeps its keys in a `secrets.json` there instead of the credential store. Release builds ignore it.
+
 The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The Rust side, in `src-tauri/src/`, handles polling, the keychain, the tray icon and window placement.
 
 | Path | What it is |
@@ -228,6 +245,7 @@ The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The Rust si
 | `src-tauri/src/boards.rs` | Saved boards, pair links, network discovery |
 | `src-tauri/src/send.rs` | Groups, and sending to several boards at once |
 | `src-tauri/src/notify.rs` | Notification forwarding (Windows) |
+| `src-tauri/src/fullscreen.rs` | Full screen: picking the display, keep-awake, hiding the pointer |
 | `src-tauri/src/secrets.rs` | OS credential store |
 
 ### Releasing

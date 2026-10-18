@@ -42,7 +42,16 @@ pub struct Settings {
     pub pause_on_hover: bool,
     /// "toast": pops up in a corner when the message changes, then hides.
     /// "float": stays on screen wherever it was placed, like a desktop widget.
+    /// "fullscreen": covers a whole display, for a spare computer used as a board.
     pub mode: String,
+    /// The mode leaving full screen goes back to: "toast" | "float"
+    pub windowed_mode: String,
+    /// The display full screen covers, by name, and where it was, to tell two of the same
+    /// model apart. Empty: the main display.
+    pub screen_name: String,
+    pub screen_pos: Point,
+    /// Open in full screen at launch; otherwise full screen lasts until Rattleboard quits
+    pub fullscreen_launch: bool,
     /// Toast corner: "tl" | "tr" | "bl" | "br"
     pub position: String,
     /// Floating position: top-left of the board window in physical screen pixels
@@ -105,6 +114,10 @@ impl Default for Settings {
             hide_sec: 10,
             pause_on_hover: true,
             mode: "toast".into(),
+            windowed_mode: "toast".into(),
+            screen_name: String::new(),
+            screen_pos: Point { x: 0.0, y: 0.0 },
+            fullscreen_launch: false,
             position: "br".into(),
             custom: Point { x: 300.0, y: 200.0 },
             float_layer: "desktop".into(),
@@ -160,8 +173,11 @@ impl Settings {
         self.send_rows = self.send_rows.clamp(CUSTOM_ROWS.0, CUSTOM_ROWS.1);
         self.send_cols = self.send_cols.clamp(CUSTOM_COLS.0, CUSTOM_COLS.1);
         self.cols = self.cols.clamp(CUSTOM_COLS.0, CUSTOM_COLS.1);
-        if self.mode != "float" {
+        if !["float", "fullscreen"].contains(&self.mode.as_str()) {
             self.mode = "toast".into();
+        }
+        if self.windowed_mode != "float" {
+            self.windowed_mode = "toast".into();
         }
         if self.server_port == 0 {
             self.server_port = DEFAULT_SERVER_PORT;
@@ -178,6 +194,23 @@ impl Settings {
 
     pub fn floating(&self) -> bool {
         self.mode == "float"
+    }
+
+    pub fn fullscreen(&self) -> bool {
+        self.mode == "fullscreen"
+    }
+
+    /// The mode to start in: full screen only with "Open in full screen at launch", and
+    /// never before setup is done, as it would cover the setup window.
+    pub fn at_launch(mut self) -> Self {
+        let full = self.fullscreen_launch && self.setup_done;
+        if full && !self.fullscreen() {
+            self.windowed_mode = self.mode.clone();
+            self.mode = "fullscreen".into();
+        } else if !full && self.fullscreen() {
+            self.mode = self.windowed_mode.clone();
+        }
+        self
     }
 
     pub fn save(&self, path: &PathBuf) {
@@ -273,6 +306,37 @@ mod tests {
         assert_eq!(s.model, "compact");
         s.set_dims((5, 20));
         assert_eq!((s.model.as_str(), s.dims()), ("custom", (5, 20)));
+    }
+
+    #[test]
+    fn modes() {
+        let s: Settings = serde_json::from_str(r#"{"mode": "kiosk", "windowedMode": "fullscreen"}"#).unwrap();
+        let s = s.normalized();
+        assert_eq!((s.mode.as_str(), s.windowed_mode.as_str()), ("toast", "toast"));
+        // Settings from before full screen read as they were.
+        let s: Settings = serde_json::from_str(r#"{"mode": "float"}"#).unwrap();
+        let s = s.normalized();
+        assert_eq!((s.mode.as_str(), s.screen_name.as_str(), s.fullscreen_launch), ("float", "", false));
+        let s = Settings::default().merge(serde_json::json!({"mode": "fullscreen", "screenName": "LG HDR 4K", "screenPos": {"x": 1440.0, "y": 0.0}})).unwrap();
+        assert!(s.fullscreen() && !s.floating());
+        assert_eq!((s.screen_name.as_str(), s.screen_pos), ("LG HDR 4K", Point { x: 1440.0, y: 0.0 }));
+        assert!(Settings::default().merge(serde_json::json!({"screenPos": "left"})).is_err());
+    }
+
+    #[test]
+    fn launching() {
+        let set = |v: serde_json::Value| Settings { setup_done: true, ..Default::default() }.merge(v).unwrap();
+        // Full screen lasts until quit, back to the mode it came from...
+        let s = set(serde_json::json!({"mode": "fullscreen", "windowedMode": "float"})).at_launch();
+        assert_eq!(s.mode, "float");
+        // ...unless it opens in full screen at launch.
+        let s = set(serde_json::json!({"mode": "fullscreen", "fullscreenLaunch": true})).at_launch();
+        assert!(s.fullscreen());
+        let s = set(serde_json::json!({"mode": "float", "fullscreenLaunch": true})).at_launch();
+        assert_eq!((s.mode.as_str(), s.windowed_mode.as_str()), ("fullscreen", "float"));
+        // Never over the first-run setup.
+        let s = set(serde_json::json!({"mode": "fullscreen", "fullscreenLaunch": true, "setupDone": false})).at_launch();
+        assert_eq!(s.mode, "toast");
     }
 
     #[test]
