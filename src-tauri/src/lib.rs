@@ -1,10 +1,18 @@
+mod boards;
+mod notify;
 mod secrets;
+mod send;
+mod sequence;
 mod server;
 mod settings;
 mod vestaboard;
 
+use boards::SavedBoard;
+use sequence::Sequence;
 use serde::{Deserialize, Serialize};
-use settings::{Point, Settings};
+use serde_json::{json, Value};
+use settings::{NotifyApp, Point, Settings};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,13 +24,14 @@ use tauri::{
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tokio::sync::Notify;
-use vestaboard::Grid;
+use vestaboard::{Grid, Transition};
 
 /// Transparent margin around the board inside its window, so the drop shadow isn't clipped.
 const SHADOW: f64 = 36.0;
 /// Gap between the board and the screen edge when parked in a corner (from the design).
 const MARGIN: f64 = 20.0;
 const HISTORY_MAX: usize = 12;
+const RECENT_MAX: usize = 50;
 const TRAY_W: f64 = 336.0;
 const TRAY_PAD: f64 = 14.0;
 
@@ -40,12 +49,23 @@ struct HistoryEntry {
     layout: Grid,
 }
 
+/// A message sent from Compose, for its Recent list.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RecentEntry {
+    at: i64,
+    target_name: String,
+    layout: Grid,
+}
+
 #[derive(Default)]
 struct Runtime {
     layout: Option<Grid>,
     /// A layout chosen from history ("Flip again"); cleared by the next real change.
     display: Option<Grid>,
     msg_id: Option<String>,
+    /// How the flaps of the current message start
+    transition: Transition,
     seq: u64,
     conn: String,
     error: Option<String>,
@@ -60,6 +80,8 @@ struct Runtime {
     api_seq: u64,
     tray_hidden_at: Option<Instant>,
     drag_origin: Option<PhysicalPosition<i32>>,
+    /// Why the last sequence stopped early, if it did
+    play_error: Option<String>,
 }
 
 struct Secrets {
@@ -77,6 +99,37 @@ struct ServerStatus {
     urls: Vec<String>,
 }
 
+/// A sequence this computer is playing, on this board or on a real Vestaboard.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Playing {
+    /// "this" or a saved board's id
+    target: String,
+    target_name: String,
+    /// What the user picked: this board, a board, a group or all, so the tray can show a
+    /// group's players together
+    via: String,
+    via_name: String,
+    #[serde(flatten)]
+    status: server::SequenceStatus,
+}
+
+struct Player {
+    info: Playing,
+    task: tauri::async_runtime::JoinHandle<()>,
+}
+
+/// Notification forwarding, which only Windows supports.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NotifyInfo {
+    supported: bool,
+    /// "allowed" | "denied" | "unspecified" | "unavailable"
+    access: String,
+    /// Apps seen sending notifications since launch
+    apps: Vec<NotifyApp>,
+}
+
 struct AppState {
     settings: Mutex<Settings>,
     rt: Mutex<Runtime>,
@@ -85,8 +138,21 @@ struct AppState {
     wake: Notify,
     server: Mutex<Option<server::Handle>>,
     server_status: Mutex<ServerStatus>,
+    advert: Mutex<Option<boards::Advert>>,
+    boards: Mutex<Vec<SavedBoard>>,
+    /// Saved boards' keys, read from the credential store when first needed
+    board_keys: Mutex<HashMap<String, String>>,
+    players: Mutex<HashMap<String, Player>>,
+    groups: Mutex<Vec<send::Group>>,
+    /// When each real board may next take a message (see `queue_turn`)
+    sent_at: Mutex<HashMap<String, Instant>>,
+    notify: Mutex<NotifyInfo>,
     settings_path: PathBuf,
     history_path: PathBuf,
+    boards_path: PathBuf,
+    drafts_path: PathBuf,
+    recent_path: PathBuf,
+    groups_path: PathBuf,
 }
 
 #[derive(Serialize, Clone)]
@@ -95,8 +161,12 @@ struct Snapshot {
     os: &'static str,
     version: &'static str,
     settings: Settings,
+    /// The board's size, from its preset or custom size
+    rows: usize,
+    cols: usize,
     display: Grid,
     has_layout: bool,
+    transition: Transition,
     seq: u64,
     conn: String,
     error: Option<String>,
@@ -107,6 +177,11 @@ struct Snapshot {
     has_local_key: bool,
     has_cloud_token: bool,
     server: ServerStatus,
+    boards: Vec<SavedBoard>,
+    groups: Vec<send::Group>,
+    playing: Vec<Playing>,
+    play_error: Option<String>,
+    notify: NotifyInfo,
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -122,11 +197,17 @@ fn snapshot(st: &AppState) -> Snapshot {
     let s = st.settings.lock().unwrap().clone();
     let rt = st.rt.lock().unwrap();
     let sec = st.secrets.lock().unwrap();
+    let display = rt.display.clone().or_else(|| rt.layout.clone()).unwrap_or_else(|| blank(&s));
+    // An adaptive board is the size of whatever it shows.
+    let (rows, cols) = if s.adaptive { vestaboard::dims_of(&display) } else { s.dims() };
     Snapshot {
         os: OS,
         version: env!("CARGO_PKG_VERSION"),
-        display: rt.display.clone().or_else(|| rt.layout.clone()).unwrap_or_else(|| blank(&s)),
+        display,
         has_layout: rt.layout.is_some(),
+        transition: rt.transition.clone(),
+        rows,
+        cols,
         settings: s,
         seq: rt.seq,
         conn: if rt.conn.is_empty() { "idle".into() } else { rt.conn.clone() },
@@ -138,6 +219,11 @@ fn snapshot(st: &AppState) -> Snapshot {
         has_local_key: !sec.local_key.is_empty(),
         has_cloud_token: !sec.cloud_token.is_empty(),
         server: st.server_status.lock().unwrap().clone(),
+        boards: st.boards.lock().unwrap().clone(),
+        groups: st.groups.lock().unwrap().clone(),
+        playing: st.players.lock().unwrap().values().map(|p| p.info.clone()).collect(),
+        play_error: rt.play_error.clone(),
+        notify: st.notify.lock().unwrap().clone(),
     }
 }
 
@@ -194,9 +280,9 @@ async fn check(app: &AppHandle) -> Result<Grid, String> {
             };
         }
         "demo" => {
-            let model = st.settings.lock().unwrap().model.clone();
+            let (rows, cols) = st.settings.lock().unwrap().dims();
             let secs = (now_ms() / 1000) as u64;
-            Ok(vestaboard::demo(&model, (secs / vestaboard::DEMO_EVERY_SECS) as usize))
+            Ok(vestaboard::demo(rows, cols, (secs / vestaboard::DEMO_EVERY_SECS) as usize))
         }
         "cloud" => vestaboard::read_cloud(&st.http, &token).await,
         _ => vestaboard::read_local(&st.http, &host, &key).await,
@@ -235,7 +321,7 @@ async fn check(app: &AppHandle) -> Result<Grid, String> {
         _ => "Local API",
     };
     if changed {
-        show_message(app, reading.layout.clone(), reading.id, src);
+        show_message(app, reading.layout.clone(), reading.id, src, Transition::default());
     } else {
         broadcast(app);
     }
@@ -243,15 +329,15 @@ async fn check(app: &AppHandle) -> Result<Grid, String> {
 }
 
 /// Puts a new message on the virtual board: history, unread dot, and the flip.
-fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str) {
+fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition) {
     let st = app.state::<AppState>();
-    let rows = layout.len();
-    let cols = layout.first().map(|r| r.len()).unwrap_or(0);
-    let detected = if rows == 3 && cols == 15 { "note" } else { "flag" };
+    // A fixed board takes on the size of a board it mirrors (posted messages arrive fitted to
+    // it already); an adaptive one just shows each message at its own size.
+    let detected = vestaboard::dims_of(&layout);
     let setup_done = {
         let mut s = st.settings.lock().unwrap();
-        if s.model != detected {
-            s.model = detected.into();
+        if !s.adaptive && s.dims() != detected {
+            s.set_dims(detected);
             s.save(&st.settings_path);
         }
         s.setup_done
@@ -268,6 +354,7 @@ fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str) {
         }
         rt.layout = Some(layout.clone());
         rt.msg_id = id;
+        rt.transition = tr;
         rt.display = None;
         if !first || rt.last_change_at.is_none() {
             rt.last_change_at = Some(now_ms());
@@ -502,8 +589,9 @@ fn hide_tray(app: &AppHandle) {
 fn open_panel(app: &AppHandle, view: &str) {
     hide_tray(app);
     let (title, width) = match view {
-        "history" => ("Message History", 580.0),
+        "history" => ("Message History", 680.0),
         "setup" => ("Set up Rattleboard", 640.0),
+        "compose" => ("Compose", 780.0),
         _ => ("Rattleboard Settings", 600.0),
     };
     if let Some(w) = app.get_webview_window("panel") {
@@ -550,24 +638,45 @@ impl server::Board for ApiBoard {
     fn dims(&self) -> (usize, usize) {
         self.0.state::<AppState>().settings.lock().unwrap().dims()
     }
+    fn adaptive(&self) -> bool {
+        self.0.state::<AppState>().settings.lock().unwrap().adaptive
+    }
+    fn name(&self) -> String {
+        let name = self.0.state::<AppState>().settings.lock().unwrap().board_name.clone();
+        format!("Rattleboard ({})", if name.is_empty() { "Vestaboard" } else { &name })
+    }
     fn current(&self) -> (Grid, Option<String>) {
         let st = self.0.state::<AppState>();
         let s = st.settings.lock().unwrap().clone();
         let rt = st.rt.lock().unwrap();
         (rt.layout.clone().unwrap_or_else(|| blank(&s)), rt.msg_id.clone())
     }
-    fn post(&self, layout: Grid) -> String {
-        let st = self.0.state::<AppState>();
-        let id = {
-            let mut rt = st.rt.lock().unwrap();
-            rt.api_seq += 1;
-            format!("api-{}-{}", now_ms(), rt.api_seq)
-        };
+    fn post(&self, layout: Grid, tr: Transition) -> String {
+        let id = next_id(&self.0, "api");
+        stop_player(&self.0, HERE);
         let (app, l, i) = (self.0.clone(), layout, id.clone());
         // Windows must be touched from the main thread.
-        let _ = self.0.run_on_main_thread(move || show_message(&app, l, Some(i), "API server"));
+        let _ = self.0.run_on_main_thread(move || show_message(&app, l, Some(i), "API server", tr));
         id
     }
+    fn play(&self, seq: Sequence) -> String {
+        start_player(&self.0, HERE, "This board", seq, None, (HERE, "This board"))
+    }
+    fn sequence(&self) -> Option<server::SequenceStatus> {
+        let st = self.0.state::<AppState>();
+        let players = st.players.lock().unwrap();
+        players.get(HERE).map(|p| p.info.status.clone())
+    }
+    fn stop(&self) {
+        stop_player(&self.0, HERE);
+    }
+}
+
+fn next_id(app: &AppHandle, prefix: &str) -> String {
+    let st = app.state::<AppState>();
+    let mut rt = st.rt.lock().unwrap();
+    rt.api_seq += 1;
+    format!("{prefix}-{}-{}", now_ms(), rt.api_seq)
 }
 
 fn ensure_server_key(st: &AppState) -> Result<(), String> {
@@ -583,9 +692,10 @@ async fn restart_server(app: &AppHandle) {
     let st = app.state::<AppState>();
     // Stop the old listener first so the port is free again.
     drop(st.server.lock().unwrap().take());
-    let (on, port, lan) = {
+    drop(st.advert.lock().unwrap().take());
+    let (on, port, lan, name) = {
         let s = st.settings.lock().unwrap();
-        (s.server_enabled, s.server_port, s.server_lan)
+        (s.server_enabled, s.server_port, s.server_lan, s.board_name.clone())
     };
     let status = if !on {
         ServerStatus::default()
@@ -607,6 +717,9 @@ async fn restart_server(app: &AppHandle) {
                     if let Some(ip) = server::lan_ip() {
                         urls.insert(0, format!("http://{ip}:{p}"));
                     }
+                    // So other Rattleboards can find this one, as they find a TV.
+                    let name = if name.is_empty() { "Vestaboard".to_string() } else { name };
+                    *st.advert.lock().unwrap() = boards::advertise(&name, p);
                 }
                 ServerStatus { running: true, error: None, urls }
             }
@@ -625,6 +738,674 @@ async fn regenerate_server_key(app: AppHandle) -> Result<(), String> {
     app.state::<AppState>().secrets.lock().unwrap().server_key = k;
     broadcast(&app);
     Ok(())
+}
+
+// ---------------------------------------------------------------- sequences
+
+/// The player key for sequences shown on this computer's own board.
+const HERE: &str = "this";
+
+fn stop_player(app: &AppHandle, target: &str) -> bool {
+    let st = app.state::<AppState>();
+    let p = st.players.lock().unwrap().remove(target);
+    let Some(p) = p else { return false };
+    p.task.abort();
+    broadcast(app);
+    true
+}
+
+/// Plays `seq` on this board, or on a real Vestaboard (`to`, with its key) by posting each
+/// frame. Replaces whatever that target was playing; returns the sequence id.
+fn start_player(
+    app: &AppHandle,
+    target: &str,
+    target_name: &str,
+    seq: Sequence,
+    to: Option<(SavedBoard, String)>,
+    (via, via_name): (&str, &str),
+) -> String {
+    let st = app.state::<AppState>();
+    let id = next_id(app, "seq");
+    let status = server::SequenceStatus {
+        id: id.clone(),
+        name: seq.name.clone(),
+        frame: 1,
+        frames: seq.frames.len(),
+        looping: seq.looping,
+    };
+    let info = Playing { target: target.into(), target_name: target_name.into(), via: via.into(), via_name: via_name.into(), status };
+    {
+        // Held while spawning, so the task can't report a frame before it's registered.
+        let mut players = st.players.lock().unwrap();
+        let task = tauri::async_runtime::spawn(play(app.clone(), target.to_string(), id.clone(), seq, to));
+        if let Some(old) = players.insert(target.to_string(), Player { info, task }) {
+            old.task.abort();
+        }
+    }
+    st.rt.lock().unwrap().play_error = None;
+    broadcast(app);
+    id
+}
+
+/// Marks frame `n` as showing; false once this sequence has been replaced or stopped.
+fn on_frame(app: &AppHandle, target: &str, id: &str, n: usize) -> bool {
+    let st = app.state::<AppState>();
+    {
+        let mut players = st.players.lock().unwrap();
+        match players.get_mut(target) {
+            Some(p) if p.info.status.id == id => p.info.status.frame = n,
+            _ => return false,
+        }
+    }
+    broadcast(app);
+    true
+}
+
+fn end_player(app: &AppHandle, target: &str, id: &str, error: Option<String>) {
+    let st = app.state::<AppState>();
+    {
+        let mut players = st.players.lock().unwrap();
+        if players.get(target).is_some_and(|p| p.info.status.id == id) {
+            players.remove(target);
+        }
+    }
+    if error.is_some() {
+        st.rt.lock().unwrap().play_error = error;
+    }
+    broadcast(app);
+}
+
+/// Each frame is held for `hold` seconds after its flaps finish. This board's flip time is
+/// worked out from the replica's own timing (`vestaboard::flip_ms`), which keeps working
+/// while the board window is hidden and its animation isn't running. A real Vestaboard is
+/// also given its minimum time between messages.
+async fn play(app: AppHandle, target: String, id: String, seq: Sequence, to: Option<(SavedBoard, String)>) {
+    let st = app.state::<AppState>();
+    let mut prev: Option<Grid> = None;
+    let mut i = 0;
+    loop {
+        let f = &seq.frames[i];
+        if !on_frame(&app, &target, &id, i + 1) {
+            return;
+        }
+        let wait_ms = match &to {
+            None => {
+                let (from, speed) = {
+                    let s = st.settings.lock().unwrap().clone();
+                    let rt = st.rt.lock().unwrap();
+                    let from = match (&rt.display, &rt.layout) {
+                        (Some(d), _) => d.clone(),
+                        // The same picture again flips from blank (see show_message).
+                        (None, Some(l)) if *l != f.layout => l.clone(),
+                        _ => blank(&s),
+                    };
+                    (from, s.speed)
+                };
+                let flip = vestaboard::flip_ms(&from, &f.layout, &f.tr, speed);
+                let (a, l, tr, mid) = (app.clone(), f.layout.clone(), f.tr.clone(), format!("{id}-{}", i + 1));
+                let _ = app.run_on_main_thread(move || show_message(&a, l, Some(mid), "Sequence", tr));
+                flip as f64 + f.hold * 1000.0
+            }
+            Some((b, key)) => {
+                if let Err(e) = send::post(&st.http, b, key, &f.layout, &f.tr).await {
+                    return end_player(&app, &target, &id, Some(format!("{}: {e}", b.name)));
+                }
+                let from = prev.take().unwrap_or_else(|| vec![vec![0; b.cols]; b.rows]);
+                let flip = vestaboard::flip_ms(&from, &f.layout, &f.tr, 1.0);
+                (flip as f64 + f.hold * 1000.0).max(b.min_hold() * 1000.0)
+            }
+        };
+        prev = Some(f.layout.clone());
+        tokio::time::sleep(Duration::from_millis(wait_ms as u64)).await;
+        i += 1;
+        if i == seq.frames.len() {
+            if !seq.looping {
+                break;
+            }
+            i = 0;
+        }
+    }
+    end_player(&app, &target, &id, None);
+}
+
+// ---------------------------------------------------------------- saved boards and Send
+
+fn find_board(app: &AppHandle, id: &str) -> Result<SavedBoard, String> {
+    let st = app.state::<AppState>();
+    let boards = st.boards.lock().unwrap();
+    boards.iter().find(|b| b.id == id).cloned().ok_or_else(|| "That board was removed".to_string())
+}
+
+fn board_key(app: &AppHandle, id: &str) -> String {
+    let st = app.state::<AppState>();
+    if let Some(k) = st.board_keys.lock().unwrap().get(id) {
+        return k.clone();
+    }
+    let k = secrets::get(&secrets::board_account(id));
+    st.board_keys.lock().unwrap().insert(id.to_string(), k.clone());
+    k
+}
+
+fn save_boards(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    let boards = st.boards.lock().unwrap().clone();
+    boards::save(&st.boards_path, &boards);
+    broadcast(app);
+}
+
+/// Adds a board, or updates the saved one at the same address. The key goes to the
+/// credential store only.
+fn keep_board(app: &AppHandle, mut b: SavedBoard, key: &str) -> Result<SavedBoard, String> {
+    let st = app.state::<AppState>();
+    let existing = {
+        let boards = st.boards.lock().unwrap();
+        boards.iter().find(|o| o.kind != "cloud" && !b.host.is_empty() && o.host == b.host).map(|o| (o.id.clone(), o.name.clone()))
+    };
+    if let Some((id, name)) = existing {
+        b.id = id;
+        if b.name.is_empty() {
+            b.name = name;
+        }
+    }
+    secrets::set(&secrets::board_account(&b.id), key)?;
+    st.board_keys.lock().unwrap().insert(b.id.clone(), key.to_string());
+    {
+        let mut boards = st.boards.lock().unwrap();
+        match boards.iter_mut().find(|o| o.id == b.id) {
+            Some(o) => *o = b.clone(),
+            None => boards.push(b.clone()),
+        }
+    }
+    save_boards(app);
+    Ok(b)
+}
+
+/// Shows a message on this board or a saved one, as a normal post: it ends a running sequence.
+async fn send_to_target(app: &AppHandle, target: &str, layout: Grid, tr: Transition, src: &str) -> Result<(), String> {
+    if target == HERE {
+        stop_player(app, HERE);
+        let (a, src, id) = (app.clone(), src.to_string(), next_id(app, "msg"));
+        return app.run_on_main_thread(move || show_message(&a, layout, Some(id), &src, tr)).map_err(|e| e.to_string());
+    }
+    let b = find_board(app, target)?;
+    stop_player(app, target);
+    let key = board_key(app, &b.id);
+    send::post(&app.state::<AppState>().http, &b, &key, &layout, &tr).await
+}
+
+/// What a board shows right now.
+#[cfg_attr(not(windows), allow(dead_code))]
+async fn read_target(app: &AppHandle, target: &str) -> Result<Grid, String> {
+    let st = app.state::<AppState>();
+    if target == HERE {
+        let s = st.settings.lock().unwrap().clone();
+        return Ok(st.rt.lock().unwrap().layout.clone().unwrap_or_else(|| blank(&s)));
+    }
+    let b = find_board(app, target)?;
+    let key = board_key(app, &b.id);
+    let r = if b.kind == "cloud" {
+        vestaboard::read_cloud(&st.http, &key).await?
+    } else {
+        vestaboard::read_local(&st.http, &b.host, &key).await?
+    };
+    Ok(r.layout)
+}
+
+#[tauri::command]
+async fn discover_boards(app: AppHandle) -> Vec<boards::Found> {
+    let skip = {
+        let st = app.state::<AppState>();
+        let port = st.server.lock().unwrap().as_ref().map(|h| h.addr.port());
+        server::lan_ip().zip(port)
+    };
+    tauri::async_runtime::spawn_blocking(move || boards::discover(Duration::from_secs(3), skip)).await.unwrap_or_default()
+}
+
+/// Adds a board by address and key, finding out what kind of board it is.
+#[tauri::command]
+async fn add_board(app: AppHandle, host: String, key: String, name: String) -> Result<SavedBoard, String> {
+    let key = key.trim().to_string();
+    let p = boards::probe(&app.state::<AppState>().http, &host, &key).await?;
+    let fallback = if p.kind == "rattleboard" { "Rattleboard" } else { "Vestaboard" };
+    let name = Some(name.trim().to_string()).filter(|n| !n.is_empty()).or(p.name).unwrap_or_else(|| fallback.into());
+    let b = SavedBoard { id: boards::new_id(), name, kind: p.kind, host: p.host, rows: p.rows, cols: p.cols, adaptive: p.adaptive };
+    keep_board(&app, b, &key)
+}
+
+#[tauri::command]
+async fn add_cloud_board(app: AppHandle, token: String, name: String) -> Result<SavedBoard, String> {
+    let token = token.trim().to_string();
+    let r = vestaboard::read_cloud(&app.state::<AppState>().http, &token).await?;
+    let name = Some(name.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Vestaboard (Cloud)".into());
+    let (rows, cols) = vestaboard::dims_of(&r.layout);
+    let b = SavedBoard { id: boards::new_id(), name, kind: "cloud".into(), host: String::new(), rows, cols, adaptive: false };
+    keep_board(&app, b, &token)
+}
+
+/// Adds the board in a rattleboard://pair link, as shown by another Rattleboard's QR code.
+#[tauri::command]
+async fn add_pair_link(app: AppHandle, link: String) -> Result<SavedBoard, String> {
+    let l = boards::parse_pair(&link)?;
+    let p = boards::probe(&app.state::<AppState>().http, &l.host, &l.key).await?;
+    let b = SavedBoard { id: boards::new_id(), name: l.name, kind: p.kind, host: p.host, rows: p.rows, cols: p.cols, adaptive: p.adaptive };
+    keep_board(&app, b, &l.key)
+}
+
+/// Looks again at what a saved board is (an older Rattleboard may have been updated).
+#[tauri::command]
+async fn check_board(app: AppHandle, id: String) -> Result<SavedBoard, String> {
+    let mut b = find_board(&app, &id)?;
+    let key = board_key(&app, &id);
+    let http = app.state::<AppState>().http.clone();
+    if b.kind == "cloud" {
+        let r = vestaboard::read_cloud(&http, &key).await?;
+        (b.rows, b.cols) = vestaboard::dims_of(&r.layout);
+    } else {
+        let p = boards::probe(&http, &b.host, &key).await?;
+        (b.kind, b.rows, b.cols, b.adaptive) = (p.kind, p.rows, p.cols, p.adaptive);
+    }
+    let st = app.state::<AppState>();
+    let changed = {
+        let mut boards = st.boards.lock().unwrap();
+        match boards.iter_mut().find(|o| o.id == id) {
+            Some(o) if *o != b => {
+                *o = b.clone();
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        save_boards(&app);
+    }
+    Ok(b)
+}
+
+#[tauri::command]
+fn rename_board(app: AppHandle, st: State<AppState>, id: String, name: String) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the board a name".into());
+    }
+    if let Some(b) = st.boards.lock().unwrap().iter_mut().find(|b| b.id == id) {
+        b.name = name.to_string();
+    }
+    save_boards(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_board(app: AppHandle, st: State<AppState>, id: String) -> Result<(), String> {
+    stop_player(&app, &id);
+    secrets::set(&secrets::board_account(&id), "")?;
+    st.board_keys.lock().unwrap().remove(&id);
+    st.boards.lock().unwrap().retain(|b| b.id != id);
+    {
+        let mut groups = st.groups.lock().unwrap();
+        for g in groups.iter_mut() {
+            g.members.retain(|m| *m != id);
+        }
+        send::save_groups(&st.groups_path, &groups);
+    }
+    {
+        let mut s = st.settings.lock().unwrap();
+        if s.notify_target == id || s.send_target == id {
+            if s.notify_target == id {
+                s.notify_target = HERE.into();
+            }
+            if s.send_target == id {
+                s.send_target = HERE.into();
+            }
+            s.save(&st.settings_path);
+        }
+    }
+    save_boards(&app);
+    Ok(())
+}
+
+/// The size a board lays text out at, and whether it shows each message at its own size.
+fn target_fit(app: &AppHandle, id: &str) -> Result<((usize, usize), bool), String> {
+    if id == HERE {
+        let s = app.state::<AppState>().settings.lock().unwrap().clone();
+        Ok((s.dims(), s.adaptive))
+    } else {
+        find_board(app, id).map(|b| ((b.rows, b.cols), b.adaptive))
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn target_dims(app: &AppHandle, id: &str) -> Result<(usize, usize), String> {
+    target_fit(app, id).map(|f| f.0)
+}
+
+/// The boards a target ("this", a board, "group:<id>" or "all") stands for.
+fn destinations(app: &AppHandle, target: &str) -> Result<Vec<String>, String> {
+    let st = app.state::<AppState>();
+    let boards = st.boards.lock().unwrap().clone();
+    let groups = st.groups.lock().unwrap().clone();
+    send::destinations(target, &boards, &groups)
+}
+
+fn target_name(app: &AppHandle, target: &str) -> String {
+    let st = app.state::<AppState>();
+    if target == HERE {
+        return "This board".into();
+    }
+    if target == send::ALL {
+        return "All boards".into();
+    }
+    if let Some(gid) = target.strip_prefix(send::GROUP_PREFIX) {
+        let groups = st.groups.lock().unwrap();
+        return groups.iter().find(|g| g.id == gid).map(|g| g.name.clone()).unwrap_or_else(|| "Group".into());
+    }
+    let boards = st.boards.lock().unwrap();
+    boards.iter().find(|b| b.id == target).map(|b| b.name.clone()).unwrap_or_else(|| "Board".into())
+}
+
+/// How a send went on one board, for Compose.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Delivery {
+    batch: String,
+    target: String,
+    name: String,
+    /// "queued" (waiting for a real board's minimum gap) | "sent" | "failed" | "rate-limited"
+    status: String,
+    error: Option<String>,
+}
+
+/// Real Vestaboards drop messages that come too fast, so each waits for its turn.
+fn queue_turn(app: &AppHandle, b: &SavedBoard) -> Duration {
+    if b.kind == "rattleboard" {
+        return Duration::ZERO;
+    }
+    let st = app.state::<AppState>();
+    let mut sent = st.sent_at.lock().unwrap();
+    let now = Instant::now();
+    let turn = sent.get(&b.id).map(|t| *t + Duration::from_secs_f64(b.min_hold())).filter(|t| *t > now).unwrap_or(now);
+    sent.insert(b.id.clone(), turn);
+    turn - now
+}
+
+/// One board's copy of a message: laid out for it, queued if it needs a gap, then sent.
+async fn deliver(app: AppHandle, batch: String, id: String, message: Value) -> Result<(), String> {
+    let (fit, adaptive) = target_fit(&app, &id)?;
+    let (layout, tr) = server::message(&message, fit, adaptive)?;
+    if id == HERE {
+        return send_to_target(&app, HERE, layout, tr, "Compose").await;
+    }
+    let b = find_board(&app, &id)?;
+    let wait = queue_turn(&app, &b);
+    if !wait.is_zero() {
+        let d = Delivery { batch, target: id.clone(), name: b.name.clone(), status: "queued".into(), error: None };
+        let _ = app.emit("rb://delivery", d);
+        tokio::time::sleep(wait).await;
+    }
+    send_to_target(&app, &id, layout, tr, "Compose").await
+}
+
+/// Compose → Send, and Message History → Send to: `message` is a POST body ({"characters"}
+/// or {"text"}, plus a transition and a size hint) for one board, a group or all of them.
+/// Every board gets its copy at once, laid out for its size (see `server::message`), and
+/// one failing never holds up the rest. The target becomes the default for next time;
+/// `recent` adds the message to Compose's list.
+#[tauri::command]
+async fn send_message(app: AppHandle, target: String, message: Value, recent: Option<bool>) -> Result<Vec<Delivery>, String> {
+    let dests = destinations(&app, &target)?;
+    // Check the message once, so a mistake is one error rather than one per board.
+    let (fit, adaptive) = target_fit(&app, &dests[0])?;
+    let (first, _) = server::message(&message, fit, adaptive)?;
+    let batch = next_id(&app, "send");
+    let (a, b, m) = (app.clone(), batch.clone(), message.clone());
+    let results = send::fan_out(dests, Duration::from_secs(40), move |id| deliver(a.clone(), b.clone(), id, m.clone())).await;
+    let out: Vec<Delivery> = results
+        .into_iter()
+        .map(|(id, r)| {
+            let (status, error) = match r {
+                Ok(()) => ("sent", None),
+                Err(e) => (send::status_of(&e), Some(e)),
+            };
+            Delivery { batch: batch.clone(), name: target_name(&app, &id), target: id, status: status.into(), error }
+        })
+        .collect();
+    let st = app.state::<AppState>();
+    {
+        let mut s = st.settings.lock().unwrap();
+        if s.send_target != target {
+            s.send_target = target.clone();
+            s.save(&st.settings_path);
+        }
+    }
+    if recent.unwrap_or(false) && out.iter().any(|d| d.status == "sent") {
+        let mut list = read_recent(&st);
+        // The grid that was sent, newest first, each layout once.
+        list.retain(|r| r.layout != first);
+        list.insert(0, RecentEntry { at: now_ms(), target_name: target_name(&app, &target), layout: first });
+        list.truncate(RECENT_MAX);
+        if let Ok(s) = serde_json::to_string(&list) {
+            let _ = std::fs::write(&st.recent_path, s);
+        }
+    }
+    broadcast(&app);
+    Ok(out)
+}
+
+fn read_recent(st: &AppState) -> Vec<RecentEntry> {
+    std::fs::read_to_string(&st.recent_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn get_recent(st: State<AppState>) -> Vec<RecentEntry> {
+    read_recent(&st)
+}
+
+fn rattleboard_url(b: &SavedBoard, path: &str) -> String {
+    format!("{}/rattleboard/{path}", vestaboard::base_url(&b.host, boards::RATTLEBOARD_PORT))
+}
+
+/// One board's part of a sequence. Another Rattleboard plays it by itself; for this board and
+/// real Vestaboards (under their minimum gap), this computer plays it.
+async fn start_on(app: AppHandle, via: String, id: String, sequence: Value) -> Result<(), String> {
+    let (fit, adaptive) = target_fit(&app, &id)?;
+    let seq = sequence::parse(&sequence, fit, adaptive)?;
+    let via_name = target_name(&app, &via);
+    if id == HERE {
+        start_player(&app, HERE, "This board", seq, None, (&via, &via_name));
+        return Ok(());
+    }
+    let b = find_board(&app, &id)?;
+    let key = board_key(&app, &b.id);
+    if b.kind == "rattleboard" {
+        let http = app.state::<AppState>().http.clone();
+        let res = http
+            .post(rattleboard_url(&b, "sequence"))
+            .header("X-Vestaboard-Local-Api-Key", &key)
+            .json(&seq.to_json())
+            .send()
+            .await
+            .map_err(vestaboard::describe)?;
+        match res.status().as_u16() {
+            201 | 200 => {
+                stop_player(&app, &id);
+                return Ok(());
+            }
+            400 => {
+                let v: Value = res.json().await.unwrap_or_default();
+                return Err(v["error"].as_str().unwrap_or("The board refused the sequence").to_string());
+            }
+            401 | 403 => return Err("Key was rejected".into()),
+            // Not a protocol v2 board after all: play it from here.
+            _ => {}
+        }
+    }
+    let hold = b.min_hold();
+    let seq = Sequence {
+        frames: seq.frames.into_iter().map(|f| sequence::Frame { hold: f.hold.max(hold), ..f }).collect(),
+        ..seq
+    };
+    let name = b.name.clone();
+    start_player(&app, &id, &name, seq, Some((b, key)), (&via, &via_name));
+    Ok(())
+}
+
+/// Compose → Play sequence, on one board, a group or all of them.
+#[tauri::command]
+async fn play_sequence(app: AppHandle, target: String, sequence: Value) -> Result<Vec<Delivery>, String> {
+    let dests = destinations(&app, &target)?;
+    let (fit, adaptive) = target_fit(&app, &dests[0])?;
+    sequence::parse(&sequence, fit, adaptive)?;
+    let batch = next_id(&app, "play");
+    let (a, v, s) = (app.clone(), target.clone(), sequence.clone());
+    let results = send::fan_out(dests, send::TIMEOUT, move |id| start_on(a.clone(), v.clone(), id, s.clone())).await;
+    Ok(results
+        .into_iter()
+        .map(|(id, r)| Delivery {
+            batch: batch.clone(),
+            name: target_name(&app, &id),
+            status: if r.is_ok() { "sent".into() } else { "failed".into() },
+            error: r.err(),
+            target: id,
+        })
+        .collect())
+}
+
+/// Stops what one board, a group or all of them are playing.
+#[tauri::command]
+async fn stop_sequence(app: AppHandle, target: String) -> Result<(), String> {
+    let dests = destinations(&app, &target).unwrap_or_else(|_| vec![target.clone()]);
+    let a = app.clone();
+    let results = send::fan_out(dests, send::TIMEOUT, move |id| {
+        let app = a.clone();
+        async move {
+            if stop_player(&app, &id) || id == HERE {
+                return Ok(());
+            }
+            let b = find_board(&app, &id)?;
+            if b.kind != "rattleboard" {
+                return Ok(());
+            }
+            let key = board_key(&app, &b.id);
+            let http = app.state::<AppState>().http.clone();
+            let res = http.delete(rattleboard_url(&b, "sequence")).header("X-Vestaboard-Local-Api-Key", &key).send().await.map_err(vestaboard::describe)?;
+            vestaboard::ok_or_status(res).await
+        }
+    })
+    .await;
+    results.into_iter().find_map(|(_, r)| r.err()).map_or(Ok(()), Err)
+}
+
+/// What another Rattleboard is playing, for Compose.
+#[tauri::command]
+async fn remote_sequence(app: AppHandle, target: String) -> Result<Value, String> {
+    let b = find_board(&app, &target)?;
+    if b.kind != "rattleboard" {
+        return Ok(json!({ "running": false }));
+    }
+    let key = board_key(&app, &b.id);
+    let http = app.state::<AppState>().http.clone();
+    let res = http.get(rattleboard_url(&b, "sequence")).header("X-Vestaboard-Local-Api-Key", &key).send().await.map_err(vestaboard::describe)?;
+    if !res.status().is_success() {
+        return Err(format!("Board answered HTTP {}", res.status().as_u16()));
+    }
+    res.json().await.map_err(|_| "Response wasn't JSON".to_string())
+}
+
+/// Settings → Boards → Groups: the whole list, as edited.
+#[tauri::command]
+fn set_groups(app: AppHandle, st: State<AppState>, groups: Vec<send::Group>) {
+    let boards = st.boards.lock().unwrap().clone();
+    let groups = send::clean_groups(groups, &boards);
+    send::save_groups(&st.groups_path, &groups);
+    *st.groups.lock().unwrap() = groups.clone();
+    {
+        // Targets that pointed at a deleted group fall back to this board.
+        let mut s = st.settings.lock().unwrap();
+        let gone = |t: &str| t.strip_prefix(send::GROUP_PREFIX).is_some_and(|g| !groups.iter().any(|x| x.id == g));
+        if gone(&s.send_target) || gone(&s.notify_target) {
+            if gone(&s.send_target) {
+                s.send_target = HERE.into();
+            }
+            if gone(&s.notify_target) {
+                s.notify_target = HERE.into();
+            }
+            s.save(&st.settings_path);
+        }
+    }
+    broadcast(&app);
+}
+
+/// The same layout POST {"text"} produces, for Compose's live preview.
+#[tauri::command]
+fn layout_text(text: String, rows: usize, cols: usize) -> Grid {
+    vestaboard::text_layout(&text, rows.clamp(1, vestaboard::MAX_ROWS), cols.clamp(1, vestaboard::MAX_COLS))
+}
+
+#[tauri::command]
+fn get_drafts(st: State<AppState>) -> Value {
+    std::fs::read_to_string(&st.drafts_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .filter(|v| v.is_array())
+        .unwrap_or_else(|| json!([]))
+}
+
+/// Compose drafts: text, grids and sequences, never keys.
+#[tauri::command]
+fn save_drafts(st: State<AppState>, drafts: Value) -> Result<(), String> {
+    if !drafts.is_array() {
+        return Err("Drafts must be a list".into());
+    }
+    if let Some(dir) = st.drafts_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let s = serde_json::to_string(&drafts).map_err(|e| e.to_string())?;
+    std::fs::write(&st.drafts_path, s).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------- pairing
+
+#[derive(Serialize)]
+struct PairQr {
+    svg: String,
+    url: String,
+}
+
+/// The QR code a phone scans to add this board. Only shown on demand, so it isn't part of
+/// the state snapshot; the key it carries never leaves this computer otherwise.
+#[tauri::command]
+fn pair_qr(st: State<AppState>) -> Result<PairQr, String> {
+    let s = st.settings.lock().unwrap().clone();
+    if !s.server_lan {
+        return Err("Turn on Other devices first".into());
+    }
+    let base = {
+        let sv = st.server_status.lock().unwrap();
+        if !sv.running {
+            return Err("The API server isn't running".into());
+        }
+        sv.urls.first().filter(|u| !u.contains("127.0.0.1")).cloned()
+    };
+    let base = base.ok_or("No network address found; is this computer on Wi-Fi or Ethernet?")?;
+    let key = st.secrets.lock().unwrap().server_key.clone();
+    let (rows, cols) = s.dims();
+    let name = if s.board_name.is_empty() { "Rattleboard".to_string() } else { s.board_name };
+    let url = boards::pair_url(&base, &key, &name, rows, cols);
+    let code = qrcode::QrCode::new(url.as_bytes()).map_err(|e| e.to_string())?;
+    let svg = code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(232, 232)
+        .dark_color(qrcode::render::svg::Color("#1b1b1d"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build();
+    let svg = svg.find("<svg").map(|i| svg[i..].to_string()).unwrap_or(svg);
+    Ok(PairQr { svg, url })
+}
+
+// ---------------------------------------------------------------- notifications (Windows)
+
+#[tauri::command]
+fn notify_request_access(app: AppHandle) -> Result<(), String> {
+    notify::request_access(&app)
 }
 
 // ---------------------------------------------------------------- commands
@@ -746,9 +1527,13 @@ struct Found {
     ip: String,
 }
 
+/// Boards to mirror, for setup: Rattleboards announcing themselves first, then a Vestaboard
+/// at its default vestaboard.local name.
 #[tauri::command]
-async fn scan_boards() -> Vec<Found> {
-    vestaboard::scan().await.into_iter().map(|(name, ip)| Found { name, ip }).collect()
+async fn scan_boards(app: AppHandle) -> Vec<Found> {
+    let (rattleboards, vestaboards) = tokio::join!(discover_boards(app), vestaboard::scan());
+    let ours = rattleboards.into_iter().map(|f| Found { name: f.name, ip: f.host });
+    ours.chain(vestaboards.into_iter().map(|(name, ip)| Found { name: format!("Vestaboard ({name})"), ip })).collect()
 }
 
 #[tauri::command]
@@ -770,6 +1555,7 @@ fn show_history_entry(app: AppHandle, st: State<AppState>, id: i64) {
     {
         let mut rt = st.rt.lock().unwrap();
         let Some(h) = rt.history.iter().find(|h| h.id == id).cloned() else { return };
+        rt.transition = Transition::default();
         let current = rt.display.clone().or_else(|| rt.layout.clone());
         if current.as_ref() == Some(&h.layout) {
             rt.seq += 1;
@@ -953,6 +1739,24 @@ pub fn run() {
             tray_resize,
             panel_resize,
             regenerate_server_key,
+            discover_boards,
+            add_board,
+            add_cloud_board,
+            add_pair_link,
+            check_board,
+            rename_board,
+            remove_board,
+            send_message,
+            play_sequence,
+            stop_sequence,
+            remote_sequence,
+            layout_text,
+            get_drafts,
+            save_drafts,
+            get_recent,
+            pair_qr,
+            notify_request_access,
+            set_groups,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -962,6 +1766,10 @@ pub fn run() {
             let data = app.path().app_data_dir()?;
             let settings_path = cfg.join("settings.json");
             let history_path = data.join("history.json");
+            let boards_path = cfg.join("boards.json");
+            let drafts_path = cfg.join("drafts.json");
+            let groups_path = cfg.join("groups.json");
+            let recent_path = data.join("recent.json");
             let settings = Settings::load(&settings_path);
             let history: Vec<HistoryEntry> = std::fs::read_to_string(&history_path)
                 .ok()
@@ -981,8 +1789,23 @@ pub fn run() {
                 wake: Notify::new(),
                 server: Mutex::new(None),
                 server_status: Mutex::new(ServerStatus::default()),
+                advert: Mutex::new(None),
+                boards: Mutex::new(boards::load(&boards_path)),
+                board_keys: Mutex::new(HashMap::new()),
+                players: Mutex::new(HashMap::new()),
+                groups: Mutex::new(send::load_groups(&groups_path)),
+                sent_at: Mutex::new(HashMap::new()),
+                notify: Mutex::new(NotifyInfo {
+                    supported: notify::SUPPORTED,
+                    access: if notify::SUPPORTED { "unspecified" } else { "unavailable" }.into(),
+                    apps: vec![],
+                }),
                 settings_path,
                 history_path,
+                boards_path,
+                drafts_path,
+                recent_path,
+                groups_path,
             });
 
             let h = app.handle().clone();
@@ -1007,6 +1830,7 @@ pub fn run() {
                     app,
                     &[
                         &MenuItem::with_id(app, "show", "Show board", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "compose", "Compose…", true, None::<&str>)?,
                         &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
                         &MenuItem::with_id(app, "quit", "Quit Rattleboard", true, None::<&str>)?,
@@ -1014,6 +1838,7 @@ pub fn run() {
                 )?;
                 tray = tray.menu(&menu).on_menu_event(|app, e| match e.id().as_ref() {
                     "show" => present_board(app, true),
+                    "compose" => open_panel(app, "compose"),
                     "settings" => open_panel(app, "settings"),
                     "quit" => quit(app.clone()),
                     _ => {}
@@ -1025,6 +1850,7 @@ pub fn run() {
             tray.build(app)?;
 
             tauri::async_runtime::spawn(poll_loop(h.clone()));
+            notify::start(&h);
             let h2 = h.clone();
             tauri::async_runtime::spawn(async move { restart_server(&h2).await });
             if !setup_done {

@@ -10,14 +10,30 @@ pub struct Point {
     pub y: f64,
 }
 
+/// An app whose notifications can be forwarded (Windows).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NotifyApp {
+    /// AppUserModelID
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub board_name: String,
     /// "black" | "white"
     pub finish: String,
-    /// "flag" (Flagship 6x22) | "note" (Note 3x15)
+    /// "Match each message" (the default): every message shows at its own size, and the board
+    /// window follows. Off: the board is always `model`'s size and centres other sizes.
+    pub adaptive: bool,
+    /// Board size: "standard" (6×22) | "compact" (3×15) | "large" (8×30) | "custom" (rows × cols).
+    /// When adaptive, the size for text that doesn't ask for one, and for the demo.
+    /// Older versions wrote "flag" and "note"; those still read as standard and compact.
     pub model: String,
+    /// The custom size: 2–12 rows of 8–40 columns
+    pub rows: usize,
+    pub cols: usize,
     /// Board size relative to the default tile size (resizable by dragging the board's corner)
     pub scale: f64,
     pub sound: bool,
@@ -45,7 +61,31 @@ pub struct Settings {
     pub server_port: u16,
     /// Listen on all interfaces instead of only this computer
     pub server_lan: bool,
+    /// Where Compose and Message History last sent a message: "this" or a saved board's id
+    pub send_target: String,
+    /// The message size Compose last used for an adaptive board
+    pub send_rows: usize,
+    pub send_cols: usize,
+    /// Windows only: put the system's notifications on a board
+    pub notify_enabled: bool,
+    /// The apps whose notifications are forwarded
+    pub notify_apps: Vec<NotifyApp>,
+    /// "this" or a saved board's id
+    pub notify_target: String,
+    /// Show only the app's name, not the title and text
+    pub notify_hide_content: bool,
+    pub notify_quiet: bool,
+    /// Quiet hours, "HH:MM" local time; may wrap past midnight
+    pub notify_quiet_from: String,
+    pub notify_quiet_to: String,
+    /// Put the previous message back after this many seconds; 0 leaves the notification up
+    pub notify_return_sec: u32,
 }
+
+/// Board sizes by name: rows × columns.
+pub const PRESETS: [(&str, usize, usize); 3] = [("standard", 6, 22), ("compact", 3, 15), ("large", 8, 30)];
+pub const CUSTOM_ROWS: (usize, usize) = (2, 12);
+pub const CUSTOM_COLS: (usize, usize) = (8, 40);
 
 /// Not 7000 (a real board's port): AirPlay receivers on Macs and many TVs already hold it.
 pub const DEFAULT_SERVER_PORT: u16 = 7070;
@@ -55,7 +95,10 @@ impl Default for Settings {
         Self {
             board_name: "Vestaboard".into(),
             finish: "black".into(),
-            model: "flag".into(),
+            adaptive: true,
+            model: "standard".into(),
+            rows: 6,
+            cols: 22,
             scale: 1.0,
             sound: false,
             speed: 1.0,
@@ -74,6 +117,17 @@ impl Default for Settings {
             server_enabled: false,
             server_port: DEFAULT_SERVER_PORT,
             server_lan: false,
+            send_target: "this".into(),
+            send_rows: 6,
+            send_cols: 22,
+            notify_enabled: false,
+            notify_apps: vec![],
+            notify_target: "this".into(),
+            notify_hide_content: false,
+            notify_quiet: false,
+            notify_quiet_from: "22:00".into(),
+            notify_quiet_to: "07:00".into(),
+            notify_return_sec: 30,
         }
     }
 }
@@ -96,12 +150,29 @@ impl Settings {
         if !["tl", "tr", "bl", "br"].contains(&self.position.as_str()) {
             self.position = "br".into();
         }
+        self.model = match self.model.as_str() {
+            "flag" => "standard".into(),
+            "note" => "compact".into(),
+            m if PRESETS.iter().any(|p| p.0 == m) || m == "custom" => m.into(),
+            _ => "standard".into(),
+        };
+        self.rows = self.rows.clamp(CUSTOM_ROWS.0, CUSTOM_ROWS.1);
+        self.send_rows = self.send_rows.clamp(CUSTOM_ROWS.0, CUSTOM_ROWS.1);
+        self.send_cols = self.send_cols.clamp(CUSTOM_COLS.0, CUSTOM_COLS.1);
+        self.cols = self.cols.clamp(CUSTOM_COLS.0, CUSTOM_COLS.1);
         if self.mode != "float" {
             self.mode = "toast".into();
         }
         if self.server_port == 0 {
             self.server_port = DEFAULT_SERVER_PORT;
         }
+        if self.send_target.is_empty() {
+            self.send_target = "this".into();
+        }
+        if self.notify_target.is_empty() {
+            self.notify_target = "this".into();
+        }
+        self.notify_return_sec = self.notify_return_sec.min(3600);
         self
     }
 
@@ -130,10 +201,83 @@ impl Settings {
     }
 
     pub fn dims(&self) -> (usize, usize) {
-        if self.model == "note" {
-            (3, 15)
-        } else {
-            (6, 22)
+        match PRESETS.iter().find(|p| p.0 == self.model) {
+            Some(p) => (p.1, p.2),
+            None if self.model == "custom" => (self.rows, self.cols),
+            None => (6, 22),
         }
+    }
+
+    /// Takes on the size of a board it mirrors: a preset when one matches, else custom.
+    pub fn set_dims(&mut self, (rows, cols): (usize, usize)) {
+        match PRESETS.iter().find(|p| (p.1, p.2) == (rows, cols)) {
+            Some(p) => self.model = p.0.into(),
+            None => {
+                self.model = "custom".into();
+                self.rows = rows.clamp(1, crate::vestaboard::MAX_ROWS);
+                self.cols = cols.clamp(1, crate::vestaboard::MAX_COLS);
+            }
+        }
+    }
+}
+
+/// Minutes since midnight for "HH:MM".
+fn minutes(hhmm: &str) -> Option<u32> {
+    let (h, m) = hhmm.trim().split_once(':')?;
+    let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+/// Whether `now` (minutes since midnight) falls in from..to, which may wrap past midnight.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn in_quiet_hours(from: &str, to: &str, now: u32) -> bool {
+    match (minutes(from), minutes(to)) {
+        (Some(f), Some(t)) if f <= t => (f..t).contains(&now),
+        (Some(f), Some(t)) => now >= f || now < t,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quiet_hours() {
+        assert!(in_quiet_hours("22:00", "07:00", 23 * 60));
+        assert!(in_quiet_hours("22:00", "07:00", 6 * 60 + 59));
+        assert!(!in_quiet_hours("22:00", "07:00", 7 * 60));
+        assert!(in_quiet_hours("09:30", "17:00", 12 * 60));
+        assert!(!in_quiet_hours("09:30", "17:00", 9 * 60));
+        assert!(!in_quiet_hours("nope", "07:00", 0));
+        assert!(!in_quiet_hours("08:00", "08:00", 8 * 60));
+    }
+
+    #[test]
+    fn sizes() {
+        let old: Settings = serde_json::from_str(r#"{"model": "note"}"#).unwrap();
+        assert_eq!(old.normalized().dims(), (3, 15));
+        let old: Settings = serde_json::from_str(r#"{"model": "flag"}"#).unwrap();
+        let s = old.normalized();
+        assert_eq!((s.model.as_str(), s.dims()), ("standard", (6, 22)));
+        // Settings from before adaptive boards match each message, like new installs.
+        assert!(s.adaptive && Settings::default().adaptive);
+        let s = Settings::default().merge(serde_json::json!({"model": "large"})).unwrap();
+        assert_eq!(s.dims(), (8, 30));
+        let s = Settings::default().merge(serde_json::json!({"model": "custom", "rows": 40, "cols": 3})).unwrap();
+        assert_eq!(s.dims(), (12, 8));
+        let s = Settings::default().merge(serde_json::json!({"model": "huge"})).unwrap();
+        assert_eq!(s.dims(), (6, 22));
+        let mut s = Settings::default();
+        s.set_dims((3, 15));
+        assert_eq!(s.model, "compact");
+        s.set_dims((5, 20));
+        assert_eq!((s.model.as_str(), s.dims()), ("custom", (5, 20)));
+    }
+
+    #[test]
+    fn merging() {
+        let s = Settings::default().merge(serde_json::json!({"notifyTarget": "", "notifyApps": [{"id": "a", "name": "Mail"}]})).unwrap();
+        assert_eq!((s.notify_target.as_str(), s.notify_apps.len()), ("this", 1));
     }
 }

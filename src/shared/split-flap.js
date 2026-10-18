@@ -28,19 +28,31 @@
  font-family:'Barlow Semi Condensed','Arial Narrow',sans-serif;font-weight:600;font-size:var(--fs);color:var(--ink);background:var(--tile)}
 .top .f{top:0}.bot .f{bottom:0}
 .fl{visibility:hidden;will-change:transform;z-index:2}`;
-  const PROPS = ['message', 'rows', 'cols', 'tile', 'speed', 'finish', 'sound', 'seq'];
+  const PROPS = ['message', 'rows', 'cols', 'tile', 'speed', 'finish', 'sound', 'seq', 'transition'];
+  // Which step a tile starts on, for the staggered transitions (Vestaboard's "strategy").
+  const GROUP = {
+    column: (r, c) => c,
+    'reverse-column': (r, c, cols) => cols - 1 - c,
+    'edges-to-center': (r, c, cols) => Math.min(c, cols - 1 - c),
+    row: r => r,
+    diagonal: (r, c) => r + c
+  };
 
   class SplitFlapBoard extends HTMLElement {
     static get observedAttributes() { return PROPS; }
     constructor() {
       super();
-      this._p = { rows: '6', cols: '22', tile: '24', speed: '1', finish: 'black', sound: 'off', seq: '0', message: '' };
+      this._p = { rows: '6', cols: '22', tile: '24', speed: '1', finish: 'black', sound: 'off', seq: '0', message: '', transition: '' };
       this.root = this.attachShadow({ mode: 'open' });
       this.tiles = []; this._q = false; this._running = false; this._lastClack = 0;
       this.fin = FIN.black;
     }
     attributeChangedCallback(n, o, v) { this._p[n] = v; this._schedule(); }
-    connectedCallback() { this._schedule(); }
+    connectedCallback() {
+      this._schedule();
+      // Moved in the DOM mid-flip: carry on from where the flaps were.
+      if (!this._running && this.tiles.some(t => t.cur !== t.target)) { this._running = true; this._raf = requestAnimationFrame(this._tick); }
+    }
     disconnectedCallback() { cancelAnimationFrame(this._raf); this._running = false; }
     _schedule() { if (this._q) return; this._q = true; queueMicrotask(() => { this._q = false; this._update(); }); }
     _update() {
@@ -92,12 +104,27 @@
       const c = DRUM[t.cur]; this._paint(t.sTop, c); this._paint(t.sBot, c);
       t.fTop.style.visibility = 'hidden'; t.fBot.style.visibility = 'hidden';
     }
+    // {strategy, stepIntervalMs, stepSize}; null for classic, where every flap starts at once.
+    _transition() {
+      let t; try { t = JSON.parse(this._p.transition || 'null'); } catch (e) { t = null; }
+      return t && t.strategy && t.strategy !== 'classic' ? t : null;
+    }
     _go(msg) {
-      const now = performance.now(); let moving = false;
+      const now = performance.now(), tr = this._transition(); let moving = false;
+      let start = t => t.c * 12 + Math.random() * 160;
+      if (tr) {
+        // Group k starts at k × interval. A little jitter inside each group keeps the flaps of
+        // one column from clacking in perfect unison, as they never quite do on the hardware.
+        const gap = Math.max(1, +tr.stepIntervalMs || 120), size = Math.max(1, +tr.stepSize || 1);
+        const jitter = Math.min(30, gap / 2), cols = +this._p.cols || 22, group = GROUP[tr.strategy];
+        const order = new Map();
+        if (!group) this.tiles.map(t => [t, Math.random()]).sort((a, b) => a[1] - b[1]).forEach(([t], i) => order.set(t, i));
+        start = t => Math.floor((group ? group(t.r, t.c, cols) : order.get(t)) / size) * gap + Math.random() * jitter;
+      }
       for (const t of this.tiles) {
         const code = (msg[t.r] && msg[t.r][t.c]) || 0;
         t.target = IDX[code] != null ? IDX[code] : 0;
-        t.nextAt = now + t.c * 12 + Math.random() * 160;
+        t.nextAt = now + start(t);
         if (t.cur !== t.target) moving = true;
       }
       if (!moving) { setTimeout(() => this._emit('flapdone'), 0); return; }

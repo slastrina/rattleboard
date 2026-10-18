@@ -9,14 +9,27 @@
 //!   GET  -> {"currentMessage": {"layout": "<json>", "id": "..."}}
 //!   POST {"text": "..."}  or  {"characters": [[...]]}  or  [[...]]
 //! Every style accepts the same key, which also works as `Authorization: Bearer <key>`.
+//! Both POSTs take optional "strategy", "step_interval_ms" and "step_size" in the object form,
+//! and `text` may carry a size hint, "rows" and "cols".
+//!
+//! A fixed-size board centres a layout of another size on itself; an adaptive one (the
+//! desktop's "Match each message") shows every layout at its own size.
+//!
+//! Rattleboard-only (protocol v2):
+//!   GET    /rattleboard/info      -> {"app": "rattleboard", "protocol": 2, ...}
+//!   POST   /rattleboard/sequence  {"name", "loop", "frames": [...]}  -> 201
+//!   GET    /rattleboard/sequence  -> {"running": true, "frame": 2, ...} or {"running": false}
+//!   DELETE /rattleboard/sequence  -> 204
 
-use crate::vestaboard::{self, Grid};
+use crate::sequence::{self, Sequence};
+use crate::vestaboard::{self, Grid, Transition};
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tokio::sync::oneshot;
@@ -36,12 +49,44 @@ impl Drop for Handle {
     }
 }
 
+pub const PROTOCOL: u32 = 2;
+const BODY_LIMIT: usize = 64 * 1024;
+const SEQUENCE_BODY_LIMIT: usize = 256 * 1024;
+
+#[cfg(target_os = "macos")]
+pub const PLATFORM: &str = "macos";
+#[cfg(target_os = "windows")]
+pub const PLATFORM: &str = "windows";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const PLATFORM: &str = "linux";
+
+/// A running sequence, as GET /rattleboard/sequence reports it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SequenceStatus {
+    pub id: String,
+    pub name: String,
+    /// 1-based
+    pub frame: usize,
+    pub frames: usize,
+    #[serde(rename = "loop")]
+    pub looping: bool,
+}
+
 /// What the server needs from the app; implemented in lib.rs.
 pub trait Board: Send + Sync + 'static {
     fn api_key(&self) -> String;
+    /// The board's size, or for an adaptive board the size text is laid out at by default
     fn dims(&self) -> (usize, usize);
+    /// Shows each message at its own size instead of centring it on `dims`
+    fn adaptive(&self) -> bool;
+    fn name(&self) -> String;
     fn current(&self) -> (Grid, Option<String>);
-    fn post(&self, layout: Grid) -> String;
+    /// A normal message. It also stops a running sequence.
+    fn post(&self, layout: Grid, tr: Transition) -> String;
+    /// Starts a sequence in place of any running one; returns its id.
+    fn play(&self, seq: Sequence) -> String;
+    fn sequence(&self) -> Option<SequenceStatus>;
+    fn stop(&self);
 }
 
 #[derive(Clone)]
@@ -67,9 +112,18 @@ pub async fn start(board: std::sync::Arc<dyn Board>, port: u16, lan: bool) -> Re
     let router = Router::new()
         .route("/local-api/message", get(local_get).post(post).options(preflight))
         .route("/", get(cloud_get).post(post).options(preflight))
+        .route("/rattleboard/info", get(info).options(preflight))
+        .route(
+            "/rattleboard/sequence",
+            get(sequence_get)
+                .post(sequence_post)
+                .delete(sequence_delete)
+                .options(preflight)
+                .layer(DefaultBodyLimit::max(SEQUENCE_BODY_LIMIT)),
+        )
         .fallback(|| async { err(StatusCode::NOT_FOUND, "Not found") })
         .layer(axum::middleware::map_response(cors))
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .with_state(ctx);
     let (tx, rx) = oneshot::channel::<()>();
     tauri::async_runtime::spawn(async move {
@@ -135,23 +189,109 @@ async fn post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
     let Ok(v) = serde_json::from_slice::<Value>(&body) else {
         return err(StatusCode::BAD_REQUEST, "Body must be JSON");
     };
-    let (rows, cols) = ctx.board.dims();
-    let layout = match &v {
-        Value::Array(_) => vestaboard::posted_grid(&v),
-        Value::Object(o) => match (o.get("characters"), o.get("text")) {
-            (Some(c), _) => vestaboard::posted_grid(c),
-            (None, Some(Value::String(t))) => Ok(vestaboard::text_layout(t, rows, cols)),
-            _ => Err("Send {\"text\": \"...\"}, {\"characters\": [[...]]} or a layout array".into()),
-        },
-        _ => Err("Send {\"text\": \"...\"}, {\"characters\": [[...]]} or a layout array".into()),
-    };
-    match layout {
-        Ok(g) => {
-            let id = ctx.board.post(g);
+    match message(&v, ctx.board.dims(), ctx.board.adaptive()) {
+        Ok((g, tr)) => {
+            let id = ctx.board.post(g, tr);
             (StatusCode::CREATED, Json(json!({ "status": "ok", "id": id, "created": crate::now_ms() }))).into_response()
         }
         Err(e) => err(StatusCode::BAD_REQUEST, &e),
     }
+}
+
+/// A posted message: a layout array, {"characters": ...} or {"text": ...}, with an optional
+/// transition, for a rows×cols board. A fixed board centres a layout of another size and lays
+/// text out at its own size; an adaptive one keeps the layout's size and follows the text's hint.
+pub fn message(v: &Value, (rows, cols): (usize, usize), adaptive: bool) -> Result<(Grid, Transition), String> {
+    const HOW: &str = "Send {\"text\": \"...\"}, {\"characters\": [[...]]} or a layout array";
+    let fit = |g: Grid| if adaptive { g } else { vestaboard::fit_center(&g, rows, cols) };
+    match v {
+        Value::Array(_) => Ok((fit(vestaboard::posted_grid(v)?), Transition::default())),
+        Value::Object(o) => {
+            let layout = match (o.get("characters"), o.get("text")) {
+                (Some(c), _) => fit(vestaboard::posted_grid(c)?),
+                (None, Some(Value::String(t))) => {
+                    let hint = size_hint(o)?;
+                    let (r, c) = if adaptive { hint.unwrap_or((rows, cols)) } else { (rows, cols) };
+                    vestaboard::text_layout(t, r, c)
+                }
+                _ => return Err(HOW.into()),
+            };
+            Ok((layout, Transition::parse(o)?))
+        }
+        _ => Err(HOW.into()),
+    }
+}
+
+/// The optional "rows" and "cols" a text post asks to be laid out at: 2–12 × 8–40.
+pub fn size_hint(o: &serde_json::Map<String, Value>) -> Result<Option<(usize, usize)>, String> {
+    let (rows, cols) = (o.get("rows").filter(|v| !v.is_null()), o.get("cols").filter(|v| !v.is_null()));
+    if rows.is_none() && cols.is_none() {
+        return Ok(None);
+    }
+    let num = |v: Option<&Value>, (lo, hi): (usize, usize), what: &str| match v.and_then(|v| v.as_u64()) {
+        Some(n) if (lo as u64..=hi as u64).contains(&n) => Ok(n as usize),
+        _ => Err(format!("A size hint needs {what} from {lo} to {hi}")),
+    };
+    Ok(Some((num(rows, crate::settings::CUSTOM_ROWS, "rows")?, num(cols, crate::settings::CUSTOM_COLS, "cols")?)))
+}
+
+async fn info(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
+    if !authorized(&ctx, &h) {
+        return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
+    }
+    // An adaptive board reports the size it's showing, else the one it defaults to.
+    let shown = ctx.board.current().0;
+    let (rows, cols) = if ctx.board.adaptive() && !shown.is_empty() { vestaboard::dims_of(&shown) } else { ctx.board.dims() };
+    Json(json!({
+        "app": "rattleboard",
+        "protocol": PROTOCOL,
+        "version": env!("CARGO_PKG_VERSION"),
+        "platform": PLATFORM,
+        "name": ctx.board.name(),
+        "board": { "rows": rows, "cols": cols },
+        "adaptive": ctx.board.adaptive(),
+        "features": ["sequence", "strategy"],
+    }))
+    .into_response()
+}
+
+async fn sequence_post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
+    if !authorized(&ctx, &h) {
+        return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
+    }
+    let Ok(v) = serde_json::from_slice::<Value>(&body) else {
+        return err(StatusCode::BAD_REQUEST, "Body must be JSON");
+    };
+    match sequence::parse(&v, ctx.board.dims(), ctx.board.adaptive()) {
+        Ok(seq) => {
+            let frames = seq.frames.len();
+            let id = ctx.board.play(seq);
+            (StatusCode::CREATED, Json(json!({ "status": "ok", "id": id, "frames": frames }))).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+async fn sequence_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
+    if !authorized(&ctx, &h) {
+        return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
+    }
+    match ctx.board.sequence() {
+        Some(s) => {
+            let mut v = json!(s);
+            v["running"] = json!(true);
+            Json(v).into_response()
+        }
+        None => Json(json!({ "running": false })).into_response(),
+    }
+}
+
+async fn sequence_delete(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
+    if !authorized(&ctx, &h) {
+        return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
+    }
+    ctx.board.stop();
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn preflight() -> StatusCode {
@@ -168,7 +308,7 @@ async fn cors(method: Method, mut res: Response) -> Response {
             "content-type, authorization, x-vestaboard-local-api-key, x-vestaboard-read-write-key, x-vestaboard-token",
         ),
     );
-    h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
+    h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, DELETE, OPTIONS"));
     if method == Method::OPTIONS {
         h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
     }
@@ -193,26 +333,62 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    struct Fake(Mutex<Grid>);
+    #[derive(Default)]
+    struct Fake {
+        size: (usize, usize),
+        adaptive: bool,
+        grid: Mutex<Grid>,
+        tr: Mutex<Transition>,
+        seq: Mutex<Option<(Sequence, SequenceStatus)>>,
+    }
     impl Board for Fake {
         fn api_key(&self) -> String {
             "k1".into()
         }
         fn dims(&self) -> (usize, usize) {
-            (3, 15)
+            self.size
+        }
+        fn adaptive(&self) -> bool {
+            self.adaptive
+        }
+        fn name(&self) -> String {
+            "Desk".into()
         }
         fn current(&self) -> (Grid, Option<String>) {
-            (self.0.lock().unwrap().clone(), Some("m1".into()))
+            (self.grid.lock().unwrap().clone(), Some("m1".into()))
         }
-        fn post(&self, layout: Grid) -> String {
-            *self.0.lock().unwrap() = layout;
+        fn post(&self, layout: Grid, tr: Transition) -> String {
+            *self.grid.lock().unwrap() = layout;
+            *self.tr.lock().unwrap() = tr;
+            self.stop();
             "m2".into()
         }
+        fn play(&self, seq: Sequence) -> String {
+            let st = SequenceStatus { id: "seq-1".into(), name: seq.name.clone(), frame: 1, frames: seq.frames.len(), looping: seq.looping };
+            *self.seq.lock().unwrap() = Some((seq, st));
+            "seq-1".into()
+        }
+        fn sequence(&self) -> Option<SequenceStatus> {
+            self.seq.lock().unwrap().as_ref().map(|s| s.1.clone())
+        }
+        fn stop(&self) {
+            *self.seq.lock().unwrap() = None;
+        }
+    }
+
+    fn fake() -> Arc<Fake> {
+        sized(3, 15)
+    }
+
+    fn sized(rows: usize, cols: usize) -> Arc<Fake> {
+        let f = Fake { size: (rows, cols), ..Default::default() };
+        *f.grid.lock().unwrap() = vec![vec![0; cols]; rows];
+        Arc::new(f)
     }
 
     #[tokio::test]
     async fn endpoints() {
-        let board = Arc::new(Fake(Mutex::new(vec![vec![0; 15]; 3])));
+        let board = fake();
         let h = start(board.clone(), 0, false).await.unwrap();
         let base = format!("http://{}", h.addr);
         let c = reqwest::Client::new();
@@ -223,22 +399,249 @@ mod tests {
 
         let r = c.post(&msg).header("X-Vestaboard-Local-Api-Key", "k1").body(r#"{"text":"hi there"}"#).send().await.unwrap();
         assert_eq!(r.status(), 201);
-        assert_eq!(board.0.lock().unwrap()[1][3..11], vestaboard::text_layout("hi there", 3, 15)[1][3..11]);
+        assert_eq!(board.grid.lock().unwrap()[1][3..11], vestaboard::text_layout("hi there", 3, 15)[1][3..11]);
 
         let g: Grid = c.get(&msg).header("X-Vestaboard-Local-Api-Key", "k1").send().await.unwrap().json().await.unwrap();
-        assert_eq!(g, *board.0.lock().unwrap());
+        assert_eq!(g, *board.grid.lock().unwrap());
 
-        let layout = vec![vec![5u8; 22]; 6];
+        let layout = vec![vec![5u8; 15]; 3];
         let r = c.post(&base).header("X-Vestaboard-Read-Write-Key", "k1").json(&layout).send().await.unwrap();
         assert_eq!(r.status(), 201);
         let v: Value = c.get(&base).header("X-Vestaboard-Token", "k1").send().await.unwrap().json().await.unwrap();
         let s = v["currentMessage"]["layout"].as_str().unwrap();
         assert_eq!(serde_json::from_str::<Grid>(s).unwrap(), layout);
+        // A bigger layout is cropped from its centre to fit.
+        let r = c.post(&base).bearer_auth("k1").json(&vec![vec![7u8; 22]; 6]).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        assert_eq!(*board.grid.lock().unwrap(), vec![vec![7u8; 15]; 3]);
 
-        let r = c.post(&base).bearer_auth("k1").body(r#"{"characters":[[1,2,3]]}"#).send().await.unwrap();
+        let r = c.post(&base).bearer_auth("k1").body(r#"{"characters":[[1,2,3],[1]]}"#).send().await.unwrap();
         assert_eq!(r.status(), 400);
         let r = c.request(Method::OPTIONS, &base).send().await.unwrap();
         assert_eq!(r.headers()["access-control-allow-origin"], "*");
+        assert!(r.headers()["access-control-allow-methods"].to_str().unwrap().contains("DELETE"));
+        drop(h);
+    }
+
+    /// Layouts of any size within 12×40 are centred on the board; anything else is a 400.
+    #[tokio::test]
+    async fn sizes() {
+        let board = sized(6, 22);
+        let h = start(board.clone(), 0, false).await.unwrap();
+        let c = reqwest::Client::new();
+        let msg = format!("http://{}/local-api/message", h.addr);
+        let post = |body: Value| c.post(&msg).header("X-Vestaboard-Local-Api-Key", "k1").json(&body).send();
+
+        // Compact on Standard: centred, blanks around it
+        assert_eq!(post(json!({"characters": vec![vec![1u8; 15]; 3]})).await.unwrap().status(), 201);
+        let g = board.grid.lock().unwrap().clone();
+        assert_eq!((g.len(), g[0].len()), (6, 22));
+        assert_eq!((g[0].clone(), g[1][2], g[1][3], g[3][17], g[3][18], g[4][10]), (vec![0; 22], 0, 1, 1, 0, 0));
+        // a raw array, and a single tile, are centred too
+        assert_eq!(post(json!([[2]])).await.unwrap().status(), 201);
+        assert_eq!(board.grid.lock().unwrap()[2][10], 2);
+
+        for bad in [
+            json!({"characters": vec![vec![1u8; 22]; 13]}),
+            json!({"characters": vec![vec![1u8; 41]; 6]}),
+            json!({"characters": [[1, 2, 3], [1, 2]]}),
+            json!({"characters": []}),
+            json!({"characters": [[]]}),
+            json!([[1, 2], [3]]),
+        ] {
+            let r = post(bad.clone()).await.unwrap();
+            assert_eq!(r.status(), 400, "{bad}");
+        }
+        drop(h);
+
+        // A custom Large board (8×30) reports its size and lays text out across it.
+        let board = sized(8, 30);
+        let h = start(board.clone(), 0, false).await.unwrap();
+        let base = format!("http://{}", h.addr);
+        let v: Value = c.get(format!("{base}/rattleboard/info")).bearer_auth("k1").send().await.unwrap().json().await.unwrap();
+        assert_eq!(v["board"], json!({"rows": 8, "cols": 30}));
+        let text = "a long line of words that wraps on a wide board";
+        let r = c.post(format!("{base}/local-api/message")).bearer_auth("k1").json(&json!({"text": text})).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        assert_eq!(*board.grid.lock().unwrap(), vestaboard::text_layout(text, 8, 30));
+        let r = c.post(format!("{base}/local-api/message")).bearer_auth("k1").json(&vec![vec![3u8; 30]; 8]).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        assert_eq!(*board.grid.lock().unwrap(), vec![vec![3u8; 30]; 8]);
+        let seq = json!({"frames": [{"characters": vec![vec![1u8; 22]; 6], "hold": 2}]});
+        let r = c.post(format!("{base}/rattleboard/sequence")).bearer_auth("k1").json(&seq).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        let f = &board.seq.lock().unwrap().clone().unwrap().0.frames[0].layout;
+        assert_eq!((f.len(), f[0].len(), f[0][3], f[1][4]), (8, 30, 0, 1));
+        drop(h);
+    }
+
+    /// An adaptive board shows each layout at its own size and follows a text post's size hint;
+    /// a fixed one centres and ignores the hint.
+    #[tokio::test]
+    async fn adaptive() {
+        let f = Fake { size: (6, 22), adaptive: true, ..Default::default() };
+        let board = Arc::new(f);
+        let h = start(board.clone(), 0, false).await.unwrap();
+        let c = reqwest::Client::new();
+        let base = format!("http://{}", h.addr);
+        let msg = format!("{base}/local-api/message");
+        let post = |body: Value| c.post(&msg).bearer_auth("k1").json(&body).send();
+
+        assert_eq!(post(json!({"characters": vec![vec![1u8; 15]; 3]})).await.unwrap().status(), 201);
+        assert_eq!(*board.grid.lock().unwrap(), vec![vec![1u8; 15]; 3]);
+        let v: Value = c.get(format!("{base}/rattleboard/info")).bearer_auth("k1").send().await.unwrap().json().await.unwrap();
+        assert_eq!((v["adaptive"].as_bool(), v["board"].clone()), (Some(true), json!({"rows": 3, "cols": 15})));
+
+        assert_eq!(post(json!({"text": "hello", "rows": 8, "cols": 30})).await.unwrap().status(), 201);
+        assert_eq!(*board.grid.lock().unwrap(), vestaboard::text_layout("hello", 8, 30));
+        // no hint: the board's default size
+        assert_eq!(post(json!({"text": "hello"})).await.unwrap().status(), 201);
+        assert_eq!(*board.grid.lock().unwrap(), vestaboard::text_layout("hello", 6, 22));
+        for bad in [
+            json!({"text": "a", "rows": 1, "cols": 15}),
+            json!({"text": "a", "rows": 13, "cols": 15}),
+            json!({"text": "a", "rows": 3, "cols": 7}),
+            json!({"text": "a", "rows": 3, "cols": 41}),
+            json!({"text": "a", "rows": 3}),
+            json!({"text": "a", "rows": "3", "cols": 15}),
+        ] {
+            assert_eq!(post(bad.clone()).await.unwrap().status(), 400, "{bad}");
+        }
+        // sequence frames can each have their own size
+        let seq = json!({"frames": [
+            {"characters": vec![vec![2u8; 15]; 3], "hold": 1},
+            {"text": "big", "rows": 8, "cols": 30, "hold": 1},
+            {"text": "default", "hold": 1}
+        ]});
+        let r = c.post(format!("{base}/rattleboard/sequence")).bearer_auth("k1").json(&seq).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        let frames = board.seq.lock().unwrap().clone().unwrap().0.frames;
+        let sizes: Vec<_> = frames.iter().map(|f| vestaboard::dims_of(&f.layout)).collect();
+        assert_eq!(sizes, [(3, 15), (8, 30), (6, 22)]);
+        let bad = json!({"frames": [{"text": "a", "rows": 20, "cols": 15, "hold": 1}]});
+        assert_eq!(c.post(format!("{base}/rattleboard/sequence")).bearer_auth("k1").json(&bad).send().await.unwrap().status(), 400);
+        drop(h);
+
+        // A fixed board ignores the hint and lays text out at its own size.
+        let board = fake();
+        let h = start(board.clone(), 0, false).await.unwrap();
+        let r = c.post(format!("http://{}/local-api/message", h.addr)).bearer_auth("k1").json(&json!({"text": "hello", "rows": 8, "cols": 30})).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        assert_eq!(*board.grid.lock().unwrap(), vestaboard::text_layout("hello", 3, 15));
+        let v: Value = c.get(format!("http://{}/rattleboard/info", h.addr)).bearer_auth("k1").send().await.unwrap().json().await.unwrap();
+        assert_eq!(v["adaptive"], false);
+        drop(h);
+    }
+
+    #[tokio::test]
+    async fn strategies() {
+        let board = fake();
+        let h = start(board.clone(), 0, false).await.unwrap();
+        let c = reqwest::Client::new();
+        let msg = format!("http://{}/local-api/message", h.addr);
+        let post = |body: Value| c.post(&msg).header("X-Vestaboard-Local-Api-Key", "k1").json(&body).send();
+
+        let r = post(json!({"characters": vec![vec![1u8; 15]; 3], "strategy": "edges-to-center", "step_interval_ms": 40, "step_size": 2})).await.unwrap();
+        assert_eq!(r.status(), 201);
+        assert_eq!(*board.tr.lock().unwrap(), Transition { strategy: "edges-to-center".into(), step_interval_ms: 40, step_size: 2 });
+        assert_eq!(post(json!({"text": "hi", "strategy": "random"})).await.unwrap().status(), 201);
+        assert_eq!(board.tr.lock().unwrap().strategy, "random");
+        assert_eq!(post(json!({"text": "hi"})).await.unwrap().status(), 201);
+        assert!(board.tr.lock().unwrap().classic());
+
+        for bad in [
+            json!({"text": "hi", "strategy": "wipe"}),
+            json!({"text": "hi", "strategy": null, "step_interval_ms": 0}),
+            json!({"text": "hi", "step_interval_ms": 5001}),
+            json!({"text": "hi", "step_size": 0}),
+            json!({"text": "hi", "step_size": 23}),
+            json!({"text": "hi", "step_size": "2"}),
+        ] {
+            let r = post(bad.clone()).await.unwrap();
+            assert_eq!(r.status(), 400, "{bad}");
+            assert!(r.json::<Value>().await.unwrap()["error"].is_string());
+        }
+        drop(h);
+    }
+
+    #[tokio::test]
+    async fn rattleboard_routes() {
+        let board = fake();
+        let h = start(board.clone(), 0, false).await.unwrap();
+        let base = format!("http://{}/rattleboard", h.addr);
+        let c = reqwest::Client::new();
+        let key = |r: reqwest::RequestBuilder| r.header("X-Vestaboard-Local-Api-Key", "k1");
+
+        assert_eq!(c.get(format!("{base}/info")).send().await.unwrap().status(), 401);
+        let v: Value = key(c.get(format!("{base}/info"))).send().await.unwrap().json().await.unwrap();
+        assert_eq!((v["app"].as_str(), v["protocol"].as_u64(), v["name"].as_str()), (Some("rattleboard"), Some(2), Some("Desk")));
+        assert_eq!((v["board"]["rows"].as_u64(), v["board"]["cols"].as_u64()), (Some(3), Some(15)));
+        assert_eq!(v["platform"], PLATFORM);
+        assert_eq!(v["features"], json!(["sequence", "strategy"]));
+
+        let seq = format!("{base}/sequence");
+        for r in [c.get(&seq), c.post(&seq).body("{}"), c.delete(&seq)] {
+            assert_eq!(r.send().await.unwrap().status(), 401);
+        }
+        let v: Value = key(c.get(&seq)).send().await.unwrap().json().await.unwrap();
+        assert_eq!(v, json!({"running": false}));
+
+        let body = json!({"name": "Morning", "loop": true, "frames": [
+            {"characters": vec![vec![2u8; 15]; 3], "hold": 8, "strategy": "column", "step_interval_ms": 120, "step_size": 1},
+            {"text": "Coffee is ready", "hold": 5}
+        ]});
+        let r = key(c.post(&seq)).json(&body).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        let v: Value = r.json().await.unwrap();
+        assert_eq!((v["status"].as_str(), v["id"].as_str(), v["frames"].as_u64()), (Some("ok"), Some("seq-1"), Some(2)));
+        let played = board.seq.lock().unwrap().clone().unwrap().0;
+        assert_eq!(played.frames[1].layout, vestaboard::text_layout("Coffee is ready", 3, 15));
+        assert_eq!(played.frames[0].tr.strategy, "column");
+
+        let v: Value = key(c.get(&seq)).send().await.unwrap().json().await.unwrap();
+        assert_eq!(v, json!({"running": true, "id": "seq-1", "name": "Morning", "frame": 1, "frames": 2, "loop": true}));
+        assert_eq!(key(c.delete(&seq)).send().await.unwrap().status(), 204);
+        assert!(board.sequence().is_none());
+
+        // A normal message stops a running sequence.
+        assert_eq!(key(c.post(&seq)).json(&body).send().await.unwrap().status(), 201);
+        let msg = format!("http://{}/local-api/message", h.addr);
+        assert_eq!(key(c.post(&msg)).body(r#"{"text":"stop"}"#).send().await.unwrap().status(), 201);
+        assert!(board.sequence().is_none());
+
+        let frame = |f: Value| json!({"frames": [f]});
+        for bad in [
+            json!("nope"),
+            json!({"frames": []}),
+            json!({"frames": vec![json!({"text": "a", "hold": 1}); 101]}),
+            frame(json!({"text": "a"})),
+            frame(json!({"text": "a", "hold": 0})),
+            frame(json!({"text": "a", "hold": 3601})),
+            frame(json!({"hold": 3})),
+            frame(json!({"characters": [[1, 2], [3]], "hold": 3})),
+            frame(json!({"characters": vec![vec![1u8; 15]; 13], "hold": 3})),
+            frame(json!({"characters": vec![vec![72u8; 15]; 3], "hold": 3})),
+            frame(json!({"text": "a", "hold": 3, "strategy": "wipe"})),
+            frame(json!({"text": "a", "hold": 3, "step_size": 99})),
+            json!({"loop": 1, "frames": [{"text": "a", "hold": 3}]}),
+        ] {
+            let r = key(c.post(&seq)).json(&bad).send().await.unwrap();
+            assert_eq!(r.status(), 400, "{bad}");
+            assert!(r.json::<Value>().await.unwrap()["error"].is_string());
+        }
+        let r = key(c.post(&seq)).body("{not json").send().await.unwrap();
+        assert_eq!(r.status(), 400);
+
+        // This route takes up to 256 KB; the others stay at 64 KB.
+        let big = json!({"frames": vec![json!({"text": "A ".repeat(600), "hold": 1}); 100]});
+        let n = serde_json::to_vec(&big).unwrap().len();
+        assert!(n > 64 * 1024 && n < 256 * 1024, "{n}");
+        assert_eq!(key(c.post(&seq)).json(&big).send().await.unwrap().status(), 201);
+        let pad = " ".repeat(300 * 1024);
+        let r = key(c.post(&seq)).body(format!("{{\"frames\": []{pad}}}")).send().await.unwrap();
+        assert_eq!(r.status(), 413);
+        let r = key(c.post(&msg)).body(format!("{{\"text\": \"a\"{}}}", " ".repeat(70 * 1024))).send().await.unwrap();
+        assert_eq!(r.status(), 413);
         drop(h);
     }
 

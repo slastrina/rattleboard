@@ -7,13 +7,16 @@ const $ = id => document.getElementById(id);
 let S = null;
 const ui = { visible: false, flipping: false, remaining: 0, total: 0, hover: false, dragging: false, resizing: null };
 let lastSize = '';
+// The rows × cols on screen; a message of another size waits for the window to fit it first.
+let shownGeom = '', fitting = false;
 
 const floating = () => !!S && S.settings.mode === 'float';
 const MIN_SCALE = 0.4, MAX_SCALE = 3;
 
 function tileSize(s) {
   const scale = ui.resizing ? ui.resizing.scale : s.scale || 1;
-  return Math.max(7, Math.round((s.model === 'note' ? 34 : 24) * scale));
+  // Scale is the tile size, so a smaller message makes a smaller board, not bigger tiles.
+  return Math.max(5, Math.round(24 * scale));
 }
 
 // The resize grip sits on the corner facing away from the screen edge the board is parked against.
@@ -24,11 +27,23 @@ function gripCorner(s) {
 
 function render() {
   if (!S) return;
-  const s = S.settings, { rows, cols } = RB.dims(s.model), tile = tileSize(s), blk = s.finish !== 'white';
+  const s = S.settings, { rows, cols } = RB.dims(S), tile = tileSize(s), blk = s.finish !== 'white';
   const pad = Math.max(22, Math.round(tile * 1.15));
   const set = (k, v) => { if (sfb.getAttribute(k) !== String(v)) sfb.setAttribute(k, v); };
-  set('rows', rows); set('cols', cols); set('tile', tile); set('speed', s.speed); set('finish', s.finish);
-  set('sound', s.sound ? 'on' : 'off'); set('seq', S.seq); set('message', JSON.stringify(RB.fit(S.display, s.model)));
+  set('tile', tile); set('speed', s.speed); set('finish', s.finish);
+  set('sound', s.sound ? 'on' : 'off'); set('transition', JSON.stringify(S.transition || null));
+  const geom = rows + 'x' + cols;
+  if (geom !== shownGeom && shownGeom) {
+    // Resize the (blank) board and its window, then flip the message in, so the flaps never
+    // turn inside a window of the wrong size.
+    shownGeom = geom; fitting = true;
+    set('rows', rows); set('cols', cols);
+    requestAnimationFrame(() => measure().then(() => { fitting = false; render(); }));
+  } else if (!fitting) {
+    shownGeom = geom;
+    set('rows', rows); set('cols', cols);
+    set('seq', S.seq); set('message', JSON.stringify(RB.fit(S.display, RB.dims(S))));
+  }
 
   const st = stage.style;
   st.setProperty('--pad', pad + 'px');
@@ -67,10 +82,10 @@ function render() {
 
 // Keep the native window exactly as large as the board (plus shadow room).
 function measure() {
-  document.fonts.ready.then(() => {
+  return document.fonts.ready.then(() => {
     const w = sfb.offsetWidth, h = sfb.offsetHeight;
     const key = w + 'x' + h;
-    if (w && h && key !== lastSize) { lastSize = key; RB.invoke('board_resize', { width: w, height: h }); }
+    if (w && h && key !== lastSize) { lastSize = key; return RB.invoke('board_resize', { width: w, height: h }); }
   });
 }
 

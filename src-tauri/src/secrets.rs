@@ -6,6 +6,11 @@ pub const LOCAL_KEY: &str = "local-api-key";
 pub const CLOUD_TOKEN: &str = "cloud-api-token";
 pub const SERVER_KEY: &str = "api-server-key";
 
+/// Each saved board's key has an account of its own.
+pub fn board_account(id: &str) -> String {
+    format!("board-{id}")
+}
+
 pub fn get(account: &str) -> String {
     keyring::Entry::new(SERVICE, account)
         .and_then(|e| e.get_password())

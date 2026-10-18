@@ -21,11 +21,14 @@ tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["time", "sync", "macros", "net"] }
+tokio = { version = "1", features = ["time", "sync", "macros", "net", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 getrandom = "0.3"
+mdns-sd = { version = "0.21", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+url = "2"
 
 [profile.release]
 codegen-units = 1
@@ -33,3 +36,6 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "ApplicationModel", "UI_Notifications", "UI_Notifications_Management", "Win32_System_SystemInformation", "Win32_Foundation"] }
