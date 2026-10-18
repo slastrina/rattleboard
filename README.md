@@ -56,6 +56,7 @@ Or download the latest installer from [Releases](https://github.com/slastrina/ra
 | Windows 10/11 | `Rattleboard_x.y.z_x64-setup.exe` or `.msi` | If SmartScreen appears, choose **More info → Run anyway** |
 | Linux x86_64 (Debian 12, Ubuntu 22.04+) | `Rattleboard_x.y.z_amd64.deb` | `sudo apt install ./Rattleboard_x.y.z_amd64.deb`; see [Linux](#linux) |
 | Linux x86_64 (other distributions) | `Rattleboard_x.y.z_amd64.AppImage` | `chmod +x` it, then run it; see [Linux](#linux) |
+| Raspberry Pi 4/5 and other arm64 Linux (64-bit Raspberry Pi OS Bookworm, Debian 12, Ubuntu 22.04+) | `Rattleboard_x.y.z_arm64.deb` or `Rattleboard_x.y.z_aarch64.AppImage` | `sudo apt install ./Rattleboard_x.y.z_arm64.deb`; see [Raspberry Pi](#raspberry-pi) |
 
 For a server or a NAS, [Rattleboard Web](#rattleboard-web-docker) runs as a container: `docker run -p 7070:7070 -v rattleboard:/data ghcr.io/slastrina/rattleboard-web`.
 
@@ -81,6 +82,7 @@ Prop one on a shelf, mount it by the front door, or plug an old mini PC into a s
 | --- | --- | --- |
 | Old Mac (MacBook, iMac, Mac mini) | macOS 11 or later | **Available now:** [Releases](https://github.com/slastrina/rattleboard/releases/latest) or Homebrew |
 | Windows laptop, NUC or mini PC | Windows 10 or 11 | **Available now:** [Releases](https://github.com/slastrina/rattleboard/releases/latest) |
+| Raspberry Pi 4 or 5 | 64-bit Raspberry Pi OS (Bookworm) with desktop | **Available now:** [Releases](https://github.com/slastrina/rattleboard/releases/latest); see [Raspberry Pi](#raspberry-pi) |
 | Android phone, tablet, TV or TV box | Android 8 or later | Coming soon; links to come |
 | iPhone or iPad | iOS 16 or later | Coming soon; links to come |
 
@@ -146,7 +148,7 @@ docker run -d --name rattleboard --restart unless-stopped \
   -p 7070:7070 -v rattleboard:/data ghcr.io/slastrina/rattleboard-web
 ```
 
-Open `http://<server>:7070/` in a browser for the board. The image is small (about 15 MB, a static binary on a distroless base) and built for amd64 and arm64.
+Open `http://<server>:7070/` in a browser for the board. The image is small (about 15 MB, a static binary on a distroless base) and built for amd64 and arm64, and from the release after 0.4.0 also for 32-bit arm (arm/v7). On a Raspberry Pi, see [Raspberry Pi](#raspberry-pi).
 
 - **The board page** fills the window with the board, fitted to whatever size and shape the screen is, on a dark background (light for the white finish). Tap or click once for full screen. The pointer hides after 3 seconds without movement, and the page keeps the screen awake with the browser's Wake Lock, which browsers only allow on `https://` addresses or `localhost` (on plain `http://` from another device, set the tablet or kiosk browser itself to stay awake). The small "iokig.com" credit stays in the corner, as in the desktop's full screen.
 - **Live on every screen.** Each browser gets every change pushed to it as it happens (Server-Sent Events), so any number of screens can watch one board and flip together. A screen that loses the connection shows a small red dot and reconnects by itself.
@@ -254,7 +256,7 @@ The same `rest_command` works with a desktop Rattleboard; point it at that compu
 
 ## Linux
 
-Rattleboard runs on Linux desktops (x86_64). Download the `.deb` (Debian 12, Ubuntu 22.04 and later) or the `.AppImage` (most other distributions; `chmod +x` it first) from [Releases](https://github.com/slastrina/rattleboard/releases).
+Rattleboard runs on Linux desktops, x86_64 and arm64 (including the [Raspberry Pi](#raspberry-pi)). Download the `.deb` (Debian 12, Ubuntu 22.04 and later; `_amd64` or `_arm64`) or the `.AppImage` (most other distributions; `_amd64` or `_aarch64`, and `chmod +x` it first) from [Releases](https://github.com/slastrina/rattleboard/releases).
 
 - **Tray icon.** Rattleboard puts its icon in the tray through libayatana-appindicator (`libayatana-appindicator3-1`; the `.deb` installs it, and with the AppImage install it from your distribution if the icon is missing). Clicking it opens the menu. KDE Plasma, Xfce, Cinnamon, MATE and Ubuntu's own GNOME show it as they are. Stock GNOME (Fedora, Debian) hides tray icons until you install the [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615/appindicator-support/) extension (package `gnome-shell-extension-appindicator`).
 - **No tray?** Rattleboard checks at launch. Without one it opens Settings as a normal window instead, with a **Quit Rattleboard** button under Behavior; the board still pops up for messages after the window closes, and opening Rattleboard again from your app menu brings Settings back.
@@ -263,6 +265,54 @@ Rattleboard runs on Linux desktops (x86_64). Download the `.deb` (Debian 12, Ubu
 - **Full screen keep-awake** asks the desktop over D-Bus to stop the screen blanking (`org.freedesktop.ScreenSaver`, or the desktop portal's inhibit), and lets go when full screen ends or Rattleboard quits.
 - **Start at login** adds a `.desktop` file to `~/.config/autostart` (for the AppImage it points at the AppImage file, so keep that where it is).
 - **Notification forwarding** isn't available on Linux yet.
+
+## Raspberry Pi
+
+A Raspberry Pi behind a TV or a small HDMI screen makes a good dedicated board. Run the desktop app full screen, or run [Rattleboard Web](#rattleboard-web-docker) in Docker and show it in Chromium in kiosk mode.
+
+**What you need:** a Raspberry Pi 4 or 5 with 2 GB of memory or more, a display, and **Raspberry Pi OS (64-bit), Bookworm, with desktop** ("Raspberry Pi OS (64-bit)" in Raspberry Pi Imager; not Lite, which has no desktop to show the board on).
+
+### The desktop app
+
+1. Download `Rattleboard_x.y.z_arm64.deb` from [Releases](https://github.com/slastrina/rattleboard/releases/latest) and install it:
+
+   ```sh
+   sudo apt install ./Rattleboard_x.y.z_arm64.deb
+   ```
+
+   apt pulls in what it needs from Raspberry Pi OS (WebKitGTK, libayatana-appindicator, and GNOME Keyring for keys). The `_aarch64.AppImage` works too.
+2. Open Rattleboard from the applications menu and finish the first-run setup.
+3. In **Settings → Display → Show as**, choose **Full screen**. In **Settings → Behavior**, turn on **Start at login** and **Full screen at launch**. After a restart or a power cut, the Pi then comes straight back to the board.
+4. Turn screen blanking off: `sudo raspi-config`, then **Display Options → Screen Blanking → No**, and reboot. Rattleboard asks the desktop to keep the screen awake while it's full screen, but don't rely on every Raspberry Pi OS desktop honouring that.
+
+The [API server](#api-server) works as on any computer: turn it on with **Other devices** and scripts on your network post to `http://<pi>:7070/local-api/message`. If the taskbar shows no Rattleboard icon, Rattleboard opens Settings as a window instead (see [Linux](#linux)). Raspberry Pi OS uses Wayland on a Pi 4 or 5, so Rattleboard runs through XWayland; full screen works either way.
+
+### Rattleboard Web and a Chromium kiosk
+
+Instead of the desktop app, run the board as a container and show it in Chromium, which Raspberry Pi OS already has. This also suits a Pi with no screen of its own that serves the board to tablets and TVs elsewhere.
+
+```sh
+curl -fsSL https://get.docker.com | sh
+sudo docker run -d --name rattleboard --restart unless-stopped \
+  -p 7070:7070 -v rattleboard:/data ghcr.io/slastrina/rattleboard-web
+```
+
+To open the board full screen at login, create `~/.config/autostart/rattleboard-kiosk.desktop`:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=Rattleboard kiosk
+Exec=sh -c 'sleep 5; chromium-browser --kiosk --noerrdialogs --no-first-run http://localhost:7070'
+```
+
+On Raspberry Pi OS releases where the command is `chromium`, use that instead. The pause gives the container a moment to start after boot. Turn screen blanking off as above; on `localhost` the page also keeps the screen awake itself. Post messages with the key from `sudo docker exec rattleboard rattleboard-web key`.
+
+### Older and smaller Pis
+
+- **32-bit Raspberry Pi OS:** the desktop app is 64-bit only (there's no armhf build). Rattleboard Web runs on 32-bit Raspberry Pi OS (arm/v7) from the release after 0.4.0; until then, use 64-bit Raspberry Pi OS.
+- **Raspberry Pi 3 and Zero 2 W** can run 64-bit Raspberry Pi OS and the arm64 builds, but they aren't tested, and with 1 GB or 512 MB of memory a WebKit or Chromium window showing the board may struggle. Rattleboard Web itself is light, so they suit serving the board to tablets and TVs elsewhere.
+- **Raspberry Pi Zero, Zero W and Pi 1** (ARMv6) aren't supported.
 
 ## Board sizes
 
@@ -621,7 +671,7 @@ The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The desktop
 
 ### Releasing
 
-Pushing a version tag builds the macOS (universal), Windows and Linux (`.deb`, AppImage) installers in GitHub Actions and attaches them to a GitHub Release, and publishes the Rattleboard Web image to `ghcr.io/slastrina/rattleboard-web` for amd64 and arm64. The macOS build is signed and notarized when the Developer ID secrets listed in `.github/workflows/release.yml` are set on the repository.
+Pushing a version tag builds the macOS (universal), Windows and Linux x86_64 and arm64 (`.deb`, AppImage) installers in GitHub Actions and attaches them to a GitHub Release, and publishes the Rattleboard Web image to `ghcr.io/slastrina/rattleboard-web` for amd64, arm64 and arm/v7. The macOS build is signed and notarized when the Developer ID secrets listed in `.github/workflows/release.yml` are set on the repository.
 
 ```sh
 git tag v0.4.0 && git push origin v0.4.0
