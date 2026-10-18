@@ -1,6 +1,9 @@
 mod boards;
+mod builtins;
+mod cards;
 mod fullscreen;
 mod notify;
+mod plugins;
 mod secrets;
 mod send;
 mod sequence;

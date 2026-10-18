@@ -271,7 +271,8 @@ fn code(ch: char) -> u8 {
     }
 }
 
-fn parse(line: &str) -> Vec<u8> {
+/// One line of text as flap codes: upper-cased, `{63}` a raw code and `{r}` a colour chip.
+pub fn parse(line: &str) -> Vec<u8> {
     let chars: Vec<char> = line.to_uppercase().chars().collect();
     let mut out = vec![];
     let mut i = 0;
@@ -298,6 +299,12 @@ fn parse(line: &str) -> Vec<u8> {
 /// Lays plain text out like Vestaboard's text endpoints: upper-cased, word-wrapped,
 /// centred both ways. Explicit newlines start a new row; `{63}` inserts a raw code.
 pub fn text_layout(text: &str, rows: usize, cols: usize) -> Grid {
+    place(&wrap(text, cols), rows, cols, false)
+}
+
+/// Word-wraps text into lines of at most `cols` codes, as `text_layout` does: explicit
+/// newlines start a new line, and only a word longer than a whole line is split.
+pub fn wrap(text: &str, cols: usize) -> Vec<Vec<u8>> {
     let mut lines: Vec<Vec<u8>> = vec![];
     for para in text.split('\n') {
         let mut cur: Vec<u8> = vec![];
@@ -325,14 +332,24 @@ pub fn text_layout(text: &str, rows: usize, cols: usize) -> Grid {
     while lines.len() > 1 && lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
-    lines.truncate(rows);
+    lines
+}
+
+/// Whether text lays out in `rows` lines of `cols` without cutting a word.
+pub fn fits(text: &str, rows: usize, cols: usize) -> bool {
+    text.split_whitespace().all(|w| parse(w).len() <= cols) && wrap(text, cols).len() <= rows
+}
+
+/// Puts lines on a rows×cols board, centred vertically, and centred or left-aligned
+/// across. Lines past the last row are dropped.
+pub fn place(lines: &[Vec<u8>], rows: usize, cols: usize, left: bool) -> Grid {
     let mut g = vec![vec![0u8; cols]; rows];
+    let lines = &lines[..lines.len().min(rows)];
     let top = (rows - lines.len()) / 2;
-    for (i, ln) in lines.into_iter().enumerate() {
-        let st = (cols - ln.len()) / 2;
-        for (j, v) in ln.into_iter().enumerate() {
-            g[top + i][st + j] = v;
-        }
+    for (i, ln) in lines.iter().enumerate() {
+        let ln = &ln[..ln.len().min(cols)];
+        let st = if left { 0 } else { (cols - ln.len()) / 2 };
+        g[top + i][st..st + ln.len()].copy_from_slice(ln);
     }
     g
 }
