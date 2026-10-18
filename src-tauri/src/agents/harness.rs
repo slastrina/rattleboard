@@ -214,7 +214,7 @@ fn stdio_server(l: &Launch, with_type: bool) -> J {
 }
 
 fn skill(dir: PathBuf) -> (Part, PathBuf, Piece) {
-    (Part::Skill, dir.join("rattleboard").join("SKILL.md"), Piece::Own { contents: SKILL.to_string() })
+    (Part::Skill, dir.join("rattleboard").join("SKILL.md"), Piece::Own { contents: SKILL.replace("\r\n", "\n") })
 }
 
 /// opencode's alerts: a plugin that runs --notify when a session goes idle or asks permission.

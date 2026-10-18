@@ -1,0 +1,2 @@
+# The skill is embedded in the app and written into agent apps as-is: keep it LF everywhere.
+skills/** text eol=lf
