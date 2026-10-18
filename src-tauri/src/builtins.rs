@@ -185,6 +185,22 @@ pub fn countdown(settings: &Map<String, Value>, now: NaiveDateTime, chip: Option
     Some(Countdown { face: face(text), live, celebrating: None })
 }
 
+/// What to call a source of a built-in plugin left with its default name: a countdown by
+/// what it counts to, the weather by its city.
+pub fn label(plugin: &str, settings: &Map<String, Value>) -> Option<String> {
+    let t = |k: &str| Some(text(settings, k).trim().to_string()).filter(|s| !s.is_empty());
+    match plugin {
+        COUNTDOWN => t("title").or_else(|| match text(settings, "preset") {
+            "nye" => Some("New Year".into()),
+            "christmas" => Some("Christmas".into()),
+            "halloween" => Some("Halloween".into()),
+            _ => None,
+        }),
+        WEATHER => t("city").map(|c| format!("Weather · {c}")),
+        _ => None,
+    }
+}
+
 /// When the countdown next changes what it says, for Up next's celebration entry.
 pub fn countdown_target(settings: &Map<String, Value>, now: NaiveDateTime) -> Option<NaiveDateTime> {
     target(settings, now).map(|t| t.0)

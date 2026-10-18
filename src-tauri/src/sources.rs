@@ -694,17 +694,19 @@ impl Engine {
             let plugins: Vec<Value> = i.plugins.iter().map(|p| Self::plugin_json(&i, p)).collect();
             let specs: HashMap<String, Vec<String>> = i.plugins.iter().map(|p| (p.id.clone(), p.secrets.iter().map(|s| s.key.clone()).collect())).collect();
             let feeds: HashMap<String, (Option<String>, Option<i64>)> = i.feeds.iter().map(|(k, f)| (k.clone(), (f.error.clone(), f.fetched))).collect();
-            let rotation: Vec<(Instance, Option<String>, Option<i64>)> = i.config.rotation.iter().map(|x| {
+            let rotation: Vec<(Instance, Option<String>, Option<i64>, String)> = i.config.rotation.iter().map(|x| {
                 let (e, f) = feeds.get(&x.id).cloned().unwrap_or_default();
-                (x.clone(), e, f)
+                let name = i.plugins.iter().find(|p| p.id == x.plugin).map(|p| label(x, p)).unwrap_or_else(|| x.name.clone());
+                (x.clone(), e, f, name)
             }).collect();
             (plugins, rotation, i.config.settings_json(), i.status.clone(), specs)
         };
         // Credential store reads happen with no lock held.
         let rotation: Vec<Value> = rotation
             .into_iter()
-            .map(|(x, error, fetched)| {
+            .map(|(x, error, fetched, name)| {
                 let mut v = x.to_json();
+                v["label"] = json!(name);
                 let secrets: Map<String, Value> = specs.get(&x.plugin).into_iter().flatten().map(|k| (k.clone(), json!({ "set": self.secret_set(&x.id, k) }))).collect();
                 v["secrets"] = Value::Object(secrets);
                 v["error"] = json!(error);
@@ -1227,6 +1229,15 @@ fn job_for(x: &Instance, p: &Manifest) -> Option<Job> {
     }
 }
 
+/// The name a source goes by: its own, or for a built-in left with the plugin's name, one
+/// from its settings ("Sam's birthday").
+fn label(x: &Instance, p: &Manifest) -> String {
+    if x.name != p.name {
+        return x.name.clone();
+    }
+    builtins::label(&p.id, &x.settings).unwrap_or_else(|| x.name.clone())
+}
+
 fn dwell_of(x: &Instance, p: &Manifest) -> u64 {
     if x.dwell > 0 { x.dwell } else { p.dwell.unwrap_or(DEFAULT_DWELL) }.max(MIN_DWELL)
 }
@@ -1253,7 +1264,7 @@ fn item_card(x: &Instance, p: &Manifest, it: &Item, now: i64, clock24: bool, rea
         }
         Face::Standard { chip, name: x.name.clone(), time: short_time(it.time.unwrap_or(now), clock24), body, pages: p.card.pages }
     });
-    Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: reason.into(), seen: vec![it.key.clone()] }
+    Card { instance: x.id.clone(), name: label(x, p), face, live: false, reason: reason.into(), seen: vec![it.key.clone()] }
 }
 
 fn template_face(x: &Instance, p: &Manifest, it: Option<&Item>, now: NaiveDateTime, clock24: bool) -> Option<Face> {
@@ -1295,7 +1306,7 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
     let chip = chip_of(x, p);
     let feed = i.feeds.get(&x.id);
     let data = feed.and_then(|f| f.data.as_ref());
-    let card = |face: Face, live: bool, reason: &str| Card { instance: x.id.clone(), name: x.name.clone(), face, live, reason: reason.into(), seen: vec![] };
+    let card = |face: Face, live: bool, reason: &str| Card { instance: x.id.clone(), name: label(x, p), face, live, reason: reason.into(), seen: vec![] };
     match (p.kind.as_str(), p.id.as_str()) {
         ("native", builtins::CLOCK) => {
             let world = x.settings.get("style").and_then(|s| s.as_str()) == Some("world");
@@ -1716,7 +1727,7 @@ fn plan(i: &Inner, ctx: &Ctx) -> Vec<Entry> {
             reason = format!("{reason} · {after}");
             after = "";
         }
-        out.push(Entry { at: t, instance_id: x.id.clone(), title: x.name.clone(), reason: capitalise(&reason), now: false });
+        out.push(Entry { at: t, instance_id: x.id.clone(), title: label(&x, &p), reason: capitalise(&reason), now: false });
         flips.push_back(t);
         last = Some(x.id.clone());
         t += dwell;
@@ -1737,7 +1748,7 @@ fn plan(i: &Inner, ctx: &Ctx) -> Vec<Entry> {
                 if let Some(at) = builtins::countdown_target(&x.settings, ctx.local) {
                     let ms = ctx.now + (at - ctx.local).num_milliseconds();
                     if ms > ctx.now && ms < end {
-                        out.push(Entry { at: ms, instance_id: x.id.clone(), title: x.name.clone(), reason: "Alert · celebration".into(), now: false });
+                        out.push(Entry { at: ms, instance_id: x.id.clone(), title: label(x, p), reason: "Alert · celebration".into(), now: false });
                     }
                 }
             }
@@ -1745,7 +1756,7 @@ fn plan(i: &Inner, ctx: &Ctx) -> Vec<Entry> {
                 if let Some(at) = builtins::quote_next(&x.settings, ctx.local) {
                     let ms = ctx.now + (at - ctx.local).num_milliseconds();
                     if ms < end {
-                        out.push(Entry { at: ms, instance_id: x.id.clone(), title: x.name.clone(), reason: "Message · quote of the day".into(), now: false });
+                        out.push(Entry { at: ms, instance_id: x.id.clone(), title: label(x, p), reason: "Message · quote of the day".into(), now: false });
                     }
                 }
             }

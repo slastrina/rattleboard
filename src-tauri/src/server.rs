@@ -15,23 +15,35 @@
 //! A fixed-size board centres a layout of another size on itself; an adaptive one (the
 //! desktop's "Match each message") shows every layout at its own size.
 //!
-//! Rattleboard-only (protocol v2):
+//! Rattleboard-only (protocol v2 and up):
 //!   GET    /rattleboard/info      -> {"app": "rattleboard", "protocol": 2, ...}
 //!   POST   /rattleboard/sequence  {"name", "loop", "frames": [...]}  -> 201
 //!   GET    /rattleboard/sequence  -> {"running": true, "frame": 2, ...} or {"running": false}
 //!   DELETE /rattleboard/sequence  -> 204
+//!
+//! Sources (protocol v3), on boards that run them:
+//!   GET    /rattleboard/sources                              plugins, rotation, settings
+//!   PUT    /rattleboard/sources/rotation                     replaces the rotation (validated)
+//!   POST   /rattleboard/sources/plugins                      installs a manifest (not command: 403)
+//!   DELETE /rattleboard/sources/plugins/{id}
+//!   PUT    /rattleboard/sources/instances/{id}/secrets       {"token": "..."}; never echoed
+//!   GET    /rattleboard/sources/preview/{id}                 {"characters": [[...]], "reason"}
+//!   GET    /rattleboard/sources/upnext                       [{"at", "instanceId", "title", "reason"}]
+//!   POST   /rattleboard/sources/next                         moves the rotation on now
 
 use crate::sequence::{self, Sequence};
 use crate::vestaboard::{self, Grid, Transition};
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{self, get};
 use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::{json, Value};
+use crate::sources::{self, Refused};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 
 const KEY_HEADERS: [&str; 3] = ["x-vestaboard-local-api-key", "x-vestaboard-read-write-key", "x-vestaboard-token"];
@@ -49,7 +61,8 @@ impl Drop for Handle {
     }
 }
 
-pub const PROTOCOL: u32 = 2;
+/// 3: sources and plugins (2 added sequences and transitions)
+pub const PROTOCOL: u32 = 3;
 const BODY_LIMIT: usize = 64 * 1024;
 const SEQUENCE_BODY_LIMIT: usize = 256 * 1024;
 
@@ -87,6 +100,14 @@ pub trait Board: Send + Sync + 'static {
     fn play(&self, seq: Sequence) -> String;
     fn sequence(&self) -> Option<SequenceStatus>;
     fn stop(&self);
+    /// The sources engine, on boards that run one
+    fn sources(&self) -> Option<Arc<sources::Engine>> {
+        None
+    }
+    /// The time and this board's size, for previews and Up next
+    fn sources_ctx(&self) -> Option<sources::Ctx> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -121,6 +142,14 @@ pub async fn start(board: std::sync::Arc<dyn Board>, port: u16, lan: bool) -> Re
                 .options(preflight)
                 .layer(DefaultBodyLimit::max(SEQUENCE_BODY_LIMIT)),
         )
+        .route("/rattleboard/sources", get(sources_get).options(preflight))
+        .route("/rattleboard/sources/rotation", routing::put(rotation_put).options(preflight))
+        .route("/rattleboard/sources/plugins", routing::post(plugin_post).options(preflight))
+        .route("/rattleboard/sources/plugins/{id}", routing::delete(plugin_delete).options(preflight))
+        .route("/rattleboard/sources/instances/{id}/secrets", routing::put(secrets_put).options(preflight))
+        .route("/rattleboard/sources/preview/{id}", get(preview_get).options(preflight))
+        .route("/rattleboard/sources/upnext", get(upnext_get).options(preflight))
+        .route("/rattleboard/sources/next", routing::post(next_post).options(preflight))
         .fallback(|| async { err(StatusCode::NOT_FOUND, "Not found") })
         .layer(axum::middleware::map_response(cors))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
@@ -250,9 +279,125 @@ async fn info(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
         "name": ctx.board.name(),
         "board": { "rows": rows, "cols": cols },
         "adaptive": ctx.board.adaptive(),
-        "features": ["sequence", "strategy"],
+        "features": features(&ctx),
     }))
     .into_response()
+}
+
+fn features(ctx: &Ctx) -> Vec<&'static str> {
+    let mut f = vec!["sequence", "strategy"];
+    if ctx.board.sources().is_some() {
+        f.push("sources");
+    }
+    f
+}
+
+fn refused(r: Refused) -> Response {
+    err(StatusCode::from_u16(r.0).unwrap_or(StatusCode::BAD_REQUEST), &r.1)
+}
+
+/// The engine, once the key is checked; a board without sources answers 404.
+fn engine(ctx: &Ctx, h: &HeaderMap) -> Result<Arc<sources::Engine>, Box<Response>> {
+    if !authorized(ctx, h) {
+        return Err(Box::new(err(StatusCode::UNAUTHORIZED, "Missing or wrong API key")));
+    }
+    ctx.board.sources().ok_or_else(|| Box::new(err(StatusCode::NOT_FOUND, "This board doesn't run sources")))
+}
+
+fn json_body(body: &Bytes) -> Result<Value, Box<Response>> {
+    serde_json::from_slice::<Value>(body).map_err(|_| Box::new(err(StatusCode::BAD_REQUEST, "Body must be JSON")))
+}
+
+async fn sources_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
+    match engine(&ctx, &h) {
+        Ok(e) => Json(e.view()).into_response(),
+        Err(r) => *r,
+    }
+}
+
+async fn rotation_put(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
+    let e = match engine(&ctx, &h) {
+        Ok(e) => e,
+        Err(r) => return *r,
+    };
+    let v = match json_body(&body) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    match e.put_rotation(&v, true) {
+        Ok(()) => Json(e.view()).into_response(),
+        Err(r) => refused(r),
+    }
+}
+
+async fn plugin_post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
+    let e = match engine(&ctx, &h) {
+        Ok(e) => e,
+        Err(r) => return *r,
+    };
+    let v = match json_body(&body) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    match e.install(&v, true) {
+        Ok(id) => (StatusCode::CREATED, Json(json!({ "status": "ok", "id": id }))).into_response(),
+        Err(r) => refused(r),
+    }
+}
+
+async fn plugin_delete(State(ctx): State<Ctx>, h: HeaderMap, Path(id): Path<String>) -> Response {
+    match engine(&ctx, &h).map(|e| e.uninstall(&id)) {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(r)) => refused(r),
+        Err(r) => *r,
+    }
+}
+
+async fn secrets_put(State(ctx): State<Ctx>, h: HeaderMap, Path(id): Path<String>, body: Bytes) -> Response {
+    let e = match engine(&ctx, &h) {
+        Ok(e) => e,
+        Err(r) => return *r,
+    };
+    let v = match json_body(&body) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    // Stored and never sent back, not even in this answer.
+    match e.set_secrets(&id, &v) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(r) => refused(r),
+    }
+}
+
+async fn preview_get(State(ctx): State<Ctx>, h: HeaderMap, Path(id): Path<String>) -> Response {
+    let e = match engine(&ctx, &h) {
+        Ok(e) => e,
+        Err(r) => return *r,
+    };
+    let Some(c) = ctx.board.sources_ctx() else { return err(StatusCode::NOT_FOUND, "This board doesn't run sources") };
+    match e.preview(&id, &c, true).await {
+        Ok((pages, reason)) => Json(json!({ "characters": pages[0], "pages": pages, "reason": reason })).into_response(),
+        Err(r) => refused(r),
+    }
+}
+
+async fn upnext_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
+    let e = match engine(&ctx, &h) {
+        Ok(e) => e,
+        Err(r) => return *r,
+    };
+    let Some(c) = ctx.board.sources_ctx() else { return err(StatusCode::NOT_FOUND, "This board doesn't run sources") };
+    Json(e.up_next(&c)).into_response()
+}
+
+async fn next_post(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
+    match engine(&ctx, &h) {
+        Ok(e) => {
+            e.request_next();
+            Json(json!({ "status": "ok" })).into_response()
+        }
+        Err(r) => *r,
+    }
 }
 
 async fn sequence_post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
@@ -308,7 +453,7 @@ async fn cors(method: Method, mut res: Response) -> Response {
             "content-type, authorization, x-vestaboard-local-api-key, x-vestaboard-read-write-key, x-vestaboard-token",
         ),
     );
-    h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, DELETE, OPTIONS"));
+    h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"));
     if method == Method::OPTIONS {
         h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
     }
@@ -340,6 +485,7 @@ mod tests {
         grid: Mutex<Grid>,
         tr: Mutex<Transition>,
         seq: Mutex<Option<(Sequence, SequenceStatus)>>,
+        engine: Option<Arc<sources::Engine>>,
     }
     impl Board for Fake {
         fn api_key(&self) -> String {
@@ -373,6 +519,12 @@ mod tests {
         }
         fn stop(&self) {
             *self.seq.lock().unwrap() = None;
+        }
+        fn sources(&self) -> Option<Arc<sources::Engine>> {
+            self.engine.clone()
+        }
+        fn sources_ctx(&self) -> Option<sources::Ctx> {
+            self.engine.as_ref().map(|_| sources::tests::ctx(0))
         }
     }
 
@@ -574,7 +726,7 @@ mod tests {
 
         assert_eq!(c.get(format!("{base}/info")).send().await.unwrap().status(), 401);
         let v: Value = key(c.get(format!("{base}/info"))).send().await.unwrap().json().await.unwrap();
-        assert_eq!((v["app"].as_str(), v["protocol"].as_u64(), v["name"].as_str()), (Some("rattleboard"), Some(2), Some("Desk")));
+        assert_eq!((v["app"].as_str(), v["protocol"].as_u64(), v["name"].as_str()), (Some("rattleboard"), Some(3), Some("Desk")));
         assert_eq!((v["board"]["rows"].as_u64(), v["board"]["cols"].as_u64()), (Some(3), Some(15)));
         assert_eq!(v["platform"], PLATFORM);
         assert_eq!(v["features"], json!(["sequence", "strategy"]));
@@ -642,6 +794,119 @@ mod tests {
         assert_eq!(r.status(), 413);
         let r = key(c.post(&msg)).body(format!("{{\"text\": \"a\"{}}}", " ".repeat(70 * 1024))).send().await.unwrap();
         assert_eq!(r.status(), 413);
+        drop(h);
+    }
+
+    /// The Sources routes (protocol v3): the key, validation, 403 for command plugins, and
+    /// secrets stored but never sent back.
+    #[tokio::test]
+    async fn sources_routes() {
+        let (engine, _) = sources::tests::engine("api");
+        let board = Arc::new(Fake { size: (6, 22), engine: Some(Arc::new(engine)), ..Default::default() });
+        *board.grid.lock().unwrap() = vec![vec![0; 22]; 6];
+        let h = start(board.clone(), 0, false).await.unwrap();
+        let base = format!("http://{}/rattleboard", h.addr);
+        let c = reqwest::Client::new();
+        let key = |r: reqwest::RequestBuilder| r.header("X-Vestaboard-Local-Api-Key", "k1");
+        let url = |p: &str| format!("{base}/sources{p}");
+
+        for r in [
+            c.get(url("")),
+            c.put(url("/rotation")).body("[]"),
+            c.post(url("/plugins")).body("{}"),
+            c.delete(url("/plugins/com.example.x")),
+            c.put(url("/instances/x/secrets")).body("{}"),
+            c.get(url("/preview/x")),
+            c.get(url("/upnext")),
+            c.post(url("/next")),
+        ] {
+            let r = r.header("X-Vestaboard-Local-Api-Key", "wrong").send().await.unwrap();
+            assert_eq!(r.status(), 401);
+            assert_eq!(r.headers()["access-control-allow-origin"], "*");
+        }
+        let v: Value = key(c.get(format!("{base}/info"))).send().await.unwrap().json().await.unwrap();
+        assert_eq!(v["features"], json!(["sequence", "strategy", "sources"]));
+
+        let v: Value = key(c.get(url(""))).send().await.unwrap().json().await.unwrap();
+        let ids: Vec<&str> = v["plugins"].as_array().unwrap().iter().filter_map(|p| p["id"].as_str()).collect();
+        for b in ["rattleboard.clock", "rattleboard.countdown", "rattleboard.weather", "rattleboard.rss", "rattleboard.ical", "rattleboard.json", "rattleboard.motd", "rattleboard.quote"] {
+            assert!(ids.contains(&b), "{b}");
+        }
+        assert_eq!((v["rotation"].clone(), v["quietHours"]["from"].clone(), v["holdMinutes"].clone()), (json!([]), json!("22:00"), json!(30)));
+
+        // Install: a JSON plugin is fine, a command plugin is refused, a bad one says why.
+        let iss = json!({"format": 1, "id": "com.example.iss", "name": "ISS", "kind": "json",
+            "fetch": {"url": "https://api.wheretheiss.at/v1/satellites/25544", "every": "1m"}, "pick": {"title": "$.latitude", "body": "$.longitude"}});
+        let r = key(c.post(url("/plugins"))).json(&iss).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        assert_eq!(r.json::<Value>().await.unwrap(), json!({"status": "ok", "id": "com.example.iss"}));
+        let cmd = json!({"format": 1, "id": "com.example.git", "name": "Git", "kind": "command", "run": {"path": "/usr/bin/git", "args": ["status"]}});
+        assert_eq!(key(c.post(url("/plugins"))).json(&cmd).send().await.unwrap().status(), 403);
+        let r = key(c.post(url("/plugins"))).json(&json!({"format": 1, "id": "com.example.bad", "name": "Bad", "kind": "rss", "fetch": {"url": "http://example.com/"}})).send().await.unwrap();
+        assert_eq!(r.status(), 400);
+        assert!(r.json::<Value>().await.unwrap()["error"].as_str().unwrap().contains("https"));
+        assert_eq!(key(c.post(url("/plugins"))).body("{nope").send().await.unwrap().status(), 400);
+
+        // The rotation: validated as a whole.
+        let rot = json!({"rotation": [
+            {"id": "clock", "plugin": "rattleboard.clock", "settings": {"style": "date"}, "dwell": "1m"},
+            {"id": "cal", "plugin": "rattleboard.ical", "enabled": false},
+            {"id": "iss", "plugin": "com.example.iss", "weight": 2},
+        ], "quietHours": {"enabled": true, "from": "23:00", "to": "06:30"}, "flipsPerHour": 20});
+        let r = key(c.put(url("/rotation"))).json(&rot).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        let v: Value = r.json().await.unwrap();
+        assert_eq!((v["rotation"].as_array().unwrap().len(), v["flipsPerHour"].clone(), v["quietHours"]["to"].clone()), (3, json!(20), json!("06:30")));
+        assert_eq!(v["rotation"][0]["dwell"], 60);
+        for bad in [json!([{"plugin": "com.nope"}]), json!([{"plugin": "rattleboard.clock", "weight": 0}]), json!({"rotation": "x"}), json!({"flipsPerHour": 0})] {
+            let r = key(c.put(url("/rotation"))).json(&bad).send().await.unwrap();
+            assert_eq!(r.status(), 400, "{bad}");
+            assert!(r.json::<Value>().await.unwrap()["error"].is_string());
+        }
+
+        // Secrets go in, and only their state ever comes out.
+        let secret = "https://calendar.example.com/private-7f3a9c/basic.ics";
+        let r = key(c.put(url("/instances/cal/secrets"))).json(&json!({"url": secret})).send().await.unwrap();
+        assert_eq!(r.status(), 204);
+        assert!(r.text().await.unwrap().is_empty());
+        let body = key(c.get(url(""))).send().await.unwrap().text().await.unwrap();
+        assert!(!body.contains("private-7f3a9c"));
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["rotation"][1]["secrets"], json!({"url": {"set": true}}));
+        assert_eq!(v["rotation"][0]["secrets"], json!({}));
+        assert_eq!(key(c.put(url("/instances/cal/secrets"))).json(&json!({"token": "x"})).send().await.unwrap().status(), 400);
+        assert_eq!(key(c.put(url("/instances/nope/secrets"))).json(&json!({"url": "x"})).send().await.unwrap().status(), 404);
+
+        // Preview: the card as it would show now, at this board's size.
+        let v: Value = key(c.get(url("/preview/clock"))).send().await.unwrap().json().await.unwrap();
+        let g: Grid = serde_json::from_value(v["characters"].clone()).unwrap();
+        assert_eq!((g.len(), g[0].len()), (6, 22));
+        assert!(v["reason"].is_string() && v["pages"].is_array());
+        assert_eq!(key(c.get(url("/preview/nope"))).send().await.unwrap().status(), 404);
+
+        // Up next and Next
+        let v: Value = key(c.get(url("/upnext"))).send().await.unwrap().json().await.unwrap();
+        let first = &v.as_array().unwrap()[0];
+        assert!(first["at"].is_i64() && first["instanceId"].is_string() && first["title"].is_string() && first["reason"].is_string(), "{v}");
+        let r = key(c.post(url("/next"))).send().await.unwrap();
+        assert_eq!(r.json::<Value>().await.unwrap(), json!({"status": "ok"}));
+
+        // Uninstalling takes its sources with it; built-ins stay.
+        assert_eq!(key(c.delete(url("/plugins/rattleboard.clock"))).send().await.unwrap().status(), 400);
+        assert_eq!(key(c.delete(url("/plugins/com.example.nope"))).send().await.unwrap().status(), 404);
+        assert_eq!(key(c.delete(url("/plugins/com.example.iss"))).send().await.unwrap().status(), 204);
+        let v: Value = key(c.get(url(""))).send().await.unwrap().json().await.unwrap();
+        assert_eq!(v["rotation"].as_array().unwrap().len(), 2);
+
+        let r = c.request(Method::OPTIONS, url("/rotation")).send().await.unwrap();
+        assert!(r.headers()["access-control-allow-methods"].to_str().unwrap().contains("PUT"));
+        drop(h);
+
+        // A board without sources says so.
+        let plain = fake();
+        let h = start(plain, 0, false).await.unwrap();
+        let r = c.get(format!("http://{}/rattleboard/sources", h.addr)).bearer_auth("k1").send().await.unwrap();
+        assert_eq!(r.status(), 404);
         drop(h);
     }
 

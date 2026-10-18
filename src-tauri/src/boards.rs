@@ -257,7 +257,7 @@ pub fn advertise(name: &str, port: u16) -> Option<Advert> {
     let mdns = mdns_sd::ServiceDaemon::new().ok()?;
     let instance = format!("Rattleboard ({name})");
     let host = format!("rattleboard-{}.local.", &new_id()[2..]);
-    let props = [("app", "rattleboard"), ("protocol", "2")];
+    let props = [("app", "rattleboard"), ("protocol", "3")];
     let info = mdns_sd::ServiceInfo::new(SERVICE_TYPE, &instance, &host, (), port, &props[..]).ok()?.enable_addr_auto();
     let fullname = info.get_fullname().to_string();
     mdns.register(info).ok()?;

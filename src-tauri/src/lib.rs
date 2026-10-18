@@ -91,6 +91,8 @@ struct Runtime {
     play_error: Option<String>,
     /// The display full screen covers: its position and size
     covered: Option<(i32, i32, u32, u32)>,
+    /// What was on the board when a source's alert interrupted it, to put back afterwards
+    alert_return: Option<(Grid, Transition)>,
 }
 
 struct Secrets {
@@ -156,6 +158,10 @@ struct AppState {
     /// When each real board may next take a message (see `queue_turn`)
     sent_at: Mutex<HashMap<String, Instant>>,
     notify: Mutex<NotifyInfo>,
+    /// Sources: the rotation of plugin cards (see sources.rs)
+    sources: Arc<sources::Engine>,
+    /// Saved boards the sources engine drives as a hub, and how each is doing
+    hub: Mutex<HashMap<String, HubTarget>>,
     settings_path: PathBuf,
     history_path: PathBuf,
     boards_path: PathBuf,
@@ -193,6 +199,7 @@ struct Snapshot {
     playing: Vec<Playing>,
     play_error: Option<String>,
     notify: NotifyInfo,
+    sources: sources::Status,
 }
 
 /// This computer's name as people know it ("Sam's MacBook").
@@ -265,6 +272,7 @@ fn snapshot(st: &AppState) -> Snapshot {
         playing: st.players.lock().unwrap().values().map(|p| p.info.clone()).collect(),
         play_error: rt.play_error.clone(),
         notify: st.notify.lock().unwrap().clone(),
+        sources: st.sources.status(),
     }
 }
 
@@ -369,9 +377,31 @@ async fn check(app: &AppHandle) -> Result<Grid, String> {
     Ok(reading.layout)
 }
 
-/// Puts a new message on the virtual board: history, unread dot, and the flip.
+/// Puts a new message on the virtual board: history, unread dot, and the flip. It holds the
+/// sources rotation for a while (see `sources::Engine::note_message`).
 fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition) {
+    put_on_board(app, layout, id, src, tr, Shown::Message);
+}
+
+/// How something gets onto this board.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Shown {
+    /// A message from outside the engine: Compose, the API, a sequence, the mirrored board
+    Message,
+    /// The rotation's next card, or a live card re-drawn: no pop-up, no history
+    Ambient,
+    /// A source's alert, or its once-a-day message: pops up and goes in the history
+    Alert,
+    /// What was there before an alert
+    Restore,
+}
+
+fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition, how: Shown) {
     let st = app.state::<AppState>();
+    let loud = matches!(how, Shown::Message | Shown::Alert);
+    if how == Shown::Message {
+        st.sources.note_message(now_ms());
+    }
     // A fixed board takes on the size of a board it mirrors (posted messages arrive fitted to
     // it already); an adaptive one just shows each message at its own size.
     let detected = vestaboard::dims_of(&layout);
@@ -400,17 +430,25 @@ fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
         if !first || rt.last_change_at.is_none() {
             rt.last_change_at = Some(now_ms());
         }
+        if how == Shown::Message {
+            // Nothing to go back to: the message replaced the alert.
+            rt.alert_return = None;
+        }
         let already = rt.history.first().map(|h| h.layout == layout).unwrap_or(false);
-        if !already {
+        if !already && loud {
             let at = now_ms();
             rt.history.insert(0, HistoryEntry { id: at, at, src: src.into(), layout });
             rt.history.truncate(HISTORY_MAX);
         }
-        rt.unread = !tray_open;
+        if loud {
+            rt.unread = !tray_open;
+        }
     }
-    save_history(&st);
+    if loud {
+        save_history(&st);
+    }
     broadcast(app);
-    if setup_done {
+    if setup_done && loud {
         present_board(app, false);
     }
 }
@@ -431,6 +469,330 @@ async fn poll_loop(app: AppHandle) {
             _ = st.wake.notified() => {}
         }
     }
+}
+
+// ---------------------------------------------------------------- sources
+
+/// A saved board the engine pushes cards to (hub mode).
+#[derive(Default)]
+struct HubTarget {
+    /// Offline: retried after this, without holding anything up
+    backoff_until: Option<Instant>,
+    fails: u32,
+    flips: std::collections::VecDeque<Instant>,
+    /// The latest card meant for it; an older one still waiting for its turn is dropped
+    gen: u64,
+    last: Option<Grid>,
+    before_alert: Option<Grid>,
+}
+
+/// The time, this board's size, and whether the rotation is paused: it is while this board
+/// mirrors another one (or the demo), unless "Show sources while mirroring" is on.
+fn sources_ctx(app: &AppHandle) -> sources::Ctx {
+    let st = app.state::<AppState>();
+    let s = st.settings.lock().unwrap().clone();
+    let mirroring = matches!(s.source.as_str(), "local" | "cloud" | "demo");
+    let paused = if !s.setup_done {
+        Some("Finish setting up Rattleboard first".to_string())
+    } else if mirroring && !st.sources.while_mirroring() {
+        Some(format!("Paused while mirroring {}", if s.source == "demo" { "the demo" } else { "another board" }))
+    } else {
+        None
+    };
+    sources::Ctx { now: now_ms(), local: chrono::Local::now().naive_local(), paused, dims: s.dims() }
+}
+
+/// The engine: fetches run in tasks of their own, so a slow feed never holds the rotation
+/// up; the rotation moves on once a second, or at once when something changes.
+async fn sources_loop(app: AppHandle) {
+    let engine = app.state::<AppState>().sources.clone();
+    loop {
+        let ctx = sources_ctx(&app);
+        if ctx.paused.is_none() {
+            for (id, job) in engine.due_jobs(ctx.now) {
+                let (e, local, now) = (engine.clone(), ctx.local, ctx.now);
+                tauri::async_runtime::spawn(async move {
+                    let r = e.run_job(job, local, now).await;
+                    e.store(&id, r, now_ms());
+                });
+            }
+        }
+        let actions = engine.tick(&ctx);
+        run_actions(&app, actions);
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = engine.wake.notified() => {}
+        }
+    }
+}
+
+/// Where the engine's cards go: "Show sources on" (this board by default), as boards.
+fn sources_destinations(app: &AppHandle) -> Vec<String> {
+    let targets = app.state::<AppState>().sources.config().targets;
+    let mut out: Vec<String> = vec![];
+    for t in targets {
+        for d in destinations(app, &t).unwrap_or_default() {
+            if !out.contains(&d) {
+                out.push(d);
+            }
+        }
+    }
+    out
+}
+
+fn page_of(card: &sources::Card, page: usize, rows: usize, cols: usize) -> Grid {
+    let mut pages = card.face.render(rows, cols);
+    let k = page.min(pages.len() - 1);
+    pages.swap_remove(k)
+}
+
+fn run_actions(app: &AppHandle, actions: Vec<sources::Action>) {
+    if actions.is_empty() {
+        return;
+    }
+    let dests = sources_destinations(app);
+    for a in actions {
+        match a {
+            sources::Action::Show { card, page, how } => {
+                for d in &dests {
+                    if d == HERE {
+                        let (rows, cols) = app.state::<AppState>().settings.lock().unwrap().dims();
+                        let layout = page_of(&card, page, rows, cols);
+                        let shown = match how {
+                            sources::How::Alert | sources::How::Message => Shown::Alert,
+                            _ => Shown::Ambient,
+                        };
+                        let (a, src, id, alert) = (app.clone(), format!("{} · Sources", card.name), next_id(app, "src"), how == sources::How::Alert);
+                        let _ = app.run_on_main_thread(move || {
+                            if alert {
+                                let st = a.state::<AppState>();
+                                let mut rt = st.rt.lock().unwrap();
+                                if rt.alert_return.is_none() {
+                                    rt.alert_return = rt.layout.clone().map(|l| (l, rt.transition.clone()));
+                                }
+                            }
+                            put_on_board(&a, layout, Some(id), &src, Transition::default(), shown);
+                        });
+                    } else {
+                        hub_push(app, d, &card, page, how);
+                    }
+                }
+            }
+            sources::Action::Return => {
+                let a = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    let back = a.state::<AppState>().rt.lock().unwrap().alert_return.take();
+                    if let Some((layout, tr)) = back {
+                        let id = next_id(&a, "src");
+                        put_on_board(&a, layout, Some(id), "Sources", tr, Shown::Restore);
+                    }
+                });
+                for d in dests.iter().filter(|d| *d != HERE) {
+                    let back = app.state::<AppState>().hub.lock().unwrap().get_mut(d).and_then(|t| t.before_alert.take());
+                    if let Some(g) = back {
+                        hub_send(app, d, g, sources::How::Ambient);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One card for a saved board, laid out for its size.
+fn hub_push(app: &AppHandle, id: &str, card: &sources::Card, page: usize, how: sources::How) {
+    let Ok(b) = find_board(app, id) else { return };
+    let layout = page_of(card, page, b.rows, b.cols);
+    hub_send(app, id, layout, how);
+}
+
+/// Sends to a saved board in the background, within its limits: a real Vestaboard's minimum
+/// gap (shared with Compose), the hourly cap, and a backoff while it's offline. A card
+/// superseded while it waited is dropped. Nothing here ever holds up the rotation.
+fn hub_send(app: &AppHandle, id: &str, layout: Grid, how: sources::How) {
+    let Ok(b) = find_board(app, id) else { return };
+    let st = app.state::<AppState>();
+    let cap = st.sources.config().flips_per_hour as usize;
+    let gen = {
+        let mut hub = st.hub.lock().unwrap();
+        let t = hub.entry(id.to_string()).or_default();
+        let now = Instant::now();
+        if t.backoff_until.is_some_and(|u| u > now) {
+            return;
+        }
+        while t.flips.front().is_some_and(|f| now.duration_since(*f) > Duration::from_secs(3600)) {
+            t.flips.pop_front();
+        }
+        if how != sources::How::Update && t.flips.len() >= cap {
+            return;
+        }
+        if t.last.as_ref() == Some(&layout) {
+            return;
+        }
+        t.gen += 1;
+        t.gen
+    };
+    let (app, id) = (app.clone(), id.to_string());
+    tauri::async_runtime::spawn(async move {
+        let wait = queue_turn(&app, &b);
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+        let st = app.state::<AppState>();
+        if st.hub.lock().unwrap().get(&id).is_some_and(|t| t.gen != gen) {
+            return;
+        }
+        let key = board_key(&app, &b.id);
+        let res = send::post(&st.http, &b, &key, &layout, &Transition::default()).await;
+        let mut hub = st.hub.lock().unwrap();
+        let t = hub.entry(id).or_default();
+        match res {
+            Ok(()) => {
+                t.fails = 0;
+                t.backoff_until = None;
+                t.flips.push_back(Instant::now());
+                if how == sources::How::Alert && t.before_alert.is_none() {
+                    t.before_alert = t.last.clone();
+                }
+                t.last = Some(layout);
+            }
+            Err(_) => {
+                // Offline or refusing: 30 s, then 1, 2, 4... minutes, up to 10.
+                t.fails += 1;
+                let secs = (30u64 << (t.fails - 1).min(5)).min(600);
+                t.backoff_until = Some(Instant::now() + Duration::from_secs(secs));
+            }
+        }
+    });
+}
+
+fn refused(r: sources::Refused) -> String {
+    r.1
+}
+
+/// Settings → Sources: everything, and Up next.
+#[tauri::command]
+fn get_sources(app: AppHandle) -> Value {
+    let st = app.state::<AppState>();
+    let mut v = st.sources.view();
+    let ctx = sources_ctx(&app);
+    v["upNext"] = json!(st.sources.up_next(&ctx));
+    v["targets"] = json!(st.sources.config().targets);
+    v
+}
+
+#[tauri::command]
+fn save_sources(app: AppHandle, sources: Value) -> Result<(), String> {
+    app.state::<AppState>().sources.put_rotation(&sources, false).map_err(refused)
+}
+
+#[tauri::command]
+fn add_source(app: AppHandle, plugin: String, settings: Option<Value>) -> Result<String, String> {
+    app.state::<AppState>().sources.add(&plugin, settings.as_ref()).map_err(refused)
+}
+
+/// Import: a manifest, or a source exported from another board (with its plugin's manifest).
+/// A command plugin can be installed here, but it doesn't run until it's approved.
+#[tauri::command]
+fn import_plugin(app: AppHandle, manifest: Value) -> Result<Value, String> {
+    let e = app.state::<AppState>().sources.clone();
+    if manifest["kind"] == "rattleboard-source" {
+        let source = manifest.get("source").cloned().ok_or("That file has no source in it")?;
+        if let Some(p) = manifest.get("plugin").filter(|p| p.is_object()) {
+            e.install(p, false).map_err(refused)?;
+        }
+        let plugin = source["plugin"].as_str().ok_or("The source names no plugin")?.to_string();
+        let id = e.add(&plugin, source.get("settings")).map_err(refused)?;
+        // Its name, weight, dwell and schedule, as exported.
+        let mut v = e.view()["rotation"].clone();
+        if let Some(list) = v.as_array_mut() {
+            for x in list.iter_mut().filter(|x| x["id"] == id.as_str()) {
+                for k in ["name", "weight", "dwell", "schedule", "chip", "include", "exclude", "alertWords"] {
+                    if let Some(val) = source.get(k) {
+                        x[k] = val.clone();
+                    }
+                }
+            }
+        }
+        e.put_rotation(&json!({ "rotation": v }), false).map_err(refused)?;
+        return Ok(json!({ "source": id, "plugin": plugin }));
+    }
+    let id = e.install(&manifest, false).map_err(refused)?;
+    Ok(json!({ "plugin": id }))
+}
+
+/// A rattleboard://plugin?url=<https url> link: fetches the manifest to show before installing
+/// it. Command plugins are refused from links.
+#[tauri::command]
+async fn read_plugin_link(app: AppHandle, link: String) -> Result<Value, String> {
+    let link = link.trim();
+    let target = if link.starts_with("rattleboard://") {
+        let u = url::Url::parse(link).map_err(|_| "That isn't a plugin link")?;
+        if u.host_str() != Some("plugin") {
+            return Err("Plugin links start with rattleboard://plugin".into());
+        }
+        u.query_pairs().find(|(k, _)| k == "url").map(|(_, v)| v.into_owned()).ok_or("The link has no url")?
+    } else {
+        link.to_string()
+    };
+    if !target.starts_with("https://") {
+        return Err("Plugin links must point to an https:// address".into());
+    }
+    let e = app.state::<AppState>().sources.clone();
+    let body = plugins::fetch(&e.http, "GET", &target, &[]).await?;
+    let v: Value = serde_json::from_slice(&body).map_err(|_| "That address doesn't hold a plugin manifest".to_string())?;
+    let m = plugins::parse(&v, false)?;
+    if m.kind == "command" {
+        return Err("Command plugins can't be installed from a link. If you trust it, download the file and use Import.".into());
+    }
+    Ok(json!({ "manifest": v, "name": m.name, "kind": m.kind, "description": m.description, "url": m.fetch.map(|f| f.url) }))
+}
+
+#[tauri::command]
+fn remove_plugin(app: AppHandle, id: String) -> Result<(), String> {
+    app.state::<AppState>().sources.uninstall(&id).map_err(refused)
+}
+
+/// The approval dialog's answer, for the manifest exactly as it was shown.
+#[tauri::command]
+fn approve_plugin(app: AppHandle, id: String, fingerprint: String, approve: bool) -> Result<(), String> {
+    app.state::<AppState>().sources.approve(&id, &fingerprint, approve).map_err(refused)
+}
+
+#[tauri::command]
+fn set_source_secret(app: AppHandle, instance: String, key: String, value: String) -> Result<(), String> {
+    app.state::<AppState>().sources.set_secrets(&instance, &json!({ key: value })).map_err(refused)
+}
+
+/// Settings' Show button, on this computer only.
+#[tauri::command]
+fn reveal_source_secret(app: AppHandle, instance: String, key: String) -> String {
+    app.state::<AppState>().sources.reveal_secret(&instance, &key)
+}
+
+#[tauri::command]
+async fn source_preview(app: AppHandle, instance: String) -> Result<Value, String> {
+    let ctx = sources_ctx(&app);
+    let e = app.state::<AppState>().sources.clone();
+    let (pages, reason) = e.preview(&instance, &ctx, false).await.map_err(refused)?;
+    Ok(json!({ "pages": pages, "reason": reason, "rows": ctx.dims.0, "cols": ctx.dims.1 }))
+}
+
+#[tauri::command]
+fn sources_next(app: AppHandle) {
+    hide_tray(&app);
+    app.state::<AppState>().sources.request_next();
+}
+
+/// Export: a plugin's manifest, or a source without its secrets, saved to Downloads.
+#[tauri::command]
+fn export_source(app: AppHandle, id: String) -> Result<String, String> {
+    let (name, v) = app.state::<AppState>().sources.export(&id).ok_or("Nothing to export with that id")?;
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+    let slug: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect::<String>().trim_matches('-').to_string();
+    let path = dir.join(format!("{}.rattleboard-plugin.json", if slug.is_empty() { "source" } else { &slug }));
+    let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text + "\n").map_err(|e| format!("Couldn't save to Downloads: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 // ---------------------------------------------------------------- board window
@@ -833,6 +1195,8 @@ fn open_panel(app: &AppHandle, view: &str) {
         .title(title)
         .inner_size(width, 480.0)
         .min_inner_size(480.0, 320.0)
+        // Plugin files dropped on Settings → Sources reach the page.
+        .disable_drag_drop_handler()
         .resizable(true)
         .maximizable(false)
         .minimizable(false)
@@ -902,6 +1266,12 @@ impl server::Board for ApiBoard {
     }
     fn stop(&self) {
         stop_player(&self.0, HERE);
+    }
+    fn sources(&self) -> Option<Arc<sources::Engine>> {
+        Some(self.0.state::<AppState>().sources.clone())
+    }
+    fn sources_ctx(&self) -> Option<sources::Ctx> {
+        Some(sources_ctx(&self.0))
     }
 }
 
@@ -1994,11 +2364,16 @@ pub fn run() {
             toggle_fullscreen(app.clone());
         }
     });
-    let app = builder
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    // A profile (debug builds) may run beside the real app, or beside another profile.
+    let builder = if profile().is_none() {
+        builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let setup = !app.state::<AppState>().settings.lock().unwrap().setup_done;
             open_panel(app, if setup { "setup" } else { "settings" });
         }))
+    } else {
+        builder
+    };
+    let app = builder
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -2047,6 +2422,18 @@ pub fn run() {
             list_screens,
             hide_pointer,
             open_site,
+            get_sources,
+            save_sources,
+            add_source,
+            import_plugin,
+            read_plugin_link,
+            remove_plugin,
+            approve_plugin,
+            set_source_secret,
+            reveal_source_secret,
+            source_preview,
+            sources_next,
+            export_source,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -2063,6 +2450,11 @@ pub fn run() {
             let drafts_path = cfg.join("drafts.json");
             let groups_path = cfg.join("groups.json");
             let recent_path = data.join("recent.json");
+            let engine = Arc::new(sources::Engine::new(sources::Paths {
+                config: Some(cfg.join("sources.json")),
+                plugins: Some(cfg.join("plugins.json")),
+                seen: Some(data.join("seen.json")),
+            }));
             let settings = Settings::load(&settings_path).at_launch();
             let history: Vec<HistoryEntry> = std::fs::read_to_string(&history_path)
                 .ok()
@@ -2094,6 +2486,8 @@ pub fn run() {
                     access: if notify::SUPPORTED { "unspecified" } else { "unavailable" }.into(),
                     apps: vec![],
                 }),
+                sources: engine.clone(),
+                hub: Mutex::new(HashMap::new()),
                 settings_path,
                 history_path,
                 boards_path,
@@ -2104,6 +2498,13 @@ pub fn run() {
             });
 
             let h = app.handle().clone();
+            {
+                let h = h.clone();
+                engine.on_change(Arc::new(move || {
+                    let _ = h.emit("rb://sources", ());
+                    broadcast(&h);
+                }));
+            }
             create_board(&h)?;
             #[cfg(target_os = "macos")]
             if let Some(p) = board(&h).and_then(|w| w.ns_window().ok()) {
@@ -2138,6 +2539,7 @@ pub fn run() {
                     app,
                     &[
                         &MenuItem::with_id(app, "show", "Show board", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "next", "Next source", true, None::<&str>)?,
                         &full_item,
                         &MenuItem::with_id(app, "compose", "Compose…", true, None::<&str>)?,
                         &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
@@ -2149,6 +2551,7 @@ pub fn run() {
                 )?;
                 tray = tray.menu(&menu).on_menu_event(|app, e| match e.id().as_ref() {
                     "show" => present_board(app, true),
+                    "next" => sources_next(app.clone()),
                     "fullscreen" => toggle_fullscreen(app.clone()),
                     "compose" => open_panel(app, "compose"),
                     "settings" => open_panel(app, "settings"),
@@ -2163,6 +2566,7 @@ pub fn run() {
             tray.build(app)?;
 
             tauri::async_runtime::spawn(poll_loop(h.clone()));
+            tauri::async_runtime::spawn(sources_loop(h.clone()));
             tauri::async_runtime::spawn(watch_screens(h.clone()));
             notify::start(&h);
             let h2 = h.clone();
