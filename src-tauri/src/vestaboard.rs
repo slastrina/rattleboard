@@ -523,7 +523,7 @@ impl Transition {
             }
         };
         t.step_interval_ms = num("step_interval_ms", 5000, 120)?;
-        t.step_size = num("step_size", 22, 1)?;
+        t.step_size = num("step_size", 40, 1)?;
         Ok(t)
     }
 
@@ -609,7 +609,7 @@ mod transition_tests {
         assert!(Transition::parse(&o(json!({"strategy": 3}))).is_err());
         assert!(Transition::parse(&o(json!({"step_interval_ms": 0}))).is_err());
         assert!(Transition::parse(&o(json!({"step_interval_ms": 5001}))).is_err());
-        assert!(Transition::parse(&o(json!({"step_size": 23}))).is_err());
+        assert!(Transition::parse(&o(json!({"step_size": 41}))).is_err());
         assert!(Transition::parse(&o(json!({"step_size": 1.5}))).is_err());
         let mut body = Map::new();
         Transition::default().add_to(&mut body);

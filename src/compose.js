@@ -122,7 +122,7 @@ function viewCompose() {
         <span class="hint" style="opacity:${classic ? 0.5 : 1}">every</span>
         <input class="field" type="number" min="1" max="5000" step="10" style="width:76px" value="${tr.stepIntervalMs}" data-cmp="interval" ${classic ? 'disabled' : ''}>
         <span class="hint" style="opacity:${classic ? 0.5 : 1}">ms,</span>
-        <input class="field" type="number" min="1" max="22" style="width:56px" value="${tr.stepSize}" data-cmp="size" ${classic ? 'disabled' : ''}>
+        <input class="field" type="number" min="1" max="40" style="width:56px" value="${tr.stepSize}" data-cmp="size" ${classic ? 'disabled' : ''}>
         <span class="hint" style="opacity:${classic ? 0.5 : 1}">${tr.strategy === 'random' ? 'flaps' : tr.strategy.includes('row') && !tr.strategy.includes('column') ? 'rows' : tr.strategy === 'diagonal' ? 'diagonals' : 'columns'} at a time</span>
       </div>
       ${sequenceSection(min)}
@@ -359,7 +359,7 @@ root.addEventListener('change', e => {
   if (k === 'draft') return t.value ? loadDraft(t.value) : newDraft();
   if (k === 'strategy') it.tr.strategy = t.value;
   else if (k === 'interval') it.tr.stepIntervalMs = Math.min(5000, Math.max(1, Math.round(+t.value) || 120));
-  else if (k === 'size') it.tr.stepSize = Math.min(22, Math.max(1, Math.round(+t.value) || 1));
+  else if (k === 'size') it.tr.stepSize = Math.min(40, Math.max(1, Math.round(+t.value) || 1));
   else if (k === 'name') C.name = t.value.trim();
   else return;
   edited(); render(true);

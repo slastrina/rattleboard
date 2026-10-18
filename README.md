@@ -158,7 +158,7 @@ With **Other devices** on, Rattleboard also announces itself on your network (as
 | `diagonal` | from the top-left corner, along diagonals |
 | `random` | in a random order of tiles |
 
-`step_size` (1–22, default 1) is how many columns, rows, diagonals or tiles start together, and `step_interval_ms` (1–5000, default 120) is the time between steps. An unknown strategy, or a value out of range, is a `400`.
+`step_size` (1–40, default 1) is how many columns, rows, diagonals or tiles start together, and `step_interval_ms` (1–5000, default 120) is the time between steps. An unknown strategy, or a value out of range, is a `400`.
 
 ## Compose
 

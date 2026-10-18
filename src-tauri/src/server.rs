@@ -554,7 +554,7 @@ mod tests {
             json!({"text": "hi", "strategy": null, "step_interval_ms": 0}),
             json!({"text": "hi", "step_interval_ms": 5001}),
             json!({"text": "hi", "step_size": 0}),
-            json!({"text": "hi", "step_size": 23}),
+            json!({"text": "hi", "step_size": 41}),
             json!({"text": "hi", "step_size": "2"}),
         ] {
             let r = post(bad.clone()).await.unwrap();
