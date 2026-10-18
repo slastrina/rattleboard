@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#050506">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="robots" content="noindex">
+<title>Rattleboard</title>
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="stylesheet" href="shared/base.css">
+<style>
+  :root { --backdrop: #050506; --ink: rgba(240,238,232,.9); --soft: rgba(240,238,232,.38); --ov: rgba(24,24,26,.86); }
+  :root[data-finish="white"] { --backdrop: #e4e2dc; --ink: rgba(28,28,28,.85); --soft: rgba(28,28,28,.4); --ov: rgba(250,249,246,.9); }
+  html, body { height: 100%; background: var(--backdrop); overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; height: 100dvh;
+    font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; -webkit-tap-highlight-color: transparent; }
+  #sfb { opacity: 0; transition: opacity .5s ease; }
+  #sfb.on { opacity: 1; }
+  html.idle, html.idle * { cursor: none !important; }
+  /* The credit, as in the desktop's full screen: always there, below and right of the board. */
+  #credit { position: fixed; right: var(--credit-gap, 12px); bottom: var(--credit-gap, 12px); font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: var(--credit-fs, 11px); letter-spacing: .02em; color: var(--soft); text-decoration: none; }
+  #note { position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 10px); max-width: min(520px, calc(100vw - 32px)); box-sizing: border-box;
+    padding: 9px 14px; border-radius: 12px; background: var(--ov); color: var(--ink); font-size: 13px; line-height: 1.4; text-align: center;
+    box-shadow: 0 10px 30px rgba(0,0,0,.3); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+    opacity: 0; pointer-events: none; transition: opacity .3s ease, transform .3s cubic-bezier(.2,.8,.2,1); }
+  #note.on { opacity: 1; transform: translate(-50%, 0); }
+  #dot { position: fixed; left: 14px; top: 14px; width: 8px; height: 8px; border-radius: 50%; background: #e0553f; opacity: 0; transition: opacity .3s; }
+  #dot.on { opacity: .8; }
+</style>
+</head>
+<body>
+<split-flap-board id="sfb"></split-flap-board>
+<a id="credit" href="https://www.iokig.com/rattleboard" target="_blank" rel="noopener">iokig.com</a>
+<div id="note" role="status"></div>
+<div id="dot" title="Reconnecting"></div>
+<script src="shared/split-flap.js"></script>
+<script src="board.js"></script>
+</body>
+</html>

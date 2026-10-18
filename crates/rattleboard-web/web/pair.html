@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex">
+<title>Pair a phone</title>
+<link rel="icon" href="icon.png">
+<style>
+  :root { --bg: #f4f3ef; --card: #fff; --ink: #1b1b1d; --soft: #6b6d72; --line: rgba(0,0,0,.14); --acc: oklch(0.58 0.17 255); }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0b0b0c; --card: #1a1a1c; --ink: #f0eee8; --soft: #9a9ca1; --line: rgba(255,255,255,.16); } }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 -apple-system, 'Segoe UI', system-ui, sans-serif; }
+  main { max-width: 440px; margin: 0 auto; padding: 48px 16px; box-sizing: border-box; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  p { color: var(--soft); margin: 0 0 18px; text-wrap: pretty; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  button { font: inherit; padding: 9px 16px; border-radius: 8px; border: 0; background: var(--acc); color: #fff; cursor: pointer; }
+  #out { margin-top: 22px; }
+  .qr { background: #fff; padding: 14px; border-radius: 12px; width: min(280px, 100%); box-sizing: border-box; }
+  .qr svg { display: block; width: 100%; height: auto; }
+  .err { color: #e0553f; }
+  .small { font-size: 13px; color: var(--soft); margin-top: 12px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pair a phone</h1>
+  <p>Enter this board's API key to show a QR code the Rattleboard app can scan. The key stays in this page until you close it.</p>
+  <form id="f" autocomplete="off">
+    <input id="key" type="password" placeholder="API key" aria-label="API key" required>
+    <button type="submit">Show code</button>
+  </form>
+  <div id="out"></div>
+</main>
+<script src="pair.js"></script>
+</body>
+</html>

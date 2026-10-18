@@ -508,6 +508,8 @@ struct Inner {
     rng: u64,
     next_requested: bool,
     status: Status,
+    /// False on boards that never run command plugins (Rattleboard Web, like the phones)
+    commands: bool,
 }
 
 pub struct Paths {
@@ -526,6 +528,8 @@ pub struct Engine {
     /// Instances' secrets, read from the credential store when first needed
     secret_cache: Mutex<HashMap<String, String>>,
 }
+
+const NO_COMMANDS: &str = "Command plugins don't run on this board";
 
 fn secret_account(instance: &str, key: &str) -> String {
     format!("source-{instance}-{key}")
@@ -568,6 +572,7 @@ impl Engine {
                 rng: u64::from_le_bytes(seed) | 1,
                 next_requested: false,
                 status: Status::default(),
+                commands: true,
             }),
             wake: Notify::new(),
             paths,
@@ -575,6 +580,14 @@ impl Engine {
             on_change: Mutex::new(None),
             secret_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// For a board that never runs command plugins (Rattleboard Web, like the phones): they
+    /// can't be installed or approved, and one already in plugins.json never runs.
+    pub fn without_commands(paths: Paths) -> Engine {
+        let e = Engine::new(paths);
+        e.inner.lock().unwrap().commands = false;
+        e
     }
 
     pub fn on_change(&self, f: Arc<dyn Fn() + Send + Sync>) {
@@ -671,7 +684,7 @@ impl Engine {
     // ------------------------------------------------------------ the API's view
 
     fn approved(i: &Inner, p: &Manifest) -> bool {
-        p.kind != "command" || i.config.approvals.get(&p.id) == Some(&plugins::fingerprint(&p.raw))
+        p.kind != "command" || (i.commands && i.config.approvals.get(&p.id) == Some(&plugins::fingerprint(&p.raw)))
     }
 
     fn plugin_json(i: &Inner, p: &Manifest) -> Value {
@@ -821,6 +834,9 @@ impl Engine {
     /// is refused over the API (403); installed here, it still needs approving before it runs.
     pub fn install(&self, v: &Value, remote: bool) -> Result<String, Refused> {
         let m = plugins::parse(v, false).map_err(bad)?;
+        if m.kind == "command" && !self.inner.lock().unwrap().commands {
+            return Err(Refused(403, NO_COMMANDS.into()));
+        }
         if m.kind == "command" && remote {
             return Err(Refused(403, "Command plugins can only be installed at the board itself".into()));
         }
@@ -891,6 +907,9 @@ impl Engine {
             let p = i.plugins.iter().find(|p| p.id == id).ok_or_else(|| Refused(404, "No plugin with that id".into()))?;
             if p.kind != "command" {
                 return Err(bad("Only command plugins need approving"));
+            }
+            if !i.commands {
+                return Err(Refused(403, NO_COMMANDS.into()));
             }
             let fp = plugins::fingerprint(&p.raw);
             if on {
@@ -2069,6 +2088,28 @@ pub mod tests {
         assert_eq!(e.uninstall("com.nope").unwrap_err().0, 404);
         e.uninstall("com.t.git").unwrap();
         assert!(e.view()["rotation"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn boards_without_commands_never_run_them() {
+        let dir = std::env::temp_dir().join(format!("rattleboard-nocmd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = || Paths { config: Some(dir.join("sources.json")), plugins: Some(dir.join("plugins.json")), seen: None };
+        let cmd = json!({"format": 1, "id": "com.t.git", "name": "Git", "kind": "command", "run": {"path": GIT, "args": ["status"]}});
+        // Installed and approved where commands are allowed (the desktop)...
+        let e = Engine::new(paths());
+        e.install(&cmd, false).unwrap();
+        let id = e.add("com.t.git", None).unwrap();
+        e.approve("com.t.git", &plugins::fingerprint(&cmd), true).unwrap();
+        e.put_rotation(&json!([{"id": id, "plugin": "com.t.git", "enabled": true}]), false).unwrap();
+        assert_eq!(e.due_jobs(0).len(), 1);
+        // ...the same files on a board without commands: nothing runs, nothing installs.
+        let w = Engine::without_commands(paths());
+        assert!(w.due_jobs(0).is_empty());
+        assert_eq!(w.install(&cmd, false).unwrap_err().0, 403);
+        assert_eq!(w.install(&cmd, true).unwrap_err().0, 403);
+        assert_eq!(w.approve("com.t.git", &plugins::fingerprint(&cmd), true).unwrap_err().0, 403);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
