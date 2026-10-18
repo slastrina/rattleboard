@@ -927,11 +927,13 @@ fn private_host(h: &url::Host<&str>) -> bool {
     }
 }
 
+pub const USER_AGENT: &str = concat!("Rattleboard/", env!("CARGO_PKG_VERSION"), " (+https://www.iokig.com/rattleboard)");
+
 pub fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
         .connect_timeout(FETCH_TIMEOUT)
-        .user_agent(concat!("Rattleboard/", env!("CARGO_PKG_VERSION"), " (+https://www.iokig.com/rattleboard)"))
+        .user_agent(USER_AGENT)
         // A redirect has to follow the same rule as the address itself.
         .redirect(reqwest::redirect::Policy::custom(|a| {
             if a.previous().len() >= 5 {

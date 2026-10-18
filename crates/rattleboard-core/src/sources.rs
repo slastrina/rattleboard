@@ -736,6 +736,17 @@ impl Engine {
         Value::Object(out)
     }
 
+    /// Installed (not built-in) plugins: id, the manifest's own "version" if it has one, and
+    /// how many sources in the rotation use it. For the community directory's badges.
+    pub fn installed(&self) -> Vec<(String, Option<String>, usize)> {
+        let i = self.inner.lock().unwrap();
+        i.plugins
+            .iter()
+            .filter(|p| !p.builtin)
+            .map(|p| (p.id.clone(), p.raw["version"].as_str().map(String::from), i.config.rotation.iter().filter(|x| x.plugin == p.id).count()))
+            .collect()
+    }
+
     pub fn status(&self) -> Status {
         self.inner.lock().unwrap().status.clone()
     }

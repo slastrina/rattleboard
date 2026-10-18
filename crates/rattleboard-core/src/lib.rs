@@ -6,6 +6,7 @@
 pub mod boards;
 pub mod builtins;
 pub mod cards;
+pub mod community;
 pub mod plugins;
 pub mod secrets;
 pub mod send;

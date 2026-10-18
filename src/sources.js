@@ -1,5 +1,5 @@
 // Settings → Sources: the rotation of plugin cards, a live preview, Up next, Add source,
-// import and export, and approving command plugins. panel.js draws it as one of its tabs
+// import and export, approving command plugins, and Community plugins (community.js). panel.js draws it as one of its tabs
 // (viewSources); the engine itself is in src-tauri/src/sources.rs.
 const SR = {
   data: null, sel: null, page: 0, preview: null, pseq: 0,
@@ -51,7 +51,7 @@ RB.listen('rb://sources', () => {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => { lastRefresh = Date.now(); srcRefresh().then(() => srcPreview(false)); }, wait);
 });
-function srcOpen() { srcRefresh().then(() => srcPreview(true)); }
+function srcOpen() { CM.open = false; srcRefresh().then(() => srcPreview(true)); }
 setInterval(() => { if (L.view === 'settings' && L.tab === 'sources') { srcStatusTick(); } }, 1000);
 setInterval(() => { if (L.view === 'settings' && L.tab === 'sources' && !SR.dragging) srcRefresh(); }, 15000);
 
@@ -127,6 +127,7 @@ function srcShow() {
 }
 // After each render: put the persistent preview board back (it keeps flipping across renders).
 function sourcesAfter() {
+  if (CM.open) return communityAfter();
   const slot = document.getElementById('srcPreview');
   if (slot && SR.preview && SR.preview.pages.length) { slot.appendChild(srcBoard); srcShow(); }
 }
@@ -178,6 +179,7 @@ function pausedRow() {
 
 function viewSources() {
   if (!SR.data) return `<div class="hint" style="padding:30px 0; text-align:center">Loading sources…</div>`;
+  if (CM.open) return viewCommunity();
   const d = SR.data, [dot, status] = srcStatusText(), p = SR.preview;
   const sel = inst(SR.sel);
   const preview = sel ? `<div style="grid-column:1 / -1; display:flex; flex-direction:column; gap:8px">
@@ -205,6 +207,7 @@ function viewSources() {
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
         <button class="btn" data-act="srcPicker">${SR.picker ? 'Close' : 'Add source…'}</button>
         <button class="btn" data-act="srcImport">Import…</button>
+        <button class="btn" data-act="cmOpen" title="Browse plugins other people made">Community plugins</button>
         <span class="hint">Or drop a .rattleboard-plugin.json file here</span>
       </div>
       ${SR.msg ? `<div style="font-size:12px; color:${SR.msg.ok ? '#2f8a4c' : '#c0392b'}; text-wrap:pretty">${esc(SR.msg.text)}</div>` : ''}
@@ -362,14 +365,19 @@ function picker() {
     <span class="hint" style="font-weight:600; color:#3b3c40">Built in</span>${box(builtin)}
     <span class="hint" style="font-weight:600; color:#3b3c40">Installed plugins</span>
     ${mine.length ? box(mine) : `<span class="hint">None yet. Import a .rattleboard-plugin.json file, or paste a plugin link.</span>`}
+    <span class="hint">More plugins: <a href="#" data-act="cmOpen" style="color:${RB.ACC}; text-decoration:none">Community plugins</a> · <a href="#" data-act="cmGitHub" data-v="contribute" style="color:${RB.ACC}; text-decoration:none">Contribute on GitHub</a></span>
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
       <input class="field" style="flex:1; min-width:220px" value="${esc(SR.link)}" data-src-link="1" placeholder="rattleboard://plugin?url=https://…" spellcheck="false">
       <button class="btn" data-act="srcLink">Check link</button>
     </div>
-    ${c ? `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:#fff; border-radius:8px; padding:10px 14px; box-shadow:0 0 0 1px rgba(0,0,0,.1)">
-      <span style="flex:1; min-width:0">Install <b style="font-weight:600">${esc(c.name)}</b> (${esc(KINDS[c.kind] || c.kind)})${c.url ? ` from <span class="mono" style="font-size:11.5px">${esc(String(c.url).replace(/^https?:\/\//, '').split('/')[0])}</span>` : ''}?${c.description ? ` <span class="hint">${esc(c.description)}</span>` : ''}</span>
-      <button class="btn" data-act="srcLinkYes">Install</button><button class="btn" data-act="srcLinkNo">Cancel</button></div>` : ''}
+    ${c ? linkConfirmBox(c, 'srcLinkYes', 'srcLinkNo') : ''}
   </div>`;
+}
+// Asking before installing a plugin fetched from a link (or from Community plugins).
+function linkConfirmBox(c, yes, no, verb = 'Install') {
+  return `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:#fff; border-radius:8px; padding:10px 14px; box-shadow:0 0 0 1px rgba(0,0,0,.1)">
+      <span style="flex:1; min-width:0">${verb} <b style="font-weight:600">${esc(c.name)}</b> (${esc(KINDS[c.kind] || c.kind)})${c.url ? ` from <span class="mono" style="font-size:11.5px">${esc(String(c.url).replace(/^https?:\/\//, '').split('/')[0])}</span>` : ''}?${c.description ? ` <span class="hint">${esc(c.description)}</span>` : ''}</span>
+      <button class="btn" data-act="${yes}">${verb}</button><button class="btn" data-act="${no}">Cancel</button></div>`;
 }
 
 function upNext() {

@@ -1,3 +1,4 @@
+mod community;
 mod fullscreen;
 mod notify;
 mod updates;
@@ -760,12 +761,18 @@ async fn read_plugin_link(app: AppHandle, link: String) -> Result<Value, String>
     }
     let e = app.state::<AppState>().sources.clone();
     let body = plugins::fetch(&e.http, "GET", &target, &[]).await?;
-    let v: Value = serde_json::from_slice(&body).map_err(|_| "That address doesn't hold a plugin manifest".to_string())?;
+    link_manifest(&body)
+}
+
+/// A manifest fetched from a link (or the community directory), checked and described for the
+/// confirm step. Command plugins are refused.
+fn link_manifest(body: &[u8]) -> Result<Value, String> {
+    let v: Value = serde_json::from_slice(body).map_err(|_| "That address doesn't hold a plugin manifest".to_string())?;
     let m = plugins::parse(&v, false)?;
     if m.kind == "command" {
         return Err("Command plugins can't be installed from a link. If you trust it, download the file and use Import.".into());
     }
-    Ok(json!({ "manifest": v, "name": m.name, "kind": m.kind, "description": m.description, "url": m.fetch.map(|f| f.url) }))
+    Ok(json!({ "id": m.id, "manifest": v, "name": m.name, "kind": m.kind, "description": m.description, "url": m.fetch.map(|f| f.url) }))
 }
 
 #[tauri::command]
@@ -2537,6 +2544,11 @@ pub fn run() {
             add_source,
             import_plugin,
             read_plugin_link,
+            community::community_index,
+            community::community_detail,
+            community::community_manifest,
+            community::community_installed,
+            community::open_community,
             remove_plugin,
             approve_plugin,
             set_source_secret,
