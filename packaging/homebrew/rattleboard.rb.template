@@ -4,10 +4,10 @@ cask "rattleboard" do
 
   url "https://github.com/slastrina/rattleboard/releases/download/v#{version}/Rattleboard_#{version}_universal.dmg"
   name "Rattleboard"
-  desc "Split-flap desktop mirror and virtual board for Vestaboard"
+  desc "Split-flap message board for the menu bar, desktop or full screen"
   homepage "https://github.com/slastrina/rattleboard"
 
-  depends_on macos: :big_sur
+  depends_on :macos
 
   app "Rattleboard.app"
 
