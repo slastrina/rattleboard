@@ -476,6 +476,8 @@ pub fn new_key() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// An absolute program path on this platform ("/usr/bin/git" isn't absolute on Windows).
+    const GIT: &str = if cfg!(windows) { "C:\\Program Files\\Git\\cmd\\git.exe" } else { "/usr/bin/git" };
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -840,7 +842,7 @@ mod tests {
         let r = key(c.post(url("/plugins"))).json(&iss).send().await.unwrap();
         assert_eq!(r.status(), 201);
         assert_eq!(r.json::<Value>().await.unwrap(), json!({"status": "ok", "id": "com.example.iss"}));
-        let cmd = json!({"format": 1, "id": "com.example.git", "name": "Git", "kind": "command", "run": {"path": "/usr/bin/git", "args": ["status"]}});
+        let cmd = json!({"format": 1, "id": "com.example.git", "name": "Git", "kind": "command", "run": {"path": GIT, "args": ["status"]}});
         assert_eq!(key(c.post(url("/plugins"))).json(&cmd).send().await.unwrap().status(), 403);
         let r = key(c.post(url("/plugins"))).json(&json!({"format": 1, "id": "com.example.bad", "name": "Bad", "kind": "rss", "fetch": {"url": "http://example.com/"}})).send().await.unwrap();
         assert_eq!(r.status(), 400);

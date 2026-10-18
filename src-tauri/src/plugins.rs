@@ -1281,6 +1281,8 @@ pub fn builtins() -> Vec<Manifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// An absolute program path on this platform ("/usr/bin/git" isn't absolute on Windows).
+    const GIT: &str = if cfg!(windows) { "C:\\Program Files\\Git\\cmd\\git.exe" } else { "/usr/bin/git" };
     use chrono::NaiveDate;
 
     fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> NaiveDateTime {
@@ -1364,13 +1366,13 @@ mod tests {
         ok["pick"] = json!({"title": "$.latitude", "body": "$.longitude"});
         assert!(parse(&ok, false).is_ok());
 
-        let cmd = json!({"format": 1, "id": "com.example.git", "name": "Git", "kind": "command", "run": {"path": "/usr/bin/git", "args": ["status"], "every": "5m", "timeout": "10s"}});
+        let cmd = json!({"format": 1, "id": "com.example.git", "name": "Git", "kind": "command", "run": {"path": GIT, "args": ["status"], "every": "5m", "timeout": "10s"}});
         let m = parse(&cmd, false).unwrap();
         assert_eq!((m.run.clone().unwrap().timeout, m.every), (10, 300));
         let mut bad = cmd.clone();
         bad["run"]["path"] = json!("git");
         assert!(parse(&bad, false).unwrap_err().contains("full path"));
-        bad["run"] = json!({"path": "/bin/x", "timeout": "2m"});
+        bad["run"] = json!({"path": GIT, "timeout": "2m"});
         assert!(parse(&bad, false).unwrap_err().contains("timeout"));
         let text = json!({"format": 1, "id": "com.example.t", "name": "T", "kind": "text", "every": "5s", "card": {"template": "{{now:HH:mm}}"}});
         assert!(parse(&text, false).unwrap_err().contains("10s"));
@@ -1384,6 +1386,10 @@ mod tests {
             (include_str!("../../plugins/examples/iss-position.rattleboard-plugin.json"), "json"),
             (include_str!("../../plugins/examples/git-status.rattleboard-plugin.json"), "command"),
         ] {
+            // The git example's /usr/bin/git isn't an absolute path on Windows.
+            if cfg!(windows) && kind == "command" {
+                continue;
+            }
             let m = parse(&serde_json::from_str(src).unwrap(), false).unwrap();
             assert_eq!(m.kind, kind);
         }

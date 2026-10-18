@@ -1779,6 +1779,8 @@ fn capitalise(s: &str) -> String {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    /// An absolute program path on this platform ("/usr/bin/git" isn't absolute on Windows).
+    const GIT: &str = if cfg!(windows) { "C:\\Program Files\\Git\\cmd\\git.exe" } else { "/usr/bin/git" };
     use chrono::NaiveDate;
 
     /// A fresh engine whose files live in a temp folder, and whose secrets go to a file
@@ -2041,7 +2043,7 @@ pub mod tests {
     #[test]
     fn commands_need_approval() {
         let (e, _) = engine("command");
-        let cmd = json!({"format": 1, "id": "com.t.git", "name": "Git", "kind": "command", "run": {"path": "/usr/bin/git", "args": ["status"]}});
+        let cmd = json!({"format": 1, "id": "com.t.git", "name": "Git", "kind": "command", "run": {"path": GIT, "args": ["status"]}});
         assert_eq!(e.install(&cmd, true).unwrap_err().0, 403);
         e.install(&cmd, false).unwrap();
         let id = e.add("com.t.git", None).unwrap();
