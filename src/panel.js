@@ -213,7 +213,7 @@ function viewSettings() {
       </div>
     </div>`;
   }
-  return `<div class="hdr" style="display:flex; justify-content:center; padding:16px 24px 0">${seg(tabs().map(t => [t, TAB_NAMES[t]]), L.tab, 'tab', 'tabs')}</div>
+  return `<div class="hdr" style="display:flex; justify-content:center; padding:16px 24px 0">${seg(tabs().map(t => [t, TAB_NAMES[t]]), L.tab, 'tab', tabs().length > 7 ? 'tabs many' : 'tabs')}</div>
     <div class="scroll"><div style="padding:18px 24px 22px">${body}</div></div>
     <div class="hdr hint" style="display:flex; flex-wrap:wrap; gap:6px; padding:10px 24px 12px; border-top:1px solid rgba(0,0,0,.06); font-size:11.5px">
       <span>Rattleboard v${esc(S.version)}</span>·<a href="#" data-act="site" style="color:${RB.ACC}; text-decoration:none">iokig.com</a>·<a href="#" data-act="kofi" style="color:${RB.ACC}; text-decoration:none">Support on Ko-fi</a>·<span>Not affiliated with or endorsed by Vestaboard, Inc.</span></div>`;
