@@ -27,14 +27,14 @@
 //!   POST   /rattleboard/sources/plugins                      installs a manifest (not command: 403)
 //!   DELETE /rattleboard/sources/plugins/{id}
 //!   PUT    /rattleboard/sources/instances/{id}/secrets       {"token": "..."}; never echoed
-//!   GET    /rattleboard/sources/preview/{id}                 {"characters": [[...]], "reason"}
+//!   GET    /rattleboard/sources/preview/{id}[?refresh=1]     {"characters": [[...]], "reason"}
 //!   GET    /rattleboard/sources/upnext                       [{"at", "instanceId", "title", "reason"}]
 //!   POST   /rattleboard/sources/next                         moves the rotation on now
 
 use crate::sequence::{self, Sequence};
 use crate::vestaboard::{self, Grid, Transition};
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, Path, RawQuery, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{self, get};
@@ -405,13 +405,15 @@ async fn secrets_put(State(ctx): State<Ctx>, h: HeaderMap, Path(id): Path<String
     }
 }
 
-async fn preview_get(State(ctx): State<Ctx>, h: HeaderMap, Path(id): Path<String>) -> Response {
+async fn preview_get(State(ctx): State<Ctx>, h: HeaderMap, Path(id): Path<String>, RawQuery(q): RawQuery) -> Response {
+    // ?refresh=1 fetches the source's data again first (at most every few seconds).
+    let refresh = q.unwrap_or_default().split('&').any(|kv| matches!(kv, "refresh=1" | "refresh=true" | "refresh"));
     let e = match engine(&ctx, &h) {
         Ok(e) => e,
         Err(r) => return *r,
     };
     let Some(c) = ctx.board.sources_ctx() else { return err(StatusCode::NOT_FOUND, "This board doesn't run sources") };
-    match e.preview(&id, &c, true).await {
+    match e.preview(&id, &c, true, refresh).await {
         Ok((pages, reason)) => Json(json!({ "characters": pages[0], "pages": pages, "reason": reason })).into_response(),
         Err(r) => refused(r),
     }

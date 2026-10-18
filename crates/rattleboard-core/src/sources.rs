@@ -194,6 +194,9 @@ impl Quiet {
     }
 }
 
+/// Refresh preview fetches again only when the last fetch is at least this old.
+pub const REFRESH_FLOOR_MS: i64 = 5_000;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub rotation: Vec<Instance>,
@@ -1121,8 +1124,20 @@ impl Engine {
 
     /// What a source would show now, for Settings and GET /rattleboard/sources/preview: it's
     /// fetched first if it hasn't been. Over the API (`remote`) a command source is refused.
-    pub async fn preview(&self, instance: &str, ctx: &Ctx, remote: bool) -> Result<(Vec<Grid>, String), Refused> {
-        let (x, p, job, has) = {
+    /// Whether a source fetches anything (a feed, an API, a command), and when it last did.
+    pub fn fetch_state(&self, instance: &str) -> (bool, Option<i64>) {
+        let i = self.inner.lock().unwrap();
+        let fetches = i.config.rotation.iter().find(|x| x.id == instance)
+            .and_then(|x| i.plugins.iter().find(|p| p.id == x.plugin).map(|p| job_for(x, p).is_some()))
+            .unwrap_or(false);
+        (fetches, i.feeds.get(instance).and_then(|f| f.fetched))
+    }
+
+    /// What a source would show now. Its data is fetched first if it has none yet, or, with
+    /// `refresh` (Settings' Refresh preview), again now unless it was fetched in the last
+    /// `REFRESH_FLOOR_MS`.
+    pub async fn preview(&self, instance: &str, ctx: &Ctx, remote: bool, refresh: bool) -> Result<(Vec<Grid>, String), Refused> {
+        let (x, p, job, fetch) = {
             let i = self.inner.lock().unwrap();
             let x = i.config.rotation.iter().find(|x| x.id == instance).cloned().ok_or_else(|| Refused(404, "No source with that id".into()))?;
             let p = i.plugins.iter().find(|p| p.id == x.plugin).cloned().ok_or_else(|| Refused(404, "Its plugin was removed".into()))?;
@@ -1132,11 +1147,13 @@ impl Engine {
             if !Self::approved(&i, &p) {
                 return Ok((vec![message_grid("Approve this plugin to run it", ctx.dims)], "Not approved yet".into()));
             }
-            let has = i.feeds.get(instance).is_some_and(|f| f.data.is_some());
+            let feed = i.feeds.get(instance);
+            let has = feed.is_some_and(|f| f.data.is_some());
+            let recent = feed.and_then(|f| f.fetched).is_some_and(|t| (ctx.now - t).abs() < REFRESH_FLOOR_MS);
             let job = job_for(&x, &p);
-            (x, p, job, has)
+            (x, p, job, !has || (refresh && !recent))
         };
-        if let (Some(job), false) = (job, has) {
+        if let (Some(job), true) = (job, fetch) {
             let res = self.run_job(job, ctx.local, ctx.now).await;
             if let Err(e) = &res {
                 return Ok((vec![message_grid(e, ctx.dims)], e.clone()));
@@ -1810,6 +1827,37 @@ pub mod tests {
         let _ = secrets::PROFILE_FILE.set(std::env::temp_dir().join(format!("rattleboard-test-secrets-{}.json", std::process::id())));
         let e = Engine::new(Paths { config: Some(dir.join("sources.json")), plugins: Some(dir.join("plugins.json")), seen: Some(dir.join("seen.json")) });
         (e, dir)
+    }
+
+    /// Refresh preview fetches again (Settings' button), but not more than once every 5 s;
+    /// a plain preview reuses what the source already has.
+    #[tokio::test]
+    async fn preview_refresh_fetches_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let app = axum::Router::new().route("/n", axum::routing::get(|| async {
+            let n = HITS.fetch_add(1, Ordering::SeqCst) + 1;
+            axum::Json(json!({ "title": format!("COUNT {n}") }))
+        }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/n", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        let (e, _) = engine("refresh");
+        let id = e.add("rattleboard.json", Some(&json!({ "url": url, "title": "$.title" }))).unwrap();
+        let shows = |g: &Vec<Grid>, t: &str| {
+            let want = crate::vestaboard::parse(t);
+            g[0].iter().any(|row| row.windows(want.len()).any(|w| w == want.as_slice()))
+        };
+        let c = ctx(0);
+        let (g, _) = e.preview(&id, &c, false, false).await.unwrap();
+        assert!(shows(&g, "COUNT 1"));
+        e.preview(&id, &c, false, false).await.unwrap();
+        assert_eq!(HITS.load(Ordering::SeqCst), 1, "a plain preview reuses the data");
+        e.preview(&id, &at(&c, 2), false, true).await.unwrap();
+        assert_eq!(HITS.load(Ordering::SeqCst), 1, "refreshed within 5 s of the last fetch");
+        let (g, _) = e.preview(&id, &at(&c, 10), false, true).await.unwrap();
+        assert_eq!(HITS.load(Ordering::SeqCst), 2);
+        assert!(shows(&g, "COUNT 2"));
     }
 
     pub fn ctx(min: i64) -> Ctx {

@@ -790,11 +790,12 @@ fn reveal_source_secret(app: AppHandle, instance: String, key: String) -> String
 }
 
 #[tauri::command]
-async fn source_preview(app: AppHandle, instance: String) -> Result<Value, String> {
+async fn source_preview(app: AppHandle, instance: String, refresh: Option<bool>) -> Result<Value, String> {
     let ctx = sources_ctx(&app);
     let e = app.state::<AppState>().sources.clone();
-    let (pages, reason) = e.preview(&instance, &ctx, false).await.map_err(refused)?;
-    Ok(json!({ "pages": pages, "reason": reason, "rows": ctx.dims.0, "cols": ctx.dims.1 }))
+    let (pages, reason) = e.preview(&instance, &ctx, false, refresh.unwrap_or(false)).await.map_err(refused)?;
+    let (fetches, fetched) = e.fetch_state(&instance);
+    Ok(json!({ "pages": pages, "reason": reason, "rows": ctx.dims.0, "cols": ctx.dims.1, "fetches": fetches, "fetched": fetched }))
 }
 
 #[tauri::command]

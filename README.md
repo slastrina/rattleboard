@@ -555,7 +555,7 @@ Rattleboards with sources (protocol 3, `"sources"` in `features`) can be set up 
 | `POST /rattleboard/sources/plugins` | A manifest | `201 {"status":"ok","id":"…"}`; `400` if invalid; `403` for a command plugin |
 | `DELETE /rattleboard/sources/plugins/{id}` | — | `204`, along with its sources and their secrets; `400` for a built-in |
 | `PUT /rattleboard/sources/instances/{id}/secrets` | `{"token": "…"}` (`""` clears one) | `204`. The value goes to the credential store and is never sent back. |
-| `GET /rattleboard/sources/preview/{id}` | — | `{"characters": [[…]], "pages": [...], "reason": "…"}`: what it would show now, at this board's size |
+| `GET /rattleboard/sources/preview/{id}` | — | `{"characters": [[…]], "pages": [...], "reason": "…"}`: what it would show now, at this board's size. `?refresh=1` fetches its feed or API again first (not more than once every 5 s) |
 | `GET /rattleboard/sources/upnext` | — | `[{"at": 1792323882607, "instanceId": "…", "title": "Weather", "reason": "Ambient"}, …]` |
 | `POST /rattleboard/sources/next` | — | `{"status":"ok"}`: moves the rotation on now |
 

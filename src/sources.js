@@ -95,6 +95,30 @@ function srcPreview(reset) {
     .then(p => { if (SR.sel !== id) return; SR.preview = p; if (SR.page >= p.pages.length) SR.page = 0; srcShow(); render(); })
     .catch(e => { SR.preview = { pages: [], reason: String(e), rows: 6, cols: 22 }; render(); });
 }
+// Refresh preview: fetches the source's feed or API again now (the engine skips it if it was
+// fetched in the last few seconds), then says what happened and flips the card again, so
+// the click shows even when nothing changed.
+function srcRefreshNow(id) {
+  const before = SR.preview && SR.sel === id ? SR.preview.fetched : null;
+  SR.sel = id; SR.refreshing = id; SR.note = null; render(true);
+  RB.invoke('source_preview', { instance: id, refresh: true })
+    .then(p => {
+      if (SR.sel !== id) return;
+      SR.preview = p; SR.page = 0;
+      const fresh = p.fetched && (p.fetched !== before || Date.now() - p.fetched < 10000);
+      SR.note = !p.fetches ? { id, ok: true, text: `Updated ${clock(Date.now())} · ${p.reason}` }
+        : fresh ? { id, ok: true, text: `Updated ${clock(p.fetched)} · ${p.reason}` }
+        : { id, ok: false, text: `Couldn't refresh: ${p.reason}` };
+      srcShow();
+      srcBoard.setAttribute('seq', ++SR.pseq);
+    })
+    .catch(e => { SR.note = { id, ok: false, text: `Couldn't refresh: ${e}` }; })
+    .finally(() => {
+      SR.refreshing = null; render(true);
+      const note = SR.note;
+      setTimeout(() => { if (SR.note === note) { SR.note = null; render(true); } }, 8000);
+    });
+}
 function srcShow() {
   const p = SR.preview; if (!p || !p.pages.length) return;
   const s = S.settings, set = (k, v) => { if (srcBoard.getAttribute(k) !== String(v)) srcBoard.setAttribute(k, v); };
@@ -137,7 +161,7 @@ function viewSources() {
       </div>
       <div style="display:flex; align-items:center; gap:8px; min-width:0">
         <span style="font-weight:600; white-space:nowrap">${esc(sel.label || sel.name)}</span>
-        <span class="hint" style="flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${esc(p ? p.reason : '')}</span>
+        <span class="hint" id="srcReason" style="flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis${SR.note && SR.note.id === sel.id && !SR.note.ok ? '; color:#c0392b' : ''}">${esc(SR.note && SR.note.id === sel.id ? SR.note.text : p ? p.reason : '')}</span>
         ${p && p.pages.length > 1 ? `<span class="hint">Page ${SR.page + 1} of ${p.pages.length}</span><button class="btn" data-act="srcPage">Next page</button>` : ''}
         <button class="btn" data-act="srcReplay">Replay</button>
       </div>
@@ -273,7 +297,7 @@ function editor(x, p) {
       ${p.approved ? `<span class="hint" style="color:#2f8a4c">Approved</span><button class="btn" data-act="srcRevoke" data-v="${esc(p.id)}">Revoke</button>` : `<button class="btn" data-act="srcApprove" data-v="${esc(p.id)}">Review and allow…</button>`}</div>` : ''}
     <div></div>
     <div style="display:flex; gap:6px; margin-top:4px">
-      <button class="btn" data-act="srcPreviewNow" data-v="${esc(x.id)}">Refresh preview</button>
+      <button class="btn" data-act="srcPreviewNow" data-v="${esc(x.id)}" ${SR.refreshing === x.id ? 'disabled' : ''}>${SR.refreshing === x.id ? 'Refreshing…' : 'Refresh preview'}</button>
       <button class="btn" data-act="srcExport" data-v="${esc(x.id)}" title="Save it to Downloads, without its secrets">Export</button>
       <div style="flex:1"></div>
       <button class="btn" style="color:#c0392b" data-act="srcRemove" data-v="${esc(x.id)}">Remove</button>
@@ -454,7 +478,7 @@ RB.delegate(root, 'click', {
   },
   srcPage: () => { SR.page = (SR.page + 1) % SR.preview.pages.length; srcShow(); render(true); },
   srcReplay: () => { srcBoard.setAttribute('seq', ++SR.pseq); },
-  srcPreviewNow: el => { SR.sel = el.dataset.v; srcPreview(true); },
+  srcPreviewNow: el => srcRefreshNow(el.dataset.v),
   srcPicker: () => { SR.picker = !SR.picker; SR.linkConfirm = null; render(true); },
   srcImport: () => srcFile.click(),
   srcAdd: el => {
