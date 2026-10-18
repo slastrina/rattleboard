@@ -60,6 +60,17 @@ Or download the latest installer from [Releases](https://github.com/slastrina/ra
 
 For a server or a NAS, [Rattleboard Web](#rattleboard-web-docker) runs as a container: `docker run -p 7070:7070 -v rattleboard:/data slastrina/rattleboard-web`.
 
+### Phones, tablets and TVs (coming soon)
+
+Rattleboard for iPhone, iPad, Apple TV, Android and Android TV is on its way to the App Store and Google Play, as a one-off purchase with no subscription. Store links will be added here when they're live.
+
+| Platform | Where | Setting it up |
+| --- | --- | --- |
+| iPhone and iPad (iOS 16+) | App Store *(link coming soon)* | Install it, open it, and choose a board to show or send to. To pair with a Rattleboard, scan the QR code from its **Settings → API server → Pair a phone** (on a TV, from its menu). Add the home-screen widget to see the board at a glance |
+| Apple TV (tvOS 16+) | App Store, included with the iPhone and iPad purchase *(link coming soon)* | Install it from the TV's App Store. It opens as a full-screen board with its own API server and Sources; pair your phone from its menu to send to it and set up its rotation |
+| Android phones and tablets (Android 8+) | Google Play *(link coming soon)* | Install it, open it, and pair by scanning a board's QR code. Optional: notification forwarding, which sends the notifications of the apps you choose to a board |
+| Android TV and Google TV (Android 8+) | Google Play on the TV *(link coming soon)* | Install it from the TV's Play Store. It opens as a full-screen board with its own API server and Sources; pair a phone from its menu, and use ◀ ▶ on the remote to skip to the next card |
+
 ## Connecting your board
 
 The first launch opens a short setup:
