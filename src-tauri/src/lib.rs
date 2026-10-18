@@ -34,6 +34,7 @@ const TRAY_W: f64 = 336.0;
 const TRAY_PAD: f64 = 14.0;
 /// Rattleboard's page, linked from the tray menu, Settings and full screen
 const SITE: &str = "https://www.iokig.com/rattleboard";
+const KOFI: &str = "https://ko-fi.com/slastrina";
 
 #[cfg(target_os = "macos")]
 const OS: &str = "mac";
@@ -2214,6 +2215,13 @@ fn open_site(app: AppHandle) {
     let _ = app.opener().open_url(SITE, None::<&str>);
 }
 
+/// Opens the Ko-fi page for supporting Rattleboard. Like open_site, a single fixed address.
+#[tauri::command]
+fn open_kofi(app: AppHandle) {
+    use tauri_plugin_opener::OpenerExt;
+    let _ = app.opener().open_url(KOFI, None::<&str>);
+}
+
 #[tauri::command]
 fn open_window(app: AppHandle, view: String) {
     open_panel(&app, &view);
@@ -2432,6 +2440,7 @@ pub fn run() {
             list_screens,
             hide_pointer,
             open_site,
+            open_kofi,
             get_sources,
             save_sources,
             add_source,
@@ -2555,6 +2564,7 @@ pub fn run() {
                         &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
                         &MenuItem::with_id(app, "site", "Rattleboard on iokig.com", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "kofi", "Support Rattleboard on Ko-fi", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
                         &MenuItem::with_id(app, "quit", "Quit Rattleboard", true, None::<&str>)?,
                     ],
@@ -2566,6 +2576,7 @@ pub fn run() {
                     "compose" => open_panel(app, "compose"),
                     "settings" => open_panel(app, "settings"),
                     "site" => open_site(app.clone()),
+                    "kofi" => open_kofi(app.clone()),
                     "quit" => quit(app.clone()),
                     _ => {}
                 });

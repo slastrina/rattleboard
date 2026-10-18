@@ -27,7 +27,7 @@ function render() {
     [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ...(src.active ? [['next', src.showing ? `Next source <span style="color:#8a8c91">· now ${RB.esc(src.showing)}</span>` : 'Next source', kbd('⌘→', 'Ctrl+→')]] : []), ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
     [['pin', 'Pin as widget', '', s.mode === 'float'], ['full', 'Full screen', kbd('⌃⌘F', 'F11'), s.mode === 'fullscreen'], ['pause', 'Pause checking', '', !s.polling]],
     [['compose', 'Compose…', kbd('⌘N', 'Ctrl+N')], ['history', 'Message history…', ''], ['settings', 'Settings…', kbd('⌘,', '')], ['setup', 'Run setup again…', '']],
-    [['site', 'Rattleboard on iokig.com', '']],
+    [['site', 'Rattleboard on iokig.com', ''], ['kofi', 'Support Rattleboard on Ko-fi', '']],
     [['quit', 'Quit Rattleboard', kbd('⌘Q', '')]]
   ];
   menu.style.margin = mac ? '0 auto' : '0';
@@ -86,6 +86,7 @@ const act = {
   settings: () => RB.invoke('open_window', { view: 'settings' }),
   setup: () => RB.invoke('open_window', { view: 'setup' }),
   site: () => { RB.invoke('open_site'); RB.invoke('close_window', { label: 'tray' }); },
+  kofi: () => { RB.invoke('open_kofi'); RB.invoke('close_window', { label: 'tray' }); },
   quit: () => RB.invoke('quit')
 };
 RB.delegate(menu, 'click', Object.fromEntries(Object.entries(act).map(([k, f]) => [k, () => f()])));

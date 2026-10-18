@@ -688,6 +688,10 @@ Pushing a version tag builds the macOS (universal), Windows and Linux x86_64 and
 git tag v0.4.1 && git push origin v0.4.1
 ```
 
+## Support Rattleboard
+
+Rattleboard is free and open source. If it's earned a spot on your desk or your wall, you can [buy me a coffee on Ko-fi](https://ko-fi.com/slastrina). Settings and the tray menu link there too, next to [iokig.com/rattleboard](https://www.iokig.com/rattleboard).
+
 ## Credits
 
 - Flap typeface: [Barlow Semi Condensed](https://github.com/jpt/barlow) by Jeremy Tribby, SIL Open Font License 1.1 (`src/fonts/OFL.txt`)

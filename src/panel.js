@@ -182,8 +182,8 @@ function viewSettings() {
   }
   return `<div class="hdr" style="display:flex; justify-content:center; padding:16px 24px 0">${seg(tabs().map(t => [t, TAB_NAMES[t]]), L.tab, 'tab', 'tabs')}</div>
     <div class="scroll"><div style="padding:18px 24px 22px">${body}</div></div>
-    <div class="hdr hint" style="display:flex; gap:6px; padding:10px 24px 12px; border-top:1px solid rgba(0,0,0,.06); font-size:11.5px">
-      <span>Rattleboard v${esc(S.version)}</span>·<a href="#" data-act="site" style="color:${RB.ACC}; text-decoration:none">iokig.com</a>·<span>Not affiliated with or endorsed by Vestaboard, Inc.</span></div>`;
+    <div class="hdr hint" style="display:flex; flex-wrap:wrap; gap:6px; padding:10px 24px 12px; border-top:1px solid rgba(0,0,0,.06); font-size:11.5px">
+      <span>Rattleboard v${esc(S.version)}</span>·<a href="#" data-act="site" style="color:${RB.ACC}; text-decoration:none">iokig.com</a>·<a href="#" data-act="kofi" style="color:${RB.ACC}; text-decoration:none">Support on Ko-fi</a>·<span>Not affiliated with or endorsed by Vestaboard, Inc.</span></div>`;
 }
 const TAB_NAMES = { display: 'Display', behavior: 'Behavior', connection: 'Connection', api: 'API server', boards: 'Boards', sources: 'Sources', notify: 'Notifications' };
 // Notification forwarding exists only where the OS lets apps read notifications (Windows).
@@ -735,6 +735,7 @@ RB.delegate(root, 'click', {
   sound: () => save({ sound: !S.settings.sound }),
   launchLogin: () => save({ launchLogin: !S.settings.launchLogin }),
   site: (el, e) => { e.preventDefault(); RB.invoke('open_site'); },
+  kofi: (el, e) => { e.preventDefault(); RB.invoke('open_kofi'); },
   fullscreenLaunch: () => save({ fullscreenLaunch: !S.settings.fullscreenLaunch }),
   showKey: () => { L.showKey = !L.showKey; render(true); },
   quitApp: () => RB.invoke('quit'),
