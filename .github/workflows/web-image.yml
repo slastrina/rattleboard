@@ -1,8 +1,9 @@
 name: Rattleboard Web image
 
-# Push a tag like v0.4.0 to build the Rattleboard Web container for amd64 and arm64 and
-# publish it as ghcr.io/slastrina/rattleboard-web:0.4.0 (and :0.4, :latest).
-# Run it by hand from the Actions tab to build both platforms without publishing.
+# Push a tag like v0.4.0 to build the Rattleboard Web container for amd64, arm64 and arm/v7
+# (32-bit Raspberry Pi OS) and publish it as ghcr.io/slastrina/rattleboard-web:0.4.0 (and
+# :0.4, :latest).
+# Run it by hand from the Actions tab to build every platform without publishing.
 on:
   push:
     tags: ['v*']
@@ -46,7 +47,7 @@ jobs:
         with:
           context: .
           file: crates/rattleboard-web/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: ${{ github.ref_type == 'tag' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

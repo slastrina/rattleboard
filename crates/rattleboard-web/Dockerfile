@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Rattleboard Web. Build from the repository root:
 #   docker build -f crates/rattleboard-web/Dockerfile -t rattleboard-web .
-# Cross-compiles on the build machine for each target platform (amd64, arm64) into one
+# Cross-compiles on the build machine for each target platform (amd64, arm64, arm/v7) into one
 # static binary, then ships it on a distroless base (CA certificates, time zones, no shell).
 
 FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.6.1 AS xx
