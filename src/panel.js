@@ -142,6 +142,8 @@ function viewSettings() {
     body = viewBoards();
   } else if (L.tab === 'sources') {
     body = viewSources();
+  } else if (L.tab === 'agents') {
+    body = viewAgents();
   } else if (L.tab === 'notify') {
     body = viewNotify();
   } else {
@@ -185,9 +187,9 @@ function viewSettings() {
     <div class="hdr hint" style="display:flex; flex-wrap:wrap; gap:6px; padding:10px 24px 12px; border-top:1px solid rgba(0,0,0,.06); font-size:11.5px">
       <span>Rattleboard v${esc(S.version)}</span>·<a href="#" data-act="site" style="color:${RB.ACC}; text-decoration:none">iokig.com</a>·<a href="#" data-act="kofi" style="color:${RB.ACC}; text-decoration:none">Support on Ko-fi</a>·<span>Not affiliated with or endorsed by Vestaboard, Inc.</span></div>`;
 }
-const TAB_NAMES = { display: 'Display', behavior: 'Behavior', connection: 'Connection', api: 'API server', boards: 'Boards', sources: 'Sources', notify: 'Notifications' };
+const TAB_NAMES = { display: 'Display', behavior: 'Behavior', connection: 'Connection', api: 'API server', boards: 'Boards', sources: 'Sources', agents: 'Agents', notify: 'Notifications' };
 // Notification forwarding exists only where the OS lets apps read notifications (Windows).
-const tabs = () => ['display', 'behavior', 'connection', 'api', 'boards', 'sources', ...(S && S.notify.supported ? ['notify'] : [])];
+const tabs = () => ['display', 'behavior', 'connection', 'api', 'boards', 'sources', 'agents', ...(S && S.notify.supported ? ['notify'] : [])];
 function viewApi() {
   const s = S.settings, sv = S.server, key = L.secrets.serverKey;
   const base = sv.urls[0] || `http://127.0.0.1:${s.serverPort}`;
@@ -612,8 +614,8 @@ const contentHeight = () => [...root.children].reduce((h, el) => h + (el.classLi
 // The window is sized once per view, to fit its tallest tab or step, so switching tabs never
 // moves or resizes it. After that the user can resize it freely and the middle scrolls.
 function fitWindow(v) {
-  // Sources can run long; its tab scrolls rather than making every tab that tall.
-  const keys = v === 'settings' ? tabs().filter(t => t !== 'sources') : v === 'setup' ? [0, 1, 2, 3] : [null];
+  // Sources and Agents can run long; their tabs scroll rather than making every tab that tall.
+  const keys = v === 'settings' ? tabs().filter(t => t !== 'sources' && t !== 'agents') : v === 'setup' ? [0, 1, 2, 3] : [null];
   const saved = v === 'settings' ? L.tab : L.step;
   let h = 0;
   for (const k of keys) {
@@ -651,6 +653,7 @@ function setView(v) {
   if (v === 'settings' && L.tab === 'boards' && L.addMode === 'nearby') scanNearby();
   if (v === 'settings' && L.tab === 'display') loadScreens();
   if (v === 'settings' && L.tab === 'sources') srcOpen();
+  if (v === 'settings' && L.tab === 'agents') agentsOpen();
   render(true);
 }
 RB.listen('rb://view', e => setView(e.payload));
@@ -677,6 +680,7 @@ RB.delegate(root, 'click', {
     if (L.tab === 'display') loadScreens();
     if (L.tab === 'boards' && L.addMode === 'nearby' && L.found2 !== null) scanNearby();
     if (L.tab === 'sources') srcOpen();
+    if (L.tab === 'agents') agentsOpen();
   },
   model: el => save({ model: el.dataset.v }),
   adaptive: el => save({ adaptive: el.dataset.v === 'auto' }),

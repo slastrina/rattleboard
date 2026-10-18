@@ -1,3 +1,4 @@
+pub mod agents;
 mod fullscreen;
 mod notify;
 
@@ -1277,6 +1278,12 @@ impl server::Board for ApiBoard {
     fn sources_ctx(&self) -> Option<sources::Ctx> {
         Some(sources_ctx(&self.0))
     }
+    fn boards(&self) -> Option<Value> {
+        Some(agents::api_boards(&self.0))
+    }
+    fn send_to(&self, target: String, message: Value) -> Option<server::SendFut> {
+        Some(agents::api_send(&self.0, target, message))
+    }
 }
 
 fn next_id(app: &AppHandle, prefix: &str) -> String {
@@ -2453,6 +2460,9 @@ pub fn run() {
             source_preview,
             sources_next,
             export_source,
+            agents::agents_list,
+            agents::agents_preview,
+            agents::agents_apply,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
