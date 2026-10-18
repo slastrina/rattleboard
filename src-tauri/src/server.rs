@@ -53,8 +53,8 @@ pub async fn start(board: std::sync::Arc<dyn Board>, port: u16, lan: bool) -> Re
     let ip = if lan { [0, 0, 0, 0] } else { [127, 0, 0, 1] };
     let listener = tokio::net::TcpListener::bind(SocketAddr::from((ip, port))).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
-            if cfg!(target_os = "macos") && port == 7000 {
-                "Port 7000 is in use (macOS AirPlay Receiver uses it); pick another port".to_string()
+            if port == 7000 {
+                "Port 7000 is in use (AirPlay receivers use it); pick another port".to_string()
             } else {
                 format!("Port {port} is already in use; pick another")
             }

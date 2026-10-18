@@ -47,10 +47,8 @@ pub struct Settings {
     pub server_lan: bool,
 }
 
-#[cfg(target_os = "macos")]
-pub const DEFAULT_SERVER_PORT: u16 = 7070; // 7000 is taken by AirPlay Receiver on macOS
-#[cfg(not(target_os = "macos"))]
-pub const DEFAULT_SERVER_PORT: u16 = 7000;
+/// Not 7000 (a real board's port): AirPlay receivers on Macs and many TVs already hold it.
+pub const DEFAULT_SERVER_PORT: u16 = 7070;
 
 impl Default for Settings {
     fn default() -> Self {

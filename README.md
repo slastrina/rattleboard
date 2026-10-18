@@ -58,7 +58,7 @@ Keys and tokens are stored only in your operating system's credential store: the
 
 ## API server
 
-Turn it on in **Settings → API server**. Rattleboard then listens on a port; the default is `7000` on Windows and `7070` on macOS, because AirPlay Receiver already uses 7000 there. It accepts the request formats of all three Vestaboard APIs, so most existing Vestaboard clients work once you point them at Rattleboard's address and give them its key.
+Turn it on in **Settings → API server**. Rattleboard then listens on port `7070` by default. A real board uses 7000, but AirPlay receivers on Macs and many TVs already hold that port. It accepts the request formats of all three Vestaboard APIs, so most existing Vestaboard clients work once you point them at Rattleboard's address and give them its key.
 
 - By default only apps on this computer can connect. Turn on **Other devices** to accept requests from your network, for example from the Rattleboard phone apps.
 - Rattleboard creates a random key the first time the server starts. It's kept in the OS credential store, and **New key** replaces it.
