@@ -137,7 +137,7 @@ function startCountdown(float = stays()) {
 
 function hide() {
   if (full()) return;
-  ui.visible = false; ui.remaining = 0; render();
+  ui.visible = false; ui.remaining = 0; ui.hover = false; render();
   setTimeout(() => { if (!ui.visible) RB.invoke('board_hidden'); }, 420);
 }
 
@@ -154,7 +154,9 @@ RB.onState(snap => {
   render();
 });
 RB.listen('rb://present', e => {
-  ui.visible = true; ui.remaining = 0; render();
+  ui.visible = true; ui.remaining = 0; ui.hover = false; render();
+  // Shown under a resting pointer: that's a hover too (checkHover asks where it is).
+  setTimeout(() => { if (ui.visible && !ui.hover) pointer().then(pt => { if (pt && within(pt, stage)) setHover(true); }); }, 300);
   if (e.payload) startCountdown();
   else setTimeout(() => { if (ui.visible && !ui.flipping && ui.remaining === 0) startCountdown(); }, 500);
 });
@@ -162,8 +164,41 @@ RB.listen('rb://present', e => {
 sfb.addEventListener('flaplayout', measure);
 sfb.addEventListener('flapstart', () => { ui.flipping = true; render(); });
 sfb.addEventListener('flapdone', () => { ui.flipping = false; startCountdown(); });
-stage.addEventListener('mouseenter', () => { ui.hover = true; render(); });
-stage.addEventListener('mouseleave', () => { ui.hover = false; render(); });
+stage.addEventListener('mouseenter', () => { ui.hover = true; ui.hoverAt = Date.now(); render(); });
+stage.addEventListener('mouseleave', () => setHover(false));
+
+// Hover, double-checked. An unfocused always-on-top window (macOS, WebView2) often never gets
+// mouseleave when the pointer leaves fast or the window shows or hides under it, and a stuck
+// hover would hold the pop-up's countdown for ever. So while hovering, ask where the pointer
+// really is every 400 ms, and let go on blur, on hiding, and after long stillness.
+let lastMove = Date.now(), hoverAsk = false;
+const HOVER_STILL_MS = 10000, HOVER_CAP_MS = 120000;
+function setHover(on) {
+  if (ui.hover === on) return;
+  ui.hover = on; if (on) ui.hoverAt = Date.now();
+  render();
+}
+const within = (pt, el) => { const r = el.getBoundingClientRect(); return pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom; };
+// The pointer's position over this window (CSS px), or null when the window is hidden or it
+// can't be told.
+const pointer = () => RB.invoke('cursor_in_window').catch(() => null);
+function checkHover() {
+  if (hoverAsk) return;
+  hoverAsk = true;
+  pointer().then(pt => {
+    // Stillness counts from the last movement or the start of this hover, whichever is later.
+    const still = Date.now() - Math.max(lastMove, ui.hoverAt || 0);
+    // Over it for real: hold, though no single pause outlasts the cap without the pointer
+    // moving. Not over it, or no answer and no movement for a while: let go.
+    if (pt && within(pt, stage)) { if (still > HOVER_CAP_MS) setHover(false); }
+    else if (pt || still > HOVER_STILL_MS) setHover(false);
+  }).finally(() => { hoverAsk = false; });
+}
+setInterval(() => { if (ui.hover) checkHover(); }, 400);
+document.addEventListener('mousemove', () => { lastMove = Date.now(); }, true);
+addEventListener('blur', () => setHover(false));
+document.addEventListener('visibilitychange', () => { if (document.hidden) setHover(false); });
+document.documentElement.addEventListener('mouseleave', () => setHover(false));
 
 setInterval(() => {
   if (!S) return;
@@ -212,10 +247,20 @@ function wake(e) {
 }
 
 function idle() {
-  if (!ov.shown || ov.over || Date.now() - ov.at < IDLE_MS) return;
+  if (!ov.shown || Date.now() - ov.at < IDLE_MS) return;
+  // Resting on the bar keeps it up, unless mouseleave went missing (see checkHover): after
+  // a while without movement, ask where the pointer really is.
+  if (ov.over) {
+    if (Date.now() - lastMove < HOVER_STILL_MS || hoverAsk) return;
+    hoverAsk = true;
+    pointer().then(pt => { if (!pt || !within(pt, $('overlay')) || Date.now() - lastMove > HOVER_CAP_MS) { ov.over = false; ov.at = 0; } })
+      .finally(() => { hoverAsk = false; });
+    return;
+  }
   ov.shown = false; renderOverlay();
-  // Only when it's over the board: on another display, the pointer is someone's.
-  if (ov.inside) RB.invoke('hide_pointer');
+  // Only when it's over the board: on another display, the pointer is someone's. Checked
+  // for real, since mouseenter and mouseleave can go missing.
+  if (ov.inside) pointer().then(pt => { ov.inside = !!pt && pt.x >= 0 && pt.y >= 0 && pt.x < innerWidth && pt.y < innerHeight; if (ov.inside && !ov.shown) RB.invoke('hide_pointer'); renderOverlay(); });
 }
 
 function renderOverlay() {

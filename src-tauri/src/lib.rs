@@ -2319,6 +2319,21 @@ fn board_resize(app: AppHandle, width: f64, height: f64) {
     place_board(&app, Some(size.to_physical(w.scale_factor().unwrap_or(1.0))));
 }
 
+/// Where the pointer really is, relative to the calling window's content, in CSS pixels; None
+/// while the window is hidden or the position can't be read. The board checks it because an
+/// unfocused, always-on-top window often misses mouseleave, and a stuck hover would hold a
+/// pop-up's countdown for ever. Only window queries, no lock.
+#[tauri::command]
+fn cursor_in_window(app: AppHandle, window: tauri::WebviewWindow) -> Option<Point> {
+    if !window.is_visible().unwrap_or(false) {
+        return None;
+    }
+    let c = app.cursor_position().ok()?;
+    let p = window.inner_position().ok()?;
+    let f = window.scale_factor().ok().filter(|f| *f > 0.0).unwrap_or(1.0);
+    Some(Point { x: (c.x - p.x as f64) / f, y: (c.y - p.y as f64) / f })
+}
+
 #[tauri::command]
 fn board_hidden(app: AppHandle) {
     if let Some(w) = board(&app) {
@@ -2446,6 +2461,7 @@ pub fn run() {
             quit,
             board_resize,
             board_hidden,
+            cursor_in_window,
             board_drag_start,
             board_drag_move,
             board_drag_end,
