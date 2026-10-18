@@ -31,7 +31,7 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
   - **Full screen:** the board fills a whole display, for a spare computer used as a board. See [Use a spare computer as a board](#use-a-spare-computer-as-a-board).
 - **Any size.** Hover over the board and drag its corner handle, or use Settings → Display → Size. The size is remembered.
 - **Local API or Cloud API.** Read the board directly over your Wi-Fi, or through `cloud.vestaboard.com` from anywhere.
-- **Built-in API server.** Rattleboard can act as a virtual Vestaboard. Your own apps and scripts send it messages using the same requests they'd send a real board. See [API server](#api-server).
+- **Built-in API server.** Your own apps and scripts send Rattleboard messages over your network, and it also accepts the Vestaboard Local API request format. See [API server](#api-server).
 - **Compose and Send.** Write a message as text or paint it tile by tile, preview it in flaps, then show it here or send it to a TV or computer running Rattleboard, or to a real Vestaboard: one board, a group of them, or all at once. See [Compose](#compose).
 - **Sequences.** Play several messages in turn, each held for a while once its flaps settle, once or on a loop.
 - **Pair a phone.** Show a QR code that the Rattleboard phone app scans to add this board.
