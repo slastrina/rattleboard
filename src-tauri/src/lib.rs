@@ -1592,7 +1592,7 @@ async fn discover_boards(app: AppHandle) -> Vec<boards::Found> {
 async fn add_board(app: AppHandle, host: String, key: String, name: String) -> Result<SavedBoard, String> {
     let key = key.trim().to_string();
     let p = boards::probe(&app.state::<AppState>().http, &host, &key).await?;
-    let fallback = if p.kind == "rattleboard" { "Rattleboard" } else { "Vestaboard" };
+    let fallback = if p.kind == "rattleboard" { "Rattleboard" } else { "Board" };
     let name = Some(name.trim().to_string()).filter(|n| !n.is_empty()).or(p.name).unwrap_or_else(|| fallback.into());
     let b = SavedBoard { id: boards::new_id(), name, kind: p.kind, host: p.host, rows: p.rows, cols: p.cols, adaptive: p.adaptive };
     keep_board(&app, b, &key)
@@ -1602,7 +1602,7 @@ async fn add_board(app: AppHandle, host: String, key: String, name: String) -> R
 async fn add_cloud_board(app: AppHandle, token: String, name: String) -> Result<SavedBoard, String> {
     let token = token.trim().to_string();
     let r = vestaboard::read_cloud(&app.state::<AppState>().http, &token).await?;
-    let name = Some(name.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Vestaboard (Cloud)".into());
+    let name = Some(name.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Cloud board".into());
     let (rows, cols) = vestaboard::dims_of(&r.layout);
     let b = SavedBoard { id: boards::new_id(), name, kind: "cloud".into(), host: String::new(), rows, cols, adaptive: false };
     keep_board(&app, b, &token)
@@ -2190,7 +2190,7 @@ struct Found {
 async fn scan_boards(app: AppHandle) -> Vec<Found> {
     let (rattleboards, vestaboards) = tokio::join!(discover_boards(app), vestaboard::scan());
     let ours = rattleboards.into_iter().map(|f| Found { name: f.name, ip: f.host });
-    ours.chain(vestaboards.into_iter().map(|(name, ip)| Found { name: format!("Vestaboard ({name})"), ip })).collect()
+    ours.chain(vestaboards.into_iter().map(|(name, ip)| Found { name: format!("{name} (Local API)"), ip })).collect()
 }
 
 #[tauri::command]

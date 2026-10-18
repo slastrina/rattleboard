@@ -109,7 +109,7 @@ pub const DEFAULT_SERVER_PORT: u16 = 7070;
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            board_name: "Vestaboard".into(),
+            board_name: "Rattleboard".into(),
             finish: "black".into(),
             adaptive: true,
             model: "standard".into(),
@@ -162,7 +162,16 @@ impl Settings {
             .ok()
             .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
             .unwrap_or_default()
+            .migrated()
             .normalized()
+    }
+
+    /// Older versions named the board "Vestaboard" by default; nobody chose that name.
+    fn migrated(mut self) -> Self {
+        if self.board_name == "Vestaboard" {
+            self.board_name = "Rattleboard".into();
+        }
+        self
     }
 
     /// Keeps values in range after loading or merging a patch.
@@ -297,6 +306,19 @@ mod tests {
         assert!(!in_quiet_hours("09:30", "17:00", 9 * 60));
         assert!(!in_quiet_hours("nope", "07:00", 0));
         assert!(!in_quiet_hours("08:00", "08:00", 8 * 60));
+    }
+
+    #[test]
+    fn old_default_name_becomes_rattleboard() {
+        assert_eq!(Settings::default().board_name, "Rattleboard");
+        let dir = std::env::temp_dir().join(format!("rb-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"boardName": "Vestaboard"}"#).unwrap();
+        assert_eq!(Settings::load(&path).board_name, "Rattleboard");
+        std::fs::write(&path, r#"{"boardName": "Kitchen Vestaboard"}"#).unwrap();
+        assert_eq!(Settings::load(&path).board_name, "Kitchen Vestaboard");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

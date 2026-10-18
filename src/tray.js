@@ -37,7 +37,7 @@ function render() {
     ${up ? `<div class="update-group"><div class="item update" data-act="update"><span class="chk">↑</span><span>Update available: v${RB.esc(up)}…</span><span class="key"></span></div></div>` : ''}
     <div style="padding:8px 10px 10px; display:flex; flex-direction:column; gap:8px">
       <div style="display:flex; justify-content:space-between; align-items:baseline">
-        <span style="font-weight:600">${RB.esc(s.boardName || 'Vestaboard')}</span>
+        <span style="font-weight:600">${RB.esc(s.boardName || 'Rattleboard')}</span>
         <span style="font-size:11.5px; color:#6b6d72">${RB.esc(RB.sourceLabel(S))}</span>
       </div>
       <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:#55575c">

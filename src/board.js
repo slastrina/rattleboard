@@ -96,7 +96,7 @@ function render() {
 
   const counting = ui.visible && !stays() && !ui.flipping && ui.remaining > 0;
   const paused = counting && s.pauseOnHover && ui.hover;
-  const name = s.boardName || 'Vestaboard';
+  const name = s.boardName || 'Rattleboard';
   $('statusText').textContent = ui.resizing ? `${Math.round(ui.resizing.scale * 100)}%`
     : ui.dragging ? (float ? 'Release to place it here' : 'Release to snap to the nearest corner')
     : ui.flipping ? `${name} · updating`
@@ -231,7 +231,7 @@ function renderOverlay() {
     : p ? `Playing ${p.name ? `‘${p.name}’` : 'sequence'} ${p.frame}/${p.frames}`
     : S.sources && S.sources.active && S.sources.showing ? `Showing ${S.sources.showing}`
     : S.lastChangeAt ? `Changed ${RB.ago(Date.now() - S.lastChangeAt)}` : 'Waiting for a message';
-  $('ovText').textContent = `${s.boardName || 'Vestaboard'} · ${RB.sourceLabel(S)} · ${status}`;
+  $('ovText').textContent = `${s.boardName || 'Rattleboard'} · ${RB.sourceLabel(S)} · ${status}`;
   $('ovDot').style.background = !s.polling ? '#9a9ca1' : S.conn === 'error' ? '#e0553f' : ui.flipping ? '#f2c230' : '#3fbf6a';
 }
 

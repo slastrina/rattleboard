@@ -217,7 +217,7 @@ impl Default for Config {
             quiet: Quiet { enabled: false, from: "22:00".into(), to: "07:00".into() },
             hold_minutes: 30,
             flips_per_hour: 30,
-            alert_seconds: 60,
+            alert_seconds: 15,
             shuffle: false,
             while_mirroring: false,
             clock24: false,

@@ -102,7 +102,7 @@ const boardSizeRows = () => {
       ${modelSeg()}
     </div>`;
 };
-const nameField = () => `<input class="field" style="justify-self:start; width:240px" value="${esc(S.settings.boardName)}" data-field="boardName" placeholder="Vestaboard">`;
+const nameField = () => `<input class="field" style="justify-self:start; width:240px" value="${esc(S.settings.boardName)}" data-field="boardName" placeholder="Rattleboard">`;
 
 // ---------------------------------------------------------------- settings
 
@@ -239,7 +239,7 @@ function viewApi() {
   const curl = `curl -X POST ${base}/local-api/message -H "X-Vestaboard-Local-Api-Key: ${key}" -d '{"text": "Hello from my app"}'`;
   return `<div class="grid" style="gap:14px 16px">
     <div class="lbl">API server</div>
-    <div style="display:flex; align-items:center; gap:10px">${tog(s.serverEnabled, 'serverEnabled')}<span class="hint">Let other apps write to this board, as if it were a real Vestaboard</span></div>
+    <div style="display:flex; align-items:center; gap:10px">${tog(s.serverEnabled, 'serverEnabled')}<span class="hint">Let other apps write to this board, using the same API format as a real board</span></div>
     <div class="lbl">Port</div><input class="field" style="justify-self:start; width:90px" value="${s.serverPort}" data-field="serverPort" inputmode="numeric">
     <div class="lbl">Other devices</div>
     <div style="display:flex; align-items:center; gap:10px">${tog(s.serverLan, 'serverLan')}<span class="hint">Accept requests from phones and computers on your network, not only this one</span></div>
@@ -261,7 +261,7 @@ function viewApi() {
     </div>
     <div style="grid-column:1 / -1" class="hint">${s.source === 'virtual'
       ? 'Read from is set to Virtual board, so the board only shows what apps send here.'
-      : `Messages sent here show up right away. While mirroring ${s.source === 'demo' ? 'the demo' : 'your Vestaboard'}, its next change replaces them. To use Rattleboard purely as a virtual board, set Connection → Read from to Virtual board.`}</div>
+      : `Messages sent here show up right away. While mirroring ${s.source === 'demo' ? 'the demo' : 'your board'}, its next change replaces them. To use Rattleboard purely as a virtual board, set Connection → Read from to Virtual board.`}</div>
   </div>`;
 }
 const speedLabel = v => (+v).toFixed(1) + '×' + (+v === 1 ? ' · true to hardware' : '');
@@ -372,7 +372,7 @@ function viewBoards() {
     <div style="display:flex; flex-direction:column; border-radius:8px; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.1); overflow:hidden">
       <div style="display:flex; align-items:center; gap:12px; padding:10px 14px">
         <div class="dot" style="background:#9a9ca1"></div>
-        <div style="display:flex; flex-direction:column; gap:2px; flex:1"><span style="font-weight:600">This board</span><span style="font-size:11.5px; color:#6b6d72">${esc(S.settings.boardName || 'Vestaboard')} on this computer · ${S.settings.adaptive ? 'matches each message' : sizeName(S.rows, S.cols)}</span></div>
+        <div style="display:flex; flex-direction:column; gap:2px; flex:1"><span style="font-weight:600">This board</span><span style="font-size:11.5px; color:#6b6d72">${esc(S.settings.boardName || 'Rattleboard')} on this computer · ${S.settings.adaptive ? 'matches each message' : sizeName(S.rows, S.cols)}</span></div>
         <button class="btn" data-act="compose">Compose…</button>
       </div>
       ${list}
