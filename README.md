@@ -1,8 +1,10 @@
 # Rattleboard
 
-A split-flap message board for your Mac or PC. Rattleboard sits in your macOS menu bar or Windows system tray. When a message arrives, the board flips into view (with the clatter, if you like) and then tucks away again. Pin it to the desktop, or run a spare computer full screen as a dedicated board.
+A split-flap message board for your Mac, PC or Linux desktop, or for any browser from a container on your home server. Rattleboard sits in your macOS menu bar or your Windows or Linux system tray. When a message arrives, the board flips into view (with the clatter, if you like) and then tucks away again. Pin it to the desktop, or run a spare computer full screen as a dedicated board.
 
 Compose messages and sequences and send them to every board you own. Scripts can post to its built-in API, and it can mirror another Rattleboard, or a [Vestaboard](https://www.vestaboard.com) if you have one.
+
+[Rattleboard Web](#rattleboard-web-docker) runs the board in a container and shows it in any browser: a wall tablet, a TV, a Home Assistant dashboard.
 
 Free and open source under the MIT license. Rattleboard for iPhone, iPad, Android and Android TV is coming soon. Project page: [iokig.com/rattleboard](https://www.iokig.com/rattleboard).
 
@@ -52,6 +54,10 @@ Or download the latest installer from [Releases](https://github.com/slastrina/ra
 | --- | --- | --- |
 | macOS 11+ (Apple Silicon and Intel) | `Rattleboard_x.y.z_universal.dmg` | Signed and notarized; just open it |
 | Windows 10/11 | `Rattleboard_x.y.z_x64-setup.exe` or `.msi` | If SmartScreen appears, choose **More info → Run anyway** |
+| Linux x86_64 (Debian 12, Ubuntu 22.04+) | `Rattleboard_x.y.z_amd64.deb` | `sudo apt install ./Rattleboard_x.y.z_amd64.deb`; see [Linux](#linux) |
+| Linux x86_64 (other distributions) | `Rattleboard_x.y.z_amd64.AppImage` | `chmod +x` it, then run it; see [Linux](#linux) |
+
+For a server or a NAS, [Rattleboard Web](#rattleboard-web-docker) runs as a container: `docker run -p 7070:7070 -v rattleboard:/data ghcr.io/slastrina/rattleboard-web`.
 
 ## Connecting your board
 
@@ -131,6 +137,133 @@ An old Mac, a Windows laptop or a NUC behind a TV makes a good split-flap board.
 
 Everything else keeps working in full screen: the API server, sequences, Compose, Message History and the tray menu. Settings and Compose open above the board.
 
+## Rattleboard Web (Docker)
+
+Rattleboard Web is a Rattleboard that runs in a container on a home server, a NAS or a Raspberry Pi, and shows the board in any browser: a wall tablet, a TV's browser, a Home Assistant dashboard. It has the same API as every Rattleboard, so scripts, the phone apps and the desktop's **Send to** all talk to it the same way, and it runs [Sources](#sources-and-plugins) by itself on the server.
+
+```sh
+docker run -d --name rattleboard --restart unless-stopped \
+  -p 7070:7070 -v rattleboard:/data ghcr.io/slastrina/rattleboard-web
+```
+
+Open `http://<server>:7070/` in a browser for the board. The image is small (about 15 MB, a static binary on a distroless base) and built for amd64 and arm64.
+
+- **The board page** fills the window with the board, fitted to whatever size and shape the screen is, on a dark background (light for the white finish). Tap or click once for full screen. The pointer hides after 3 seconds without movement, and the page keeps the screen awake with the browser's Wake Lock, which browsers only allow on `https://` addresses or `localhost` (on plain `http://` from another device, set the tablet or kiosk browser itself to stay awake). The small "iokig.com" credit stays in the corner, as in the desktop's full screen.
+- **Live on every screen.** Each browser gets every change pushed to it as it happens (Server-Sent Events), so any number of screens can watch one board and flip together. A screen that loses the connection shows a small red dot and reconnects by itself.
+- **Read-only.** The board page can't change anything and never holds the API key. Writes go through the [API](#api-server) with the key.
+- **Command plugins are refused** (`403`), as on the phones: a container has no business running programs for a manifest. Every other plugin kind and every [built-in source](#built-in-sources) works, running on the server.
+
+Get the API key, generated into `/data` on first start:
+
+```sh
+docker exec rattleboard rattleboard-web key
+curl -X POST http://<server>:7070/local-api/message \
+  -H "X-Vestaboard-Local-Api-Key: <key>" -d '{"text": "Hello from the server {66}"}'
+```
+
+### Rattleboard Web settings
+
+Everything is set with environment variables (`-e NAME=value`):
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `RATTLEBOARD_KEY` | generated into `/data/api-key` | The API key for writes (16 characters or more) |
+| `RATTLEBOARD_NAME` | `Rattleboard Web` | The board's name, as apps and `/rattleboard/info` show it |
+| `RATTLEBOARD_SIZE` | `standard` | `standard` (6 × 22), `compact` (3 × 15), `large` (8 × 30) or `custom` |
+| `RATTLEBOARD_ROWS`, `RATTLEBOARD_COLS` | | The custom size: 2–12 rows, 8–40 columns |
+| `RATTLEBOARD_ADAPTIVE` | `false` | `true` shows each message at its own size, like **Match each message** |
+| `RATTLEBOARD_FINISH` | `black` | `black` or `white` |
+| `RATTLEBOARD_VIEWERS` | `open` | Who may watch the board page: `open` or `token` (see below) |
+| `RATTLEBOARD_VIEWER_TOKEN` | generated into `/data/viewer-token` | The viewer token, when viewers need one (setting it turns `token` on) |
+| `RATTLEBOARD_URL` | | This board's address as phones reach it, e.g. `http://192.168.1.20:7070`, for pairing from the command line |
+| `RATTLEBOARD_MDNS` | `false` | `true` announces the board on the network so other Rattleboards find it; needs `--network host` |
+| `RATTLEBOARD_PORT` | `7070` | The port inside the container |
+| `TZ` | `UTC` | The time zone for clocks, calendars, countdowns and quiet hours, e.g. `Europe/London` |
+
+### Who can watch, and who can write
+
+- **Viewers, open** (the default): anyone who can reach the port can watch the board. That suits a home network.
+- **Viewers, token:** with `-e RATTLEBOARD_VIEWERS=token`, the board page needs a viewer link that ends in `#v=<token>`. `docker exec rattleboard rattleboard-web viewer-url` prints it. The token sits in the URL fragment, which browsers never send to the server or put in its logs; the page hands it on to the live stream. It only lets a screen watch, never write.
+- **Writes** always need the API key, in any of the [usual forms](#api-server). The key never appears in a page.
+- **Secrets** that sources need (a feed token, a private calendar address) are kept in `/data/secrets.json`, readable only by the container's user (mode 0600). A container has no OS keychain, so protect the volume (and its backups) as you would the key itself. The API key and viewer token files are 0600 too.
+
+Put the board behind your reverse proxy (Caddy, nginx, Traefik) for `https://`, which also lets the Wake Lock work from other devices. The live stream sends `X-Accel-Buffering: no`, so nginx passes it straight through.
+
+### Pairing a phone with Rattleboard Web
+
+Open `http://<server>:7070/pair` in a browser and enter the API key: it shows the pairing QR code (the same v2 `rattleboard://pair?v=2&url=…&key=…&name=…&rows=…&cols=…` link as the desktop's), using the address the browser reached the board at, and hides it after two minutes. Or print it in the terminal:
+
+```sh
+docker exec -e RATTLEBOARD_URL=http://192.168.1.20:7070 rattleboard rattleboard-web pair
+```
+
+Inside a container the server can't see the address your network uses for it, so set `RATTLEBOARD_URL` (on the container or on the command) for links printed this way.
+
+### The data folder
+
+`/data` holds `api-key`, `viewer-token`, `secrets.json`, `sources.json` (the rotation), `plugins.json` (installed plugins), `seen.json` (feed items already shown) and `board.json` (the last message, shown again after a restart). The image runs as an unprivileged user (uid 65532); a bind mount (`-v /srv/rattleboard:/data`) needs to be writable by it.
+
+### Home Assistant
+
+Show the board on a dashboard with a **Webpage** card:
+
+```yaml
+type: iframe
+url: http://192.168.1.20:7070/
+aspect_ratio: 40%
+```
+
+With viewer tokens on, use the viewer link (`…/#v=<token>`). A dashboard served over `https://` can only show an `https://` page, so in that case put the board behind your reverse proxy too.
+
+Put the API key in `secrets.yaml`:
+
+```yaml
+rattleboard_key: "<the key from rattleboard-web key>"
+```
+
+and add a `rest_command` to `configuration.yaml`, so automations can post to the board:
+
+```yaml
+rest_command:
+  rattleboard_message:
+    url: "http://192.168.1.20:7070/local-api/message"
+    method: post
+    headers:
+      X-Vestaboard-Local-Api-Key: !secret rattleboard_key
+    content_type: "application/json"
+    payload: '{{ {"text": message, "strategy": strategy | default("classic")} | to_json }}'
+```
+
+A doorbell automation:
+
+```yaml
+automation:
+  - alias: "Doorbell on the board"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.front_doorbell
+        to: "on"
+    actions:
+      - action: rest_command.rattleboard_message
+        data:
+          message: "{66} Someone's at the front door"
+          strategy: edges-to-center
+```
+
+The same `rest_command` works with a desktop Rattleboard; point it at that computer's address and key instead.
+
+## Linux
+
+Rattleboard runs on Linux desktops (x86_64). Download the `.deb` (Debian 12, Ubuntu 22.04 and later) or the `.AppImage` (most other distributions; `chmod +x` it first) from [Releases](https://github.com/slastrina/rattleboard/releases).
+
+- **Tray icon.** Rattleboard puts its icon in the tray through libayatana-appindicator (`libayatana-appindicator3-1`; the `.deb` installs it, and with the AppImage install it from your distribution if the icon is missing). Clicking it opens the menu. KDE Plasma, Xfce, Cinnamon, MATE and Ubuntu's own GNOME show it as they are. Stock GNOME (Fedora, Debian) hides tray icons until you install the [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615/appindicator-support/) extension (package `gnome-shell-extension-appindicator`).
+- **No tray?** Rattleboard checks at launch. Without one it opens Settings as a normal window instead, with a **Quit Rattleboard** button under Behavior; the board still pops up for messages after the window closes, and opening Rattleboard again from your app menu brings Settings back.
+- **Keys** go in the Secret Service keyring: GNOME Keyring or KWallet, unlocked when you log in. Without one, saving a key fails with an error that says so. Rattleboard never falls back to writing keys to a file.
+- **Pop-up placement.** On X11 the pop-up sits in the corner you choose and a pinned widget stays where you put it. Wayland doesn't let apps place their own windows, so Rattleboard runs through XWayland when it's there (as most Wayland desktops include), which keeps placement working. Without XWayland, or with `RATTLEBOARD_NATIVE_WAYLAND=1` (or a `GDK_BACKEND` of your own), it runs on Wayland directly and the compositor decides where the pop-up and widget appear, usually the middle of the screen. Full screen works either way.
+- **Full screen keep-awake** asks the desktop over D-Bus to stop the screen blanking (`org.freedesktop.ScreenSaver`, or the desktop portal's inhibit), and lets go when full screen ends or Rattleboard quits.
+- **Start at login** adds a `.desktop` file to `~/.config/autostart` (for the AppImage it points at the AppImage file, so keep that where it is).
+- **Notification forwarding** isn't available on Linux yet.
+
 ## Board sizes
 
 **Settings → Display → Size** chooses how big the board is:
@@ -142,7 +275,7 @@ Everything else keeps working in full screen: the API server, sequences, Compose
 
 ### Where your keys go
 
-Keys and tokens are stored only in your operating system's credential store: the macOS Keychain or the Windows Credential Manager. That includes the key of every saved board in **Settings → Boards**, each under its own entry. They are never written to a file, logged, or sent anywhere except the board they belong to. The same goes for each source's secrets (a feed token, a private calendar address), one entry per source and secret. Non-secret files live in the app's config folder: `settings.json` (finish, size, corner and so on), `boards.json` (saved boards' names, addresses and sizes), `groups.json`, `drafts.json` (Compose drafts), `sources.json` (the rotation and how sources run) and `plugins.json` (installed plugin manifests); `history.json`, `recent.json` (messages sent from Compose) and `seen.json` (feed items already shown) sit in the app's data folder.
+Keys and tokens are stored only in your operating system's credential store: the macOS Keychain, the Windows Credential Manager, or the Secret Service keyring (GNOME Keyring, KWallet) on Linux. [Rattleboard Web](#who-can-watch-and-who-can-write) has no keychain and keeps them in 0600 files in its data volume instead. That includes the key of every saved board in **Settings → Boards**, each under its own entry. They are never written to a file, logged, or sent anywhere except the board they belong to. The same goes for each source's secrets (a feed token, a private calendar address), one entry per source and secret. Non-secret files live in the app's config folder: `settings.json` (finish, size, corner and so on), `boards.json` (saved boards' names, addresses and sizes), `groups.json`, `drafts.json` (Compose drafts), `sources.json` (the rotation and how sources run) and `plugins.json` (installed plugin manifests); `history.json`, `recent.json` (messages sent from Compose) and `seen.json` (feed items already shown) sit in the app's data folder.
 
 ## API server
 
@@ -194,7 +327,7 @@ Rattleboards also answer a few requests of their own under `/rattleboard/`. They
 | `GET /rattleboard/sequence` | — | `{"running":true,"id":"seq-…","name":"Morning","frame":2,"frames":5,"loop":true}` or `{"running":false}` |
 | `DELETE /rattleboard/sequence` | — | `204`; the current frame stays on the board |
 
-A real Vestaboard answers `404` or `401` to these, which is how apps tell the two apart. The `/rattleboard/sources` endpoints are under [Sources and plugins](#sources-api).
+`platform` is `macos`, `windows`, `linux` or `web` ([Rattleboard Web](#rattleboard-web-docker)). A real Vestaboard answers `404` or `401` to these, which is how apps tell the two apart. The `/rattleboard/sources` endpoints are under [Sources and plugins](#sources-api).
 
 A sequence has 1–100 frames. Each frame is `characters` or `text` (with an optional size hint), as in a normal post, with `hold` (1–3600 seconds) and an optional transition. With **Match each message**, each frame can have its own size. A frame is held for `hold` seconds after its flaps finish, so it's never cut off mid-flip. Without `"loop": true`, the last frame stays up. Starting a sequence replaces the one playing; any normal message stops it.
 
@@ -439,17 +572,27 @@ macOS has no supported way for apps to read other apps' notifications, so this s
 
 ## Building from source
 
-Prerequisites: [Rust](https://rustup.rs) (stable), [Node.js](https://nodejs.org) 18+, and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your platform (on Windows, WebView2 and the MSVC build tools).
+Prerequisites: [Rust](https://rustup.rs) (stable), [Node.js](https://nodejs.org) 18+, and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your platform (on Windows, WebView2 and the MSVC build tools; on Debian or Ubuntu, `sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev libxdo-dev`).
 
 ```sh
 npm install
 npm run dev      # run with hot reload
-npm run build    # produce installers in src-tauri/target/release/bundle
+npm run build    # produce installers in target/release/bundle
+cargo test --workspace
+```
+
+The Rust code is a Cargo workspace: the desktop app in `src-tauri`, the board engine it shares with Rattleboard Web in `crates/rattleboard-core`, and the Rattleboard Web server in `crates/rattleboard-web`. To build and run Rattleboard Web locally:
+
+```sh
+docker build -f crates/rattleboard-web/Dockerfile -t rattleboard-web .
+docker run --rm -p 7070:7070 -v rattleboard:/data rattleboard-web
+# or without Docker
+RATTLEBOARD_DATA=./web-data cargo run -p rattleboard-web
 ```
 
 To try changes without touching your own settings and keys, run a debug build with `RATTLEBOARD_PROFILE=<name>`: it uses config and data folders of its own (`…rattleboard.<name>`) and keeps its keys in a `secrets.json` there instead of the credential store. Profiles can run side by side (give each its own API port), and `RATTLEBOARD_OPEN=settings/sources` opens a window at launch. Release builds ignore both.
 
-The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The Rust side, in `src-tauri/src/`, handles polling, the keychain, the tray icon and window placement.
+The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The desktop's Rust side, in `src-tauri/src/`, handles polling, the tray icon and window placement; the engine in `crates/rattleboard-core/src/` does everything that doesn't touch a window.
 
 | Path | What it is |
 | --- | --- |
@@ -459,24 +602,26 @@ The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The Rust si
 | `src/panel.*` | Settings, Message History and first-run setup |
 | `src/compose.js` | Compose: the editor, sequences and drafts |
 | `src/sources.js` | Settings → Sources |
-| `src-tauri/src/vestaboard.rs` | Local and Cloud API clients, text layout, transitions, plus demo messages |
-| `src-tauri/src/server.rs` | The built-in Vestaboard-compatible API server and the `/rattleboard/` endpoints |
-| `src-tauri/src/sequence.rs` | Sequence validation |
-| `src-tauri/src/boards.rs` | Saved boards, pair links, network discovery |
-| `src-tauri/src/send.rs` | Groups, and sending to several boards at once |
-| `src-tauri/src/sources.rs` | The sources engine: rotation, priorities, calm rules, Up next |
-| `src-tauri/src/plugins.rs` | Plugin manifests, placeholders, fetching, feed and calendar parsing, commands |
-| `src-tauri/src/builtins.rs` | Clock, countdowns, weather, message and quote of the day |
-| `src-tauri/src/cards.rs` | Laying cards out for any board size |
+| `crates/rattleboard-core/src/vestaboard.rs` | Local and Cloud API clients, text layout, transitions, plus demo messages |
+| `crates/rattleboard-core/src/server.rs` | The built-in Vestaboard-compatible API server and the `/rattleboard/` endpoints |
+| `crates/rattleboard-core/src/sequence.rs` | Sequence validation |
+| `crates/rattleboard-core/src/boards.rs` | Saved boards, pair links, network discovery |
+| `crates/rattleboard-core/src/send.rs` | Groups, and sending to several boards at once |
+| `crates/rattleboard-core/src/sources.rs` | The sources engine: rotation, priorities, calm rules, Up next |
+| `crates/rattleboard-core/src/plugins.rs` | Plugin manifests, placeholders, fetching, feed and calendar parsing, commands |
+| `crates/rattleboard-core/src/builtins.rs` | Clock, countdowns, weather, message and quote of the day |
+| `crates/rattleboard-core/src/cards.rs` | Laying cards out for any board size |
 | `data/quotes.json` | The public-domain quotes, shared with the phone and TV apps |
 | `plugins/examples/` | Example plugins |
 | `src-tauri/src/notify.rs` | Notification forwarding (Windows) |
 | `src-tauri/src/fullscreen.rs` | Full screen: picking the display, keep-awake, hiding the pointer |
-| `src-tauri/src/secrets.rs` | OS credential store |
+| `crates/rattleboard-core/src/secrets.rs` | OS credential store (or a 0600 file, for Rattleboard Web) |
+| `crates/rattleboard-core/src/settings.rs` | The desktop's settings, board size presets |
+| `crates/rattleboard-web/` | Rattleboard Web: the headless server, its board page (`web/`) and Dockerfile |
 
 ### Releasing
 
-Pushing a version tag builds the macOS (universal) and Windows installers in GitHub Actions and attaches them to a GitHub Release. The macOS build is signed and notarized when the Developer ID secrets listed in `.github/workflows/release.yml` are set on the repository.
+Pushing a version tag builds the macOS (universal), Windows and Linux (`.deb`, AppImage) installers in GitHub Actions and attaches them to a GitHub Release, and publishes the Rattleboard Web image to `ghcr.io/slastrina/rattleboard-web` for amd64 and arm64. The macOS build is signed and notarized when the Developer ID secrets listed in `.github/workflows/release.yml` are set on the repository.
 
 ```sh
 git tag v0.3.0 && git push origin v0.3.0
