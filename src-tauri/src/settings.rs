@@ -262,7 +262,6 @@ fn minutes(hhmm: &str) -> Option<u32> {
 }
 
 /// Whether `now` (minutes since midnight) falls in from..to, which may wrap past midnight.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub fn in_quiet_hours(from: &str, to: &str, now: u32) -> bool {
     match (minutes(from), minutes(to)) {
         (Some(f), Some(t)) if f <= t => (f..t).contains(&now),

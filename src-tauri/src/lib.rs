@@ -9,6 +9,7 @@ mod send;
 mod sequence;
 mod server;
 mod settings;
+mod sources;
 mod vestaboard;
 
 use boards::SavedBoard;
