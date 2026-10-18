@@ -26,7 +26,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-22.04]
+        # ubuntu-22.04-arm: arm64 Linux, as on a Raspberry Pi running 64-bit Raspberry Pi OS.
+        os: [macos-latest, windows-latest, ubuntu-22.04, ubuntu-22.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
