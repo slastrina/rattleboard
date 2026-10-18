@@ -425,6 +425,7 @@ When nothing else is going on, Rattleboard can run a **rotation** of sources: ea
 
 - **Built in:** a clock, countdowns, the weather, RSS and Atom feeds, a calendar (iCal address), any JSON API, a message of the day and a quote of the day. See [Built-in sources](#built-in-sources).
 - **Plugins:** a `.rattleboard-plugin.json` file adds a source of your own: a feed, a JSON API, a text card, or (on this computer, once you allow it) a program's output. See [Plugin manifests](#plugin-manifests).
+- **Community plugins:** browse plugins other people made, from the [rattleboard-plugins](https://github.com/slastrina/rattleboard-plugins) repository, and install one in two clicks. See [Community plugins](#community-plugins).
 - Everything runs on this computer. There's no cloud service, and nothing is sent anywhere but the sources' own addresses.
 
 ### The rotation
@@ -543,6 +544,15 @@ Unknown fields are ignored, so a newer manifest still loads; anything invalid is
 - **Import:** drop a `.rattleboard-plugin.json` file on Settings → Sources, or choose it with **Import…**. In **Add source…**, a `rattleboard://plugin?url=https://…` link shows what the plugin is and asks before installing it (command plugins are refused from links).
 - **Export:** a plugin's manifest, or one source with its settings (never its secrets), saved to your Downloads folder.
 - Examples in [`plugins/examples`](plugins/examples): [Hacker News](plugins/examples/hacker-news.rattleboard-plugin.json) (RSS), [ISS position](plugins/examples/iss-position.rattleboard-plugin.json) (a keyless JSON API) and [git status](plugins/examples/git-status.rattleboard-plugin.json) (a command; change the folder in `args` to your repository's).
+
+### Community plugins
+
+**Settings → Sources → Community plugins** is a directory of plugins from [github.com/slastrina/rattleboard-plugins](https://github.com/slastrina/rattleboard-plugins), each one reviewed before it's listed.
+
+- Search by name, description or tag, or pick a tag. Each plugin shows who made it, what kind it is, whether it needs a key, and **Installed** or **Update available** if you have it already.
+- Open one to see its version and license, the addresses it contacts, the settings and secrets it asks for, its README and a sample card on a board the size of yours. **Install** fetches its manifest and asks first, the same as a plugin link; then **Add to rotation** puts it on the board.
+- The list is kept for a day; **Refresh** fetches it again. Rattleboard only ever reads from (and opens) addresses in that repository, and the directory never carries command plugins.
+- To share a plugin of your own, see the repository's [contributor guide](https://github.com/slastrina/rattleboard-plugins/blob/main/CONTRIBUTING.md).
 
 ### Sources API
 
