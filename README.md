@@ -628,14 +628,16 @@ When nothing else is going on, Rattleboard can run a **rotation** of sources: ea
 
 | Source | What it shows |
 | --- | --- |
-| **Clock** | Big digits made of tiles (time and date below), time and date, or a world clock of up to 3 cities (looked up by name, or given as a time zone like `Europe/London`). Re-drawn as the minute changes. |
-| **Countdown** | "12 DAYS TO SAM'S BIRTHDAY"; on the last day hours, and in the last hour a minute ticker if you like. One-off or every year, or a preset: New Year's Eve, Christmas, Halloween. On the day: a celebration card ("HAPPY BIRTHDAY SAM", between bands of colour), once, as an alert. |
-| **Weather** | Now, today's high and low, rain and wind for a city, from [Open-Meteo](https://open-meteo.com) (no key needed). °C or °F. |
+| **Clock** | Six styles. **Colour** (the default for new clocks): big digits over a bar along the bottom that fills as the hour goes by, in the hour's colour (red, orange, yellow, green, blue, violet, round again). **Time of day**: big digits framed in the time of day's colours: orange and red at dawn (5–8), yellow and blue by day, violet, orange and red at dusk (17–20), blue and violet at night. **Playful**: each digit a different colour, stepping one colour along the rainbow every minute. **Big time** (digits made of tiles, time and date below), **Time and date**, or a **World clock** of up to 3 cities (looked up by name, or given as a time zone like `Europe/London`). Re-drawn as the minute changes, once a minute at most, and that never counts as a card change. |
+| **Countdown** | "12 DAYS TO SAM'S BIRTHDAY" over a progress bar that fills towards the day (a rainbow, red to violet): over the year since last time for a yearly one, over the last 30 days for a one-off. On the last day hours, and in the last hour a minute ticker if you like. One-off or every year, or a preset: New Year's Eve, Christmas, Halloween. On the day: a celebration card ("HAPPY BIRTHDAY SAM" between rainbow bands, with confetti), once as an alert that plays three frames, then in the rotation for the rest of the day, a new frame each minute. |
+| **Weather** | Now, today's high and low, rain and wind for a city, from [Open-Meteo](https://open-meteo.com) (no key needed). °C or °F. The corner chip is the weather's colour (sun yellow, rain blue, cloud and snow white, storms violet), and a tile before the temperature shows how warm it is: violet at 0 °C or below, then blue, green (10°), yellow (18°), orange (25°) and red from 32 °C. |
 | **RSS or Atom feed** | New stories from any feed address. |
 | **Calendar (iCal)** | Your next event (recurring events included), and an alert 10 minutes before it starts. Use the "secret address in iCal format" from Google Calendar, iCloud or Outlook; it's kept in the credential store like a password. |
 | **JSON URL** | Any JSON API, no code: the address, an optional path to a list of items, paths to the title and body, and an optional card template. |
-| **Message of the day** | Your own list of messages, a different one each day. |
-| **Quote of the day** | One of 600+ public-domain quotes (authors who died before 1955), the same on every board each day, picked from those that fit the board with their "- AUTHOR" line. Choose any, work, calm, funny or wisdom; in the rotation, or once a day at a set time as a message; and add your own ("text - author", one per line), mixed in or on their own. The list is `data/quotes.json`. |
+| **Message of the day** | Your own list of messages, a different one each day, with two corner tiles in the day's colour. |
+| **Quote of the day** | One of 600+ public-domain quotes (authors who died before 1955), the same on every board each day, picked from those that fit the board with their "- AUTHOR" line. Choose any, work, calm, funny or wisdom; in the rotation, or once a day at a set time as a message; and add your own ("text - author", one per line), mixed in or on their own. The list is `data/quotes.json`. Two corner tiles in the quote's colour: work blue, calm green, funny orange, wisdom violet (your own quotes take the day's colour). |
+
+Each of these has a **Colour** setting: **Playful** (the default, as described above), **Accent** (every colour tile in the source's one chip colour, as earlier versions looked) or **Off** (no colour tiles at all: bars and digits in plain filled tiles, the rest left out).
 
 ### Showing sources on other boards
 
@@ -682,12 +684,12 @@ A plugin is one JSON file, `*.rattleboard-plugin.json`:
 | `id` | 3–100 letters, digits, dots, dashes or underscores, like `com.example.news`. Installing a manifest with the same id updates it. `rattleboard.` is kept for the built-ins. |
 | `name`, `description` | Shown in Settings → Sources |
 | `kind` | `rss` (RSS and Atom), `json`, `ical`, `text`, or `command` (this computer only) |
-| `fetch` | `url`, optional `method` (`GET` or `POST`) and `headers`, and `every` (at least `1m`, default `15m`). For `rss`, `json` and `ical`. The address must be `https://`, or `http://` to a host on your own network (a private IP address, `localhost`, `*.local`, `*.lan`, `*.home.arpa` or a single-word name). Each fetch has 10 s, and the answer may be up to 2 MB. |
-| `pick` | For `json`: JSONPath for `items` (optional: without it the whole document is one card), and for each item's `id`, `title`, `body` and `time`. The supported subset is `$`, `.key`, `['key']`, `[n]` and `[*]`. RSS, Atom and iCal need no `pick`. |
+| `fetch` | `url`, optional `method` (`GET` or `POST`) and `headers`, `every` (at least `1m`, default `15m`), and since 0.7.0 `sign` (`{"type": "hmac-sha1", "key": "{{secret.key}}"}`: an HMAC of the path and query added as `&signature=`, as PTV's API wants). For `rss`, `json` and `ical`. The address must be `https://`, or `http://` to a host on your own network (a private IP address, `localhost`, `*.local`, `*.lan`, `*.home.arpa` or a single-word name). Each fetch has 10 s, and the answer may be up to 2 MB. |
+| `pick` | For `json`: JSONPath for `items` (optional: without it the whole document is one card), and for each item's `id`, `title`, `body` and `time`. The supported subset is `$`, `.key`, `['key']`, `[n]` and `[*]`. RSS, Atom and iCal need no `pick`. Since 0.7.0 also `fields` (more values, as `{{field.name}}`), `where` (conditions like `{"path": "$.alt", "op": ">", "value": 300}`), `sort` (`{"path": "$.alt", "order": "asc"}`) and `as: "status"` (the list as one card, with `card.row` for `{{rows}}` and `card.empty`). See the community repository's [contributor guide](https://github.com/slastrina/rattleboard-plugins/blob/main/CONTRIBUTING.md#lists-filter-sort-and-status-cards-070-and-later). |
 | `card` | `template` (laid out over the whole board with the standard text layout; colour codes like `{r}` or `{63}` work), `chip` (a colour: red, orange, yellow, green, blue, violet, white or black), `align` (`center` or `left`) and `pages` (1–3: long text continues on more cards rather than being cut; words are never split). Without a template, the card has the source's name and the time across the top and the item below. |
 | `priority` | `ambient` (default) or `alert`: every new item interrupts |
 | `alertWhen` | `["keyword:launch"]`: new items mentioning one of these interrupt |
-| `maxItems` | 1–50 items per fetch (default 10) |
+| `maxItems` | 1–50 items per fetch (default 10), after `pick.where` and `pick.sort` |
 | `dwell` | How long its card shows, `10s` to `1h`; each source in the rotation can override it |
 | `schedule` | Days (`mon`…`sun`; none means every day) and `from`/`to` (HH:MM, may run past midnight) |
 | `settings` | Fields shown in Settings → Sources: `key`, `label`, `type` (`text`, `number`, `toggle`, `select` with `options`, `date`, `time` or `lines`) and `default` |
@@ -704,7 +706,8 @@ Unknown fields are ignored, so a newer manifest still loads; anything invalid is
 | `{{secret.token}}` | A secret, from the credential store. Only in `fetch.url` and `fetch.headers`: never in a template, never logged, and never sent back over the API. |
 | `{{name}}`, `{{title}}`, `{{body}}` | The source's name, and the item's title and body |
 | `{{time}}`, `{{time:HH:mm}}` | The item's time (for an event, its start) |
-| `{{now}}`, `{{now:ddd d MMM}}` | The time now. Formats use `yyyy yy MMMM MMM MM M dddd ddd dd d HH H hh h mm ss tt`; `[text]` is literal. |
+| `{{now}}`, `{{now:ddd d MMM}}` | The time now. Formats use `yyyy yy MMMM MMM MM M dddd ddd dd d HH H hh h mm ss tt`; `[text]` is literal. Since 0.7.0 also `{{now:epoch}}` (seconds since 1970), `{{now:epochms}}` and offsets like `{{now-2h:epoch}}`. |
+| `{{x\|filter}}` | Since 0.7.0, filters: `upper`, `lower`, `trim`, `num` (3,200), `round` / `round:2`, `default:text`, `pad:8` / `pad:-3` (line columns up), `time` / `time:HH:mm` (a time field in local time) and `mins` (minutes until it) |
 
 **Kinds:**
 

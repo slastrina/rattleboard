@@ -141,11 +141,12 @@ impl Instance {
             }
         };
         let schedule = Schedule::parse(o.get("schedule").unwrap_or(&Value::Null)).map_err(bad)?;
-        let given = match o.get("settings") {
+        let mut given = match o.get("settings") {
             None | Some(Value::Null) => Map::new(),
             Some(Value::Object(m)) => m.clone(),
             Some(_) => return Err(bad("settings must be an object")),
         };
+        builtins::migrate(&p.id, &mut given);
         let mut settings = Map::new();
         for spec in &p.settings {
             let v = match given.get(&spec.key) {
@@ -1389,7 +1390,8 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
         }
         ("native", builtins::WEATHER) => {
             let it = data?.items.first()?;
-            let face = Face::Standard { chip: x.chip.or(it.chip).or(p.card.chip).unwrap_or(0), name: if x.name == p.name { it.title.clone() } else { x.name.clone() }, time: short_time(ctx.now, clock24), body: it.body.clone(), pages: 1 };
+            let name = if x.name == p.name { it.title.clone() } else { x.name.clone() };
+            let face = builtins::weather_face(it, name, short_time(ctx.now, clock24), builtins::colour(&x.settings), x.chip.or(it.chip).or(p.card.chip));
             Some(card(face, false, "ambient"))
         }
         ("text", _) => {
@@ -1685,21 +1687,23 @@ fn tick(i: &mut Inner, ctx: &Ctx) -> Vec<Action> {
             out.push(Action::Show { card: Box::new(s.card.clone()), page: s.page, how: How::Ambient });
             return out;
         }
-        if now < s.until {
-            // A live card (a clock) is re-drawn as it changes, at most once a minute.
-            if s.card.live && now - s.drawn_at >= 5_000 {
-                s.drawn_at = now;
-                let id = s.card.instance.clone();
-                let fresh = i.config.rotation.iter().find(|x| x.id == id).and_then(|x| i.plugins.iter().find(|p| p.id == x.plugin).and_then(|p| card_for(i, x, p, ctx, 0, false)));
-                let s = i.showing.as_mut().unwrap();
-                if let Some(c) = fresh {
-                    let page = s.page;
-                    if c.face.render(ctx.dims.0, ctx.dims.1) != s.card.face.render(ctx.dims.0, ctx.dims.1) {
-                        s.card = c.clone();
-                        out.push(Action::Show { card: Box::new(c), page, how: How::Update });
-                    }
+        // A live card (a clock) is re-drawn as it changes, at most once a minute, for as long
+        // as it's on the board: also past its dwell, while the hourly cap holds the board.
+        if s.card.live && now - s.drawn_at >= 5_000 {
+            s.drawn_at = now;
+            let id = s.card.instance.clone();
+            let fresh = i.config.rotation.iter().find(|x| x.id == id).and_then(|x| i.plugins.iter().find(|p| p.id == x.plugin).and_then(|p| card_for(i, x, p, ctx, 0, false)));
+            let s = i.showing.as_mut().unwrap();
+            if let Some(c) = fresh {
+                let page = s.page;
+                if c.face.render(ctx.dims.0, ctx.dims.1) != s.card.face.render(ctx.dims.0, ctx.dims.1) {
+                    s.card = c.clone();
+                    out.push(Action::Show { card: Box::new(c), page, how: How::Update });
                 }
             }
+        }
+        let s = i.showing.as_ref().unwrap();
+        if now < s.until || !out.is_empty() {
             return out;
         }
     }
@@ -1712,10 +1716,18 @@ fn tick(i: &mut Inner, ctx: &Ctx) -> Vec<Action> {
     };
     let dwell = dwell_of(&x, &p) as i64 * 1000;
     if let Some(s) = i.showing.as_mut() {
-        if s.card.instance == card.instance && s.card.face == card.face && !force {
-            // The same card again (it's the only one): it just stays up.
+        if s.card.instance == card.instance && !force && (s.card.face == card.face || (card.live && s.how == How::Ambient)) {
+            // The same card again (it's the only one): it just stays up. A live one that has
+            // moved on (a clock, a celebration's next frame) is redrawn in place, which isn't
+            // a new card and doesn't count against the hourly cap.
             s.since = now;
             s.until = now + dwell * s.pages as i64;
+            if s.card.face != card.face {
+                s.card = card.clone();
+                s.drawn_at = now;
+                let page = s.page;
+                out.push(Action::Show { card: Box::new(card), page, how: How::Update });
+            }
             return out;
         }
     }
@@ -2155,7 +2167,7 @@ pub mod tests {
         let a = e.tick(&c0);
         assert_eq!(shows(&a), [("bday".to_string(), How::Alert)]);
         let Some(Action::Show { card, .. }) = a.first() else { panic!() };
-        assert_eq!(card.face, Face::Celebrate { text: "Happy birthday Sam".into() });
+        assert!(matches!(&card.face, Face::Celebrate { text, .. } if text == "Happy birthday Sam"));
         // Back after 30 s, and the celebration doesn't alert again that day.
         assert_eq!(shows(&e.tick(&at(&c0, 31))), [("return".to_string(), How::Update)]);
         assert_eq!(shows(&e.tick(&at(&c0, 32))), [("bday".to_string(), How::Ambient)]);
@@ -2165,7 +2177,37 @@ pub mod tests {
         assert_eq!(shows(&e.tick(&ctx(30))), [("quote".to_string(), How::Message)]);
         assert!(e.tick(&ctx(35)).is_empty() && e.tick(&ctx(39)).is_empty());
         assert_eq!(shows(&e.tick(&ctx(41))), [("bday".to_string(), How::Ambient)]);
-        assert!(e.tick(&ctx(45)).is_empty(), "once a day only");
+        // Once a day only: from here the celebration in the rotation just steps through its
+        // confetti frames, one redraw a minute (updates, not new cards or alerts).
+        let later = e.tick(&ctx(45));
+        assert_eq!(shows(&later), [("bday".to_string(), How::Update)]);
+    }
+
+    /// The colourful clock (the new default) changes once a minute, as updates that never
+    /// count against flipsPerHour, and keeps going once its dwell is over and the hourly cap
+    /// holds the board (it used to freeze there).
+    #[test]
+    fn colour_clock_is_calm() {
+        let (e, _) = engine("calmclock");
+        e.put_rotation(&json!({"rotation": [{"id": "clock", "plugin": "rattleboard.clock", "dwell": "1m"}], "flipsPerHour": 1}), false).unwrap();
+        assert_eq!(e.view()["rotation"][0]["settings"]["style"], "colour");
+        assert_eq!(e.view()["rotation"][0]["settings"]["colour"], "playful");
+        let c = ctx(0);
+        assert_eq!(shows(&e.tick(&c)), [("clock".to_string(), How::Ambient)]);
+        let mut updates = 0;
+        for s in 1..=(5 * 60) {
+            let a = e.tick(&at(&c, s));
+            for (id, how) in shows(&a) {
+                assert_eq!((id.as_str(), how), ("clock", How::Update), "second {s}");
+                updates += 1;
+            }
+        }
+        // 12:00 → 12:05: one change at each minute boundary, nothing in between
+        assert_eq!(updates, 5);
+        assert_eq!(e.inner.lock().unwrap().flips.len(), 1, "only the first show counted");
+        // A quote saved by an older version with its chip off is now Colour: Off
+        e.put_rotation(&json!({"rotation": [{"id": "q", "plugin": "rattleboard.quote", "settings": {"accent": false}}]}), false).unwrap();
+        assert_eq!(e.view()["rotation"][0]["settings"]["colour"], "off");
     }
 
     #[test]

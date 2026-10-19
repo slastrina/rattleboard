@@ -1877,12 +1877,15 @@ pub fn fingerprint(raw: &Value) -> String {
 /// and JSON URL are ordinary manifests whose settings fill in the address.
 pub fn builtins() -> Vec<Manifest> {
     let list = json!([
-        {"format": 1, "id": "rattleboard.clock", "name": "Clock", "kind": "native", "description": "The time: big digits, time and date, or a world clock",
+        {"format": 1, "id": "rattleboard.clock", "name": "Clock", "kind": "native", "description": "The time: big digits with an hour bar, a time-of-day palette or rainbow digits; time and date; or a world clock",
          "every": "1m", "dwell": "5m", "card": {"chip": "white"},
          "settings": [
-            {"key": "style", "label": "Style", "type": "select", "default": "big", "options": [
+            {"key": "style", "label": "Style", "type": "select", "default": "colour", "options": [
+                {"value": "colour", "label": "Colour (hour bar)"}, {"value": "daypart", "label": "Time of day"}, {"value": "playful", "label": "Playful"},
                 {"value": "big", "label": "Big time"}, {"value": "date", "label": "Time and date"}, {"value": "world", "label": "World clock"}]},
-            {"key": "cities", "label": "Cities (world clock, up to 3)", "type": "text", "default": "Melbourne, London, New York"}]},
+            {"key": "cities", "label": "Cities (world clock, up to 3)", "type": "text", "default": "Melbourne, London, New York"},
+            {"key": "colour", "label": "Colour", "type": "select", "default": "playful", "options": [
+                {"value": "playful", "label": "Playful"}, {"value": "accent", "label": "Accent"}, {"value": "off", "label": "Off"}]}]},
         {"format": 1, "id": "rattleboard.countdown", "name": "Countdown", "kind": "native", "description": "Days to a birthday, a holiday or any date, with a celebration on the day",
          "every": "1m", "dwell": "1m", "card": {"chip": "violet"},
          "settings": [
@@ -1894,13 +1897,17 @@ pub fn builtins() -> Vec<Manifest> {
             {"key": "yearly", "label": "Every year", "type": "toggle", "default": false},
             {"key": "ticker", "label": "Minute ticker in the last hour", "type": "toggle", "default": true},
             {"key": "celebrate", "label": "Celebration card on the day", "type": "toggle", "default": true},
-            {"key": "celebration", "label": "Celebration text", "type": "text", "default": ""}]},
+            {"key": "celebration", "label": "Celebration text", "type": "text", "default": ""},
+            {"key": "colour", "label": "Colour", "type": "select", "default": "playful", "options": [
+                {"value": "playful", "label": "Playful"}, {"value": "accent", "label": "Accent"}, {"value": "off", "label": "Off"}]}]},
         {"format": 1, "id": "rattleboard.weather", "name": "Weather", "kind": "native", "description": "Now and today from Open-Meteo, no key needed",
          "every": "15m", "dwell": "1m", "card": {"chip": "yellow"},
          "settings": [
             {"key": "city", "label": "City", "type": "text", "default": "Melbourne"},
             {"key": "units", "label": "Units", "type": "select", "default": "celsius", "options": [
-                {"value": "celsius", "label": "°C, km/h"}, {"value": "fahrenheit", "label": "°F, mph"}]}]},
+                {"value": "celsius", "label": "°C, km/h"}, {"value": "fahrenheit", "label": "°F, mph"}]},
+            {"key": "colour", "label": "Colour", "type": "select", "default": "playful", "options": [
+                {"value": "playful", "label": "Playful"}, {"value": "accent", "label": "Accent"}, {"value": "off", "label": "Off"}]}]},
         {"format": 1, "id": "rattleboard.rss", "name": "RSS or Atom feed", "kind": "rss", "description": "New stories from any feed",
          "fetch": {"url": "{{settings.url}}", "every": "15m"}, "dwell": "30s", "card": {"chip": "orange", "pages": 2},
          "settings": [{"key": "url", "label": "Feed address", "type": "text", "default": ""}]},
@@ -1918,7 +1925,9 @@ pub fn builtins() -> Vec<Manifest> {
             {"key": "template", "label": "Card template (optional)", "type": "text", "default": ""}]},
         {"format": 1, "id": "rattleboard.motd", "name": "Message of the day", "kind": "native", "description": "Your own messages, a different one each day",
          "every": "1m", "dwell": "1m", "card": {"chip": "green"},
-         "settings": [{"key": "lines", "label": "Messages, one per line", "type": "lines", "default": []}]},
+         "settings": [{"key": "lines", "label": "Messages, one per line", "type": "lines", "default": []},
+            {"key": "colour", "label": "Colour", "type": "select", "default": "playful", "options": [
+                {"value": "playful", "label": "Playful"}, {"value": "accent", "label": "Accent"}, {"value": "off", "label": "Off"}]}]},
         {"format": 1, "id": "rattleboard.quote", "name": "Quote of the day", "kind": "native", "description": "A public-domain quote each day, the same on every board",
          "every": "1m", "dwell": "1m", "card": {"chip": "blue"},
          "settings": [
@@ -1930,7 +1939,8 @@ pub fn builtins() -> Vec<Manifest> {
             {"key": "mine", "label": "My quotes (text - author), one per line", "type": "lines", "default": []},
             {"key": "source", "label": "Use", "type": "select", "default": "both", "options": [
                 {"value": "both", "label": "Built-in and mine"}, {"value": "bundled", "label": "Built-in only"}, {"value": "mine", "label": "Only mine"}]},
-            {"key": "accent", "label": "Colour chip", "type": "toggle", "default": true}]}
+            {"key": "colour", "label": "Colour", "type": "select", "default": "playful", "options": [
+                {"value": "playful", "label": "Playful"}, {"value": "accent", "label": "Accent"}, {"value": "off", "label": "Off"}]}]}
     ]);
     list.as_array().unwrap().iter().map(|v| parse(v, true).expect("built-in manifest")).collect()
 }

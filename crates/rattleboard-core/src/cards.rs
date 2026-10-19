@@ -9,7 +9,56 @@ use serde::Serialize;
 
 /// A filled tile: the board's ink colour.
 pub const FILLED: u8 = 71;
-const RAINBOW: [u8; 6] = [63, 64, 65, 66, 67, 68];
+/// Red, orange, yellow, green, blue, violet.
+pub const RAINBOW: [u8; 6] = [63, 64, 65, 66, 67, 68];
+/// Frames of a celebration (pages of the alert; one a minute in the rotation).
+pub const CELEBRATE_FRAMES: usize = 3;
+
+/// How much colour a built-in's card uses (its "Colour" setting).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Colour {
+    /// Colour as designed: rainbows, palettes, confetti
+    #[default]
+    Playful,
+    /// Every colour tile in one colour (the source's chip)
+    Accent,
+    /// No colour tiles: bars and digits filled, decoration left out
+    Off,
+}
+
+impl Colour {
+    pub fn parse(s: &str) -> Colour {
+        match s {
+            "accent" => Colour::Accent,
+            "off" => Colour::Off,
+            _ => Colour::Playful,
+        }
+    }
+
+    /// The tile to draw for colour `want`. `structural` tiles (a progress bar, digits) are
+    /// filled when colour is off; decorative ones (frames, confetti, corners) are left blank.
+    pub fn ink(self, want: u8, accent: u8, structural: bool) -> u8 {
+        match self {
+            Colour::Playful => want,
+            Colour::Accent => accent,
+            Colour::Off if structural => FILLED,
+            Colour::Off => 0,
+        }
+    }
+}
+
+/// The clock's colourful styles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClockStyle {
+    /// Big digits over an hour-progress bar in the hour's colour
+    Colour,
+    /// Big digits framed by the time of day's palette
+    Daypart,
+    /// Rainbow digits, a step along the rainbow each minute
+    Playful,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "face", rename_all = "camelCase")]
@@ -27,10 +76,20 @@ pub enum Face {
     /// Label and value per row, like a world clock. Each value comes long ("9:41 PM") and
     /// short ("9:41P"); the short one is used when the long one would crowd the label.
     Rows { chip: u8, title: String, rows: Vec<(String, String, String)> },
-    /// Bands of colour above and below the text.
-    Celebrate { text: String },
     /// Quote of the day: the first quote in the list that fits the board, counted from `day`.
-    Quote { quotes: Vec<(String, String)>, day: i64, chip: Option<u8> },
+    /// `accents` (Playful): each quote's colour, put in the top-left and bottom-right corners
+    /// instead of the chip.
+    Quote { quotes: Vec<(String, String)>, day: i64, chip: Option<u8>, accents: Vec<u8> },
+    /// A colourful clock. `time` "9:41", `sub` "PM Sun 18 Oct" (under big digits), `line`
+    /// "9:41 PM" and `date` "Sun 18 Oct" (on boards too small for digits).
+    Clock { style: ClockStyle, time: String, sub: String, line: String, date: String, hour: u32, minute: u32, colour: Colour, accent: u8 },
+    /// A countdown with a progress bar along the bottom row, `permille` of the way there.
+    Countdown { text: String, chip: Option<u8>, permille: u16, colour: Colour, accent: u8 },
+    /// Text with a colour tile in the top-left and bottom-right corners (where they're free).
+    Corners { text: String, colour: u8, pages: usize },
+    /// Bands of colour above and below the text, and confetti. `frame` None: every frame, as
+    /// pages; Some(k): frame k alone.
+    Celebrate { text: String, colour: Colour, accent: u8, frame: Option<usize> },
 }
 
 impl Face {
@@ -43,8 +102,20 @@ impl Face {
             Face::Grid { grid } => vec![fit_center(grid, rows, cols)],
             Face::BigTime { time, sub, fill } => vec![big_time(time, sub, *fill, rows, cols)],
             Face::Rows { chip, title, rows: list } => vec![table(*chip, title, list, rows, cols)],
-            Face::Celebrate { text } => vec![celebrate(text, rows, cols)],
-            Face::Quote { quotes, day, chip } => vec![quote_card(quotes, *day, *chip, rows, cols)],
+            Face::Celebrate { text, colour, accent, frame } => match frame {
+                Some(k) => vec![celebrate(text, *colour, *accent, k % CELEBRATE_FRAMES, rows, cols)],
+                None => (0..CELEBRATE_FRAMES).map(|k| celebrate(text, *colour, *accent, k, rows, cols)).collect(),
+            },
+            Face::Quote { quotes, day, chip, accents } => vec![quote_card(quotes, *day, *chip, accents, rows, cols)],
+            Face::Clock { style, time, sub, line, date, hour, minute, colour, accent } => vec![colour_clock(*style, time, sub, line, date, *hour, *minute, *colour, *accent, rows, cols)],
+            Face::Countdown { text, chip, permille, colour, accent } => vec![countdown_card(text, *chip, *permille, *colour, *accent, rows, cols)],
+            Face::Corners { text, colour, pages } => text_pages(text, false, None, *pages, rows, cols)
+                .into_iter()
+                .map(|mut g| {
+                    corners(&mut g, *colour);
+                    g
+                })
+                .collect(),
         };
         if pages.is_empty() {
             vec![vec![vec![0; cols]; rows]]
@@ -237,29 +308,239 @@ fn table(chip: u8, title: &str, list: &[(String, String, String)], rows: usize, 
     g
 }
 
-fn celebrate(text: &str, rows: usize, cols: usize) -> Grid {
+/// Frame `k` of a celebration. Playful: rainbow bands top and bottom (walking a step each
+/// frame) when there's room, otherwise rainbow corners, and confetti in the free space.
+#[allow(clippy::needless_range_loop)]
+fn celebrate(text: &str, colour: Colour, accent: u8, k: usize, rows: usize, cols: usize) -> Grid {
     let lines = wrap(text, cols);
-    if rows >= lines.len() + 2 && rows >= 3 {
+    let banded = rows >= lines.len() + 2 && rows >= 3;
+    let mut g = if banded {
         let mut g = vec![vec![0u8; cols]; rows];
-        for c in 0..cols {
-            g[0][c] = RAINBOW[c % 6];
-            g[rows - 1][c] = RAINBOW[(cols - 1 - c) % 6];
-        }
-        let inner = place(&lines, rows - 2, cols, false);
-        for (i, row) in inner.into_iter().enumerate() {
+        for (i, row) in place(&lines, rows - 2, cols, false).into_iter().enumerate() {
             g[i + 1] = row;
         }
         g
     } else {
-        let mut g = place(&lines, rows, cols, false);
+        place(&lines, rows, cols, false)
+    };
+    let text = g.clone();
+    let blank = |r: usize, c: usize| text[r][c] == 0;
+    // Clear of words: this tile and two either side on its row are blank.
+    let clear = |r: usize, c: usize| (c.saturating_sub(2)..(c + 3).min(cols)).all(|x| blank(r, x));
+    let ink = |want: u8| colour.ink(want, accent, false);
+    if banded {
+        for c in 0..cols {
+            g[0][c] = ink(RAINBOW[(c + k) % 6]);
+            g[rows - 1][c] = ink(RAINBOW[(cols - 1 - c + k) % 6]);
+        }
+    } else {
         let last = rows - 1;
         for (r, c) in [(0, 0), (0, cols - 1), (last, 0), (last, cols - 1)] {
-            if g[r][c] == 0 {
-                g[r][c] = RAINBOW[(r + c) % 6];
+            if clear(r, c) {
+                g[r][c] = ink(RAINBOW[(r + c + k) % 6]);
             }
         }
-        g
     }
+    // Confetti, scattered differently each frame, kept clear of the words.
+    let (r0, r1) = if banded { (1, rows - 1) } else { (0, rows) };
+    for r in r0..r1 {
+        for c in 0..cols {
+            if clear(r, c) && g[r][c] == 0 && (r * 7 + c * 3 + k * 5 + r * c).is_multiple_of(11) {
+                g[r][c] = ink(RAINBOW[(r + 2 * c + k) % 6]);
+            }
+        }
+    }
+    g
+}
+
+/// Colour tiles in two corners, each only where it and the tile beside it on its row are
+/// blank (so it never touches a word): the top-left, and the bottom-right or else the
+/// bottom-left. Boards under 2 rows or 2 columns get none.
+fn corners(g: &mut Grid, colour: u8) {
+    let (rows, cols) = (g.len(), g[0].len());
+    if rows < 2 || cols < 2 {
+        return;
+    }
+    let free = |g: &Grid, r: usize, c: usize, n: usize| g[r][c] == 0 && g[r][n] == 0;
+    if free(g, 0, 0, 1) {
+        g[0][0] = colour;
+    }
+    let last = rows - 1;
+    if free(g, last, cols - 1, cols - 2) {
+        g[last][cols - 1] = colour;
+    } else if free(g, last, 0, 1) {
+        g[last][0] = colour;
+    }
+}
+
+/// The glyphs of a time in big digits, and their width with a tile between each.
+fn big_glyphs(time: &str) -> (Vec<char>, usize) {
+    let glyphs: Vec<char> = time.chars().filter(|c| c.is_ascii_digit() || *c == ':').collect();
+    let width = glyphs.iter().map(|c| if *c == ':' { 1 } else { 3 }).sum::<usize>() + glyphs.len().saturating_sub(1);
+    (glyphs, width)
+}
+
+/// Draws big digits with their top-left at (top, left); digit `i` (colons not counted) in
+/// `ink(i)`, colons in FILLED.
+fn draw_digits(g: &mut Grid, glyphs: &[char], top: usize, left: usize, ink: impl Fn(usize) -> u8) {
+    let mut c = left;
+    let mut i = 0;
+    for &ch in glyphs {
+        if ch == ':' {
+            g[top + 1][c] = FILLED;
+            g[top + 3][c] = FILLED;
+            c += 2;
+            continue;
+        }
+        let d = DIGITS[ch.to_digit(10).unwrap_or(0) as usize];
+        for (r, line) in d.iter().enumerate() {
+            for (k, px) in line.chars().enumerate() {
+                if px == '#' {
+                    g[top + r][c + k] = ink(i);
+                }
+            }
+        }
+        c += 4;
+        i += 1;
+    }
+}
+
+/// The time-of-day palette: dawn 05–07, day 08–16, dusk 17–19, night 20–04.
+pub fn daypart_palette(hour: u32) -> &'static [u8] {
+    match hour {
+        5..=7 => &[64, 63, 65],
+        8..=16 => &[65, 67],
+        17..=19 => &[68, 64, 63],
+        _ => &[67, 68],
+    }
+}
+
+/// The hour's colour for the hour bar: red, orange, yellow, green, blue, violet, again.
+pub fn hour_colour(hour: u32) -> u8 {
+    RAINBOW[hour as usize % 6]
+}
+
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn colour_clock(style: ClockStyle, time: &str, sub: &str, line: &str, date: &str, hour: u32, minute: u32, colour: Colour, accent: u8, rows: usize, cols: usize) -> Grid {
+    let mut g = vec![vec![0u8; cols]; rows];
+    let (glyphs, w) = big_glyphs(time);
+    let text_lines = |n: usize| -> Vec<Vec<u8>> {
+        let mut l = vec![clip(parse(line), cols)];
+        if n > 1 && !date.is_empty() {
+            l.push(clip(parse(date), cols));
+        }
+        l
+    };
+    let sub_codes = clip(parse(sub), cols);
+    match style {
+        ClockStyle::Colour => {
+            // The bar: the last row, filled as far as the hour has gone.
+            if rows >= 2 {
+                let n = (minute as usize * cols / 60 + 1).min(cols);
+                for c in 0..n {
+                    g[rows - 1][c] = colour.ink(hour_colour(hour), accent, true);
+                }
+            }
+            let area = if rows >= 2 { rows - 1 } else { rows };
+            if area >= 5 && w <= cols && !glyphs.is_empty() {
+                let with_sub = area >= 7 && !sub_codes.is_empty();
+                let h = if with_sub { 6 } else { 5 };
+                let top = (area - h) / 2;
+                draw_digits(&mut g, &glyphs, top, (cols - w) / 2, |_| FILLED);
+                if with_sub {
+                    put(&mut g, top + 5, (cols - sub_codes.len()) / 2, &sub_codes);
+                }
+            } else {
+                for (r, row) in place(&text_lines(area), area, cols, false).into_iter().enumerate() {
+                    g[r] = row;
+                }
+            }
+        }
+        ClockStyle::Daypart => {
+            let pal = daypart_palette(hour);
+            let digits = rows >= 5 && w <= cols && !glyphs.is_empty();
+            let (cw, ch) = if digits {
+                (w.max(sub_codes.len()), if rows >= 6 && !sub_codes.is_empty() { 6 } else { 5 })
+            } else {
+                let l = text_lines(rows);
+                (l.iter().map(|x| x.len()).max().unwrap_or(0), l.len())
+            };
+            let side = cols >= cw + 2;
+            let band = rows >= ch + 2;
+            let (r0, r1) = if band { (1, rows - 1) } else { (0, rows) };
+            let (c0, c1) = if side { (1, cols - 1) } else { (0, cols) };
+            for r in 0..rows {
+                for c in 0..cols {
+                    let edge = (band && (r == 0 || r == rows - 1)) || (side && (c == 0 || c == cols - 1));
+                    if edge {
+                        g[r][c] = colour.ink(pal[(r + c) % pal.len()], accent, false);
+                    }
+                }
+            }
+            let (ih, iw) = (r1 - r0, c1 - c0);
+            if digits && ih >= 5 && iw >= w {
+                let with_sub = ih >= 6 && !sub_codes.is_empty();
+                let top = r0 + (ih - if with_sub { 6 } else { 5 }) / 2;
+                draw_digits(&mut g, &glyphs, top, c0 + (iw - w) / 2, |_| FILLED);
+                if with_sub {
+                    let s = clip(parse(sub), iw);
+                    put(&mut g, top + 5, c0 + (iw - s.len()) / 2, &s);
+                }
+            } else {
+                let lines: Vec<Vec<u8>> = text_lines(ih).into_iter().map(|l| clip(l, iw)).collect();
+                for (i, row) in place(&lines, ih, iw, false).into_iter().enumerate() {
+                    put(&mut g, r0 + i, c0, &row);
+                }
+            }
+        }
+        ClockStyle::Playful => {
+            let walk = |c: usize| RAINBOW[(c + minute as usize) % 6];
+            if rows >= 5 && w <= cols && !glyphs.is_empty() {
+                let with_sub = rows >= 6 && !sub_codes.is_empty();
+                let h = if with_sub { 6 } else { 5 };
+                let bands = rows >= h + 2;
+                let top = (rows - h) / 2;
+                draw_digits(&mut g, &glyphs, top, (cols - w) / 2, |i| colour.ink(walk(i), accent, true));
+                if with_sub {
+                    put(&mut g, top + 5, (cols - sub_codes.len()) / 2, &sub_codes);
+                }
+                if bands {
+                    for c in 0..cols {
+                        g[0][c] = colour.ink(walk(c), accent, false);
+                        g[rows - 1][c] = colour.ink(walk(cols - 1 - c), accent, false);
+                    }
+                }
+            } else {
+                // Too small for digits: the time and date over a rainbow row that walks.
+                let area = if rows >= 2 { rows - 1 } else { rows };
+                for (r, row) in place(&text_lines(area), area, cols, false).into_iter().enumerate() {
+                    g[r] = row;
+                }
+                if rows >= 2 {
+                    for c in 0..cols {
+                        g[rows - 1][c] = colour.ink(walk(c), accent, false);
+                    }
+                }
+            }
+        }
+    }
+    g
+}
+
+/// A countdown: its text above, a progress bar on the last row (Playful: a rainbow from red
+/// at the left to violet at the right, revealed as the day comes closer).
+fn countdown_card(text: &str, chip: Option<u8>, permille: u16, colour: Colour, accent: u8, rows: usize, cols: usize) -> Grid {
+    if rows < 2 {
+        return text_pages(text, false, chip, 1, rows, cols).remove(0);
+    }
+    let mut g = text_pages(text, false, chip, 1, rows - 1, cols).into_iter().next().unwrap_or_else(|| vec![vec![0u8; cols]; rows - 1]);
+    let n = (permille.min(1000) as usize * cols / 1000).min(cols);
+    let mut bar = vec![0u8; cols];
+    for (c, t) in bar.iter_mut().enumerate().take(n) {
+        *t = colour.ink(RAINBOW[c * 6 / cols], accent, true);
+    }
+    g.push(bar);
+    g
 }
 
 /// The author line as the board writes it.
@@ -293,10 +574,12 @@ pub fn pick_quote(quotes: &[(String, String)], day: i64, rows: usize, cols: usiz
     Some(fit[day.rem_euclid(fit.len() as i64) as usize])
 }
 
-fn quote_card(quotes: &[(String, String)], day: i64, chip: Option<u8>, rows: usize, cols: usize) -> Grid {
-    let Some((text, author)) = pick_quote(quotes, day, rows, cols) else {
+fn quote_card(quotes: &[(String, String)], day: i64, chip: Option<u8>, accents: &[u8], rows: usize, cols: usize) -> Grid {
+    let Some(picked) = pick_quote(quotes, day, rows, cols) else {
         return vec![vec![0; cols]; rows];
     };
+    let (text, author) = picked;
+    let accent = quotes.iter().position(|q| std::ptr::eq(q, picked)).and_then(|i| accents.get(i).copied());
     let a = parse(&author_line(author));
     let text_rows = if a.is_empty() { rows } else { rows - 1 };
     let mut g = place(&wrap(text, cols), text_rows, cols, false);
@@ -307,9 +590,14 @@ fn quote_card(quotes: &[(String, String)], day: i64, chip: Option<u8>, rows: usi
         put_row(&mut last, st, &a);
         g.push(last);
     }
-    if let Some(c) = chip {
-        if g[0][0] == 0 {
-            g[0][0] = c;
+    match accent {
+        Some(a) => corners(&mut g, a),
+        None => {
+            if let Some(c) = chip {
+                if g[0][0] == 0 {
+                    g[0][0] = c;
+                }
+            }
         }
     }
     g
@@ -384,10 +672,10 @@ mod tests {
         let g = Face::Rows { chip: 69, title: "World clock".into(), rows: rows.clone() }.render(3, 15).remove(0);
         assert_eq!(text(&g[0]), "# WORLD CLOCK  ");
         assert!(text(&g[1]).starts_with("MELBOURNE") && text(&g[2]).starts_with("LONDON"));
-        let g = Face::Celebrate { text: "Happy birthday Sam".into() }.render(6, 22).remove(0);
+        let g = Face::Celebrate { text: "Happy birthday Sam".into(), colour: Colour::Playful, accent: 68, frame: Some(0) }.render(6, 22).remove(0);
         assert_eq!((g[0][0], g[5][21]), (63, 63));
         assert!(text(&g[2]).contains("HAPPY BIRTHDAY SAM") || text(&g[3]).contains("HAPPY BIRTHDAY SAM"));
-        let g = Face::Celebrate { text: "Merry Christmas".into() }.render(2, 8).remove(0);
+        let g = Face::Celebrate { text: "Merry Christmas".into(), colour: Colour::Playful, accent: 68, frame: Some(0) }.render(2, 8).remove(0);
         assert_eq!(g.len(), 2);
         let g = Face::Text { text: "{r} hello".into(), left: false, chip: Some(66), pages: 1 }.render(3, 15).remove(0);
         assert_eq!((g[0][0], g[1][4]), (66, 63));
@@ -415,11 +703,11 @@ mod tests {
         assert_eq!(pick_quote(&list, 2, 3, 15).unwrap().1, "Aristotle");
         assert_eq!(pick_quote(&list, 1, 6, 22).unwrap().1, "Marcus Aurelius");
         assert_eq!(pick_quote(&list, -1, 6, 22).unwrap().1, "Shakespeare");
-        let g = Face::Quote { quotes: list.clone(), day: 1, chip: Some(67) }.render(6, 22).remove(0);
+        let g = Face::Quote { quotes: list.clone(), day: 1, chip: Some(67), accents: vec![] }.render(6, 22).remove(0);
         assert_eq!(text(&g[5]).trim_end(), format!("{:>21}", "- MARCUS AURELIUS"));
         // a full first row leaves no room for the chip
         assert_ne!(g[0][0], 67);
-        let g = Face::Quote { quotes: list, day: 0, chip: Some(67) }.render(3, 15).remove(0);
+        let g = Face::Quote { quotes: list, day: 0, chip: Some(67), accents: vec![] }.render(3, 15).remove(0);
         assert_eq!(g[0][0], 67);
         assert_eq!(text(&g[2]), "   - ARISTOTLE ");
         assert!(text(&g[0]).contains("WELL BEGUN") && text(&g[1]).contains("HALF DONE"));
