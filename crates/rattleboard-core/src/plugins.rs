@@ -1437,7 +1437,9 @@ pub fn sign_url(url: &str, s: &Sign, key: &str) -> Result<String, String> {
 }
 
 fn describe(e: reqwest::Error) -> String {
-    if e.is_timeout() {
+    if is_certificate_error(&e) {
+        "The server's certificate isn't trusted on this computer. If your network uses a security tool such as Netskope or Zscaler, its certificate needs to be installed in the system's trust store".into()
+    } else if e.is_timeout() {
         "Timed out after 10 s".into()
     } else if e.is_redirect() {
         "Redirected to an address that isn't allowed".into()
@@ -1446,6 +1448,20 @@ fn describe(e: reqwest::Error) -> String {
     } else {
         "Network error".into()
     }
+}
+
+/// TLS failures surface as connect errors; look down the source chain for a certificate problem,
+/// which is what a TLS-inspecting proxy whose root isn't trusted looks like.
+pub fn is_certificate_error(e: &(dyn std::error::Error + 'static)) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = cur {
+        let text = err.to_string().to_ascii_lowercase();
+        if text.contains("certificate") || text.contains("unknownissuer") || text.contains("unknown issuer") {
+            return true;
+        }
+        cur = err.source();
+    }
+    false
 }
 
 // ---------------------------------------------------------------- parsing
