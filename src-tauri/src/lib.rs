@@ -1130,6 +1130,16 @@ fn clamp_to(wa: &PhysicalRect<i32, u32>, size: PhysicalSize<u32>, scale: f64, x:
 
 /// Puts the board in its corner (a pop-up) or at its spot (a pinned widget). `size` is the
 /// window's new size when it has just been resized: the window may not report it yet.
+/// The display the board lives on, in every mode: the chosen one (Settings → Display, or
+/// the one it was last dragged to) while it's plugged in, else the main display. None when
+/// no display was ever chosen (settings from before 0.10.1): the board stays where it is.
+fn board_screen(app: &AppHandle, s: &Settings) -> Option<Monitor> {
+    if s.screen_name.is_empty() {
+        return None;
+    }
+    chosen_screen(app, s)
+}
+
 fn place_board(app: &AppHandle, size: Option<PhysicalSize<u32>>) {
     let Some(w) = board(app) else { return };
     let s = app.state::<AppState>().settings.lock().unwrap().clone();
@@ -1137,16 +1147,30 @@ fn place_board(app: &AppHandle, size: Option<PhysicalSize<u32>>) {
         return;
     }
     let size = size.unwrap_or_else(|| w.outer_size().unwrap_or_default());
+    let screen = board_screen(app, &s);
     let (x, y) = if s.floating() {
         let (cx, cy) = (s.custom.x as i32, s.custom.y as i32);
-        let mon = app.monitor_from_point(s.custom.x, s.custom.y).ok().flatten();
-        let (wa, scale) = match mon {
+        match screen {
+            // The same spot on that display, wherever it is now (or on the main display while
+            // it's unplugged): the drop point is kept relative to the display it was on.
+            Some(m) => {
+                let (x, y) = fullscreen::same_spot((cx, cy), (s.screen_pos.x as i32, s.screen_pos.y as i32), (m.position().x, m.position().y));
+                clamp_to(m.work_area(), size, m.scale_factor(), x, y)
+            }
+            None => {
+                let mon = app.monitor_from_point(s.custom.x, s.custom.y).ok().flatten();
+                let (wa, scale) = match mon {
+                    Some(m) => (*m.work_area(), m.scale_factor()),
+                    None => work_area(app, &w),
+                };
+                clamp_to(&wa, size, scale, cx, cy)
+            }
+        }
+    } else {
+        let (wa, scale) = match &screen {
             Some(m) => (*m.work_area(), m.scale_factor()),
             None => work_area(app, &w),
         };
-        clamp_to(&wa, size, scale, cx, cy)
-    } else {
-        let (wa, scale) = work_area(app, &w);
         corner_positions(&wa, size, scale)
             .into_iter()
             .find(|c| c.0 == s.position)
@@ -1289,11 +1313,21 @@ fn uncover_screen(app: &AppHandle) {
 /// Follows display changes while full screen: a new resolution, or the chosen display going
 /// away (the board moves to the main display), as after unplugging a monitor or waking up.
 async fn watch_screens(app: AppHandle) {
+    let mut last: Option<Vec<(i32, i32, u32, u32)>> = None;
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
         if !app.state::<AppState>().settings.lock().unwrap().fullscreen() {
+            // A pop-up or widget goes back to its display when it's plugged in again, and to
+            // the main display when it's unplugged.
+            let now: Vec<_> = app.available_monitors().unwrap_or_default().iter().map(rect_of).collect();
+            if last.as_ref().is_some_and(|l| *l != now) {
+                let a = app.clone();
+                let _ = app.run_on_main_thread(move || place_board(&a, None));
+            }
+            last = Some(now);
             continue;
         }
+        last = None;
         let a = app.clone();
         let _ = app.run_on_main_thread(move || {
             // Looked at again here: full screen may have ended while this waited its turn.
@@ -2387,6 +2421,7 @@ fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), Strin
     let st = app.state::<AppState>();
     // Window queries happen before any lock is taken (see show_message).
     let board_pos = board(app).filter(|w| w.is_visible().unwrap_or(false)).and_then(|w| w.outer_position().ok());
+    let board_mon = board(app).and_then(|w| w.current_monitor().ok().flatten()).map(|m| (m.position().x as f64, m.position().y as f64));
     let (old, new) = {
         let mut s = st.settings.lock().unwrap();
         let old = s.clone();
@@ -2399,6 +2434,13 @@ fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), Strin
         }
         if !old.fullscreen() && new.fullscreen() {
             new.windowed_mode = old.mode.clone();
+        }
+        let screen_moved = old.screen_name != new.screen_name || old.screen_pos != new.screen_pos;
+        if screen_moved && new.floating() && old.custom == new.custom {
+            // A widget moved to another display keeps its spot on the display it was on.
+            let (ox, oy) = if old.screen_name.is_empty() { board_mon.unwrap_or((0.0, 0.0)) } else { (old.screen_pos.x, old.screen_pos.y) };
+            let (x, y) = fullscreen::same_spot((new.custom.x as i32, new.custom.y as i32), (ox as i32, oy as i32), (new.screen_pos.x as i32, new.screen_pos.y as i32));
+            new.custom = Point { x: x as f64, y: y as f64 };
         }
         *s = new.clone();
         new.save(&st.settings_path);
@@ -2421,7 +2463,7 @@ fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), Strin
     if old.mode != new.mode || old.float_layer != new.float_layer {
         apply_layering(app);
     }
-    if old.mode != new.mode || old.position != new.position || old.custom != new.custom {
+    if old.mode != new.mode || old.position != new.position || old.custom != new.custom || screen_moved {
         place_board(app, None);
     }
     if old.mode != new.mode {
@@ -2735,8 +2777,15 @@ fn board_drag_end(app: AppHandle, st: State<AppState>) {
     let (wa, scale) = work_area(&app, &w);
     let size = w.outer_size().unwrap_or_default();
     let pos = w.outer_position().unwrap_or_default();
+    let centre = (pos.x as f64 + size.width as f64 / 2.0, pos.y as f64 + size.height as f64 / 2.0);
+    let dropped_on = app.monitor_from_point(centre.0, centre.1).ok().flatten().or_else(|| w.current_monitor().ok().flatten());
     {
         let mut s = st.settings.lock().unwrap();
+        // Dropped on a display: that's the board's display from now on.
+        if let Some(m) = &dropped_on {
+            s.screen_name = m.name().cloned().unwrap_or_default();
+            s.screen_pos = Point { x: m.position().x as f64, y: m.position().y as f64 };
+        }
         if s.floating() {
             s.custom = Point { x: pos.x as f64, y: pos.y as f64 };
         } else {

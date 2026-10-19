@@ -12,6 +12,13 @@ pub fn pick_screen(screens: &[(String, (i32, i32))], name: &str, pos: (i32, i32)
     named.iter().copied().find(|&i| screens[i].1 == pos).or_else(|| named.first().copied())
 }
 
+/// A pinned board's spot, kept relative to its display: dropped at `spot` while that display's
+/// top-left corner was at `was`, it goes to the same place on a display now at `now` (the same
+/// display moved in the arrangement, or the main display while it's unplugged).
+pub fn same_spot(spot: (i32, i32), was: (i32, i32), now: (i32, i32)) -> (i32, i32) {
+    (spot.0 - was.0 + now.0, spot.1 - was.1 + now.1)
+}
+
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ffi::{c_char, c_void, CStr};
@@ -254,5 +261,14 @@ mod tests {
         assert_eq!(pick_screen(&list, "DELL P2419H", (0, 0)), Some(1));
         // Unplugged: the main display.
         assert_eq!(pick_screen(&list, "LG HDR 4K", (1512, 0)), None);
+    }
+
+    #[test]
+    fn same_spot_on_another_display() {
+        // 100 px in from the external display's corner, wherever that display is.
+        assert_eq!(same_spot((1612, 50), (1512, 0), (1512, 0)), (1612, 50));
+        assert_eq!(same_spot((1612, 50), (1512, 0), (-2560, -300)), (-2460, -250));
+        // Unplugged: the same spot on the main display.
+        assert_eq!(same_spot((1612, 50), (1512, 0), (0, 0)), (100, 50));
     }
 }

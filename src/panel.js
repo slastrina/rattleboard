@@ -66,20 +66,25 @@ function placementRows() {
     <div style="display:flex; flex-direction:column; gap:6px">${modeSeg()}<span class="hint">${modeHint()}</span></div>
     ${s.mode === 'float'
       ? `<div class="lbl">Layer</div>${seg([['desktop', 'On the desktop'], ['top', 'Above other windows']], s.floatLayer, 'floatLayer')}`
-      : s.mode === 'fullscreen' ? screenRow()
-      : `<div class="lbl" style="align-self:start; padding-top:4px">Pop up in</div>${corners()}`}`;
+      : s.mode === 'fullscreen' ? ''
+      : `<div class="lbl" style="align-self:start; padding-top:4px">Pop up in</div>${corners()}`}
+    ${screenRow()}`;
 }
-// Full screen's display, when there's more than one: remembered by name, and by position to
-// tell two of the same model apart. The main display is the default and the fallback.
+// The board's display in every mode, when there's more than one: remembered by name, and by
+// position to tell two of the same model apart. Dragging the board to another display picks
+// that one too. While it's unplugged the board waits on the main display.
 function screenRow() {
   const s = S.settings, list = L.screens || [];
   if (list.length < 2) return '';
   const cur = list.findIndex(d => d.name === s.screenName && d.x === s.screenPos.x && d.y === s.screenPos.y);
   const named = cur < 0 ? list.findIndex(d => d.name === s.screenName) : cur;
-  const opt = (d, i) => `<option value="${i}" ${i === named ? 'selected' : ''}>${esc(d.name || 'Display ' + (i + 1))} · ${d.width} × ${d.height}${d.primary ? ' (main)' : ''}</option>`;
+  const sel = named >= 0 ? named : list.findIndex(d => d.primary);
+  const opt = (d, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(d.name || 'Display ' + (i + 1))} · ${d.width} × ${d.height}${d.primary ? ' (main)' : ''}</option>`;
+  const away = s.screenName && named < 0 ? ` <option value="" selected>${esc(s.screenName)} (unplugged: on the main display for now)</option>` : '';
+  const hint = s.mode === 'fullscreen' ? 'The display full screen covers.' : 'Or drag the board to another display. If that display is unplugged, the board waits on the main display and goes back when it returns.';
   return `<div class="lbl">Display</div>
-    <select class="field" style="justify-self:start; width:280px" data-field="screen">
-      <option value="" ${s.screenName && named >= 0 ? '' : 'selected'}>Main display</option>${list.map(opt).join('')}</select>`;
+    <div style="display:flex; flex-direction:column; gap:6px; align-items:flex-start"><select class="field" style="width:280px" data-field="screen">${away}${list.map(opt).join('')}</select>
+    <span class="hint">${hint}</span></div>`;
 }
 const loadScreens = () => RB.invoke('list_screens').then(l => { L.screens = l; render(true); });
 // Board size: the presets, or a custom size (validated here and in the backend).
@@ -1020,7 +1025,7 @@ root.addEventListener('change', e => {
   else if (f === 'hideSec') save({ hideSec: +v });
   else if (f === 'screen') {
     const d = v === '' ? null : L.screens[+v];
-    save(d ? { screenName: d.name, screenPos: { x: d.x, y: d.y } } : { screenName: '', screenPos: { x: 0, y: 0 } });
+    if (d) save({ screenName: d.name, screenPos: { x: d.x, y: d.y } });
   }
   else if (f === 'rows' || f === 'cols') {
     const [lo, hi] = f === 'rows' ? [2, 12] : [8, 40], n = Math.round(+v);
