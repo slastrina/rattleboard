@@ -4,7 +4,7 @@ members = ["src-tauri", "crates/rattleboard-core", "crates/rattleboard-web"]
 default-members = ["src-tauri", "crates/rattleboard-core", "crates/rattleboard-web"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Rattleboard contributors"]
 license = "MIT"
 repository = "https://github.com/slastrina/rattleboard"
