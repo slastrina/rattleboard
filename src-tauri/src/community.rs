@@ -3,7 +3,7 @@
 //! day; installing fetches the plugin's manifest, checks it as a plugin link would be, and the
 //! panel then installs it with import_plugin after asking.
 
-use super::{link_manifest, profile_dir, sources_ctx, AppState};
+use super::{link_json, link_manifest, profile_dir, sources_ctx, AppState};
 use rattleboard_core::community::{self, Cache, Entry, Index};
 use rattleboard_core::now_ms;
 use serde_json::{json, Map, Value};
@@ -141,7 +141,17 @@ pub async fn community_manifest(app: AppHandle, id: String) -> Result<Value, Str
         return Err(format!("This plugin needs Rattleboard {v} or later"));
     }
     let body = community::get(http(), &e.manifest_url, base().as_deref(), rattleboard_core::plugins::MAX_MANIFEST).await?;
-    let mut v = link_manifest(&body)?;
+    let mut raw = link_json(&body)?;
+    // A script plugin's code is the script file in the plugin's folder, from the same repository.
+    if let Some(file) = rattleboard_core::script::file_to_fetch(&raw) {
+        let url = rattleboard_core::script::script_url(&e.manifest_url, &file)?;
+        if !community::is_allowed(&url) {
+            return Err("That plugin's script isn't in the community repository".into());
+        }
+        let code = community::get(http(), &url, base().as_deref(), rattleboard_core::script::MAX_SCRIPT).await?;
+        rattleboard_core::script::inline(&mut raw, &code)?;
+    }
+    let mut v = link_manifest(raw)?;
     if v["id"] != e.id.as_str() {
         return Err("That plugin's manifest doesn't match its directory entry".into());
     }

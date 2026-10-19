@@ -860,18 +860,37 @@ async fn read_plugin_link(app: AppHandle, link: String) -> Result<Value, String>
     }
     let e = app.state::<AppState>().sources.clone();
     let body = plugins::fetch(&e.http, "GET", &target, &[]).await?;
-    link_manifest(&body)
+    let mut v = link_json(&body)?;
+    // A script plugin's code sits next to its manifest.
+    if let Some(file) = rattleboard_core::script::file_to_fetch(&v) {
+        let url = rattleboard_core::script::script_url(&target, &file)?;
+        let code = plugins::fetch(&e.http, "GET", &url, &[]).await.map_err(|err| format!("Couldn't fetch the plugin's script ({file}): {err}"))?;
+        rattleboard_core::script::inline(&mut v, &code)?;
+    }
+    link_manifest(v)
+}
+
+fn link_json(body: &[u8]) -> Result<Value, String> {
+    serde_json::from_slice(body).map_err(|_| "That address doesn't hold a plugin manifest".to_string())
 }
 
 /// A manifest fetched from a link (or the community directory), checked and described for the
-/// confirm step. Command plugins are refused.
-fn link_manifest(body: &[u8]) -> Result<Value, String> {
-    let v: Value = serde_json::from_slice(body).map_err(|_| "That address doesn't hold a plugin manifest".to_string())?;
+/// confirm step: a script plugin's hosts are shown before it's installed. Command plugins are
+/// refused.
+fn link_manifest(v: Value) -> Result<Value, String> {
     let m = plugins::parse(&v, false)?;
     if m.kind == "command" {
         return Err("Command plugins can't be installed from a link. If you trust it, download the file and use Import.".into());
     }
-    Ok(json!({ "id": m.id, "manifest": v, "name": m.name, "kind": m.kind, "description": m.description, "url": m.fetch.map(|f| f.url) }))
+    let hosts = m.script.as_ref().map(|s| s.hosts.clone());
+    Ok(json!({ "id": m.id, "manifest": v, "name": m.name, "kind": m.kind, "description": m.description, "url": m.fetch.map(|f| f.url), "hosts": hosts }))
+}
+
+/// Import from a file: a script plugin is described first (its hosts), so Settings can ask
+/// before installing it, as for a link.
+#[tauri::command]
+fn describe_plugin(manifest: Value) -> Result<Value, String> {
+    link_manifest(manifest)
 }
 
 #[tauri::command]
@@ -2689,6 +2708,7 @@ pub fn run() {
             add_source,
             import_plugin,
             read_plugin_link,
+            describe_plugin,
             community::community_index,
             community::community_detail,
             community::community_manifest,

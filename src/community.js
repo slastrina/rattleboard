@@ -11,7 +11,7 @@ const cmEntry = id => (CM.data ? CM.data.plugins.find(p => p.id === id) : null);
 const cmA = (act, v, text, title) => `<a href="#" data-act="${act}" data-v="${esc(v)}" ${title ? `title="${esc(title)}"` : ''} style="color:${RB.ACC}; text-decoration:none">${esc(text)}</a>`;
 const cmBadge = (text, bg, fg) => `<span style="font-size:10.5px; font-weight:600; padding:1px 7px; border-radius:8px; background:${bg}; color:${fg}; white-space:nowrap">${esc(text)}</span>`;
 const cmState = p => (p.update ? cmBadge('Update available', '#fff1cc', '#8a5a00') : p.installed ? cmBadge('Installed', '#e2f3e7', '#2f8a4c') : '');
-const cmKey = p => (p.needsApp ? cmBadge(`Needs Rattleboard ${p.needsApp} or later`, '#fdecea', '#a8321f') : '') + (p.needsSecrets ? cmBadge('Needs a key', '#eef0f3', '#55575c') : '');
+const cmKey = p => (p.needsApp ? cmBadge(`Needs Rattleboard ${p.needsApp} or later`, '#fdecea', '#a8321f') : '') + (p.kind === 'script' ? cmBadge('Script', '#efe8fb', '#5b3a9a') : '') + (p.needsSecrets ? cmBadge('Needs a key', '#eef0f3', '#55575c') : '');
 const cmBox = inner => `<div style="display:flex; flex-direction:column; border-radius:8px; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.1); overflow:hidden">${inner}</div>`;
 const cmSizeKey = id => { const z = RB.sizeOf(S.settings); return `${id}@${z.rows}x${z.cols}`; };
 
@@ -133,7 +133,8 @@ function viewCommunityDetail(p) {
       ${line('License', esc(p.license || 'MIT'))}
       ${line('Kind', esc(KINDS[p.kind] || p.kind))}
       ${line('Tags', p.tags.map(t => `<span class="chip" style="cursor:default; padding:1px 8px; font-size:11px">${esc(t)}</span>`).join(' '))}
-      ${line('Contacts', p.hosts.length ? p.hosts.map(h => `<span class="mono" style="font-size:11.5px">${esc(h)}</span>`).join(', ') : '<span class="hint">Nothing; it makes its card on this computer</span>')}
+      ${line(p.kind === 'script' ? 'Can reach' : 'Contacts', p.hosts.length ? p.hosts.map(h => `<span class="mono" style="font-size:11.5px">${esc(h)}</span>`).join(', ') : '<span class="hint">Nothing; it makes its card on this computer</span>')}
+      ${p.kind === 'script' ? line('Runs', '<span class="hint">A sandboxed script: it can only reach the addresses above, never your files or other apps</span>') : ''}
       ${line('Settings', fieldList(p.settings, 'None'))}
       ${line('Secrets', p.secrets.length ? fieldList(p.secrets, '') + ' <span class="hint">· kept in ' + esc(RB.keychain(S)) + '</span>' : '<span class="hint">None</span>')}
       ${p.homepage ? line('Homepage', `<span class="mono" style="font-size:11.5px; user-select:text">${esc(p.homepage.replace(/^https:\/\//, ''))}</span>`) : ''}

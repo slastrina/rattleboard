@@ -5,17 +5,18 @@ const SR = {
   data: null, sel: null, page: 0, preview: null, pseq: 0,
   picker: false, open: null, msg: null,
   revealed: {}, replacing: {}, drafts: {},
-  approve: null, countdown: null, link: '', linkConfirm: null, dragging: false, drop: false
+  approve: null, countdown: null, link: '', linkConfirm: null, fileConfirm: null, logOpen: {}, dragging: false, drop: false
 };
 const CHIP_NAMES = [['', 'Plugin colour'], ['red', 'Red'], ['orange', 'Orange'], ['yellow', 'Yellow'], ['green', 'Green'], ['blue', 'Blue'], ['violet', 'Violet'], ['white', 'White']];
 const CHIP_CODE = { red: 63, orange: 64, yellow: 65, green: 66, blue: 67, violet: 68, white: 69, black: 70 };
 const DWELLS = [[0, 'Plugin default'], [10, '10 s'], [20, '20 s'], [30, '30 s'], [60, '1 min'], [120, '2 min'], [300, '5 min'], [600, '10 min'], [900, '15 min'], [1800, '30 min']];
 const DAYS = [['mon', 'M'], ['tue', 'T'], ['wed', 'W'], ['thu', 'T'], ['fri', 'F'], ['sat', 'S'], ['sun', 'S']];
-const KINDS = { native: 'Built-in', rss: 'RSS', json: 'JSON', ical: 'Calendar', text: 'Text', command: 'Command' };
+const KINDS = { native: 'Built-in', rss: 'RSS', json: 'JSON', ical: 'Calendar', text: 'Text', command: 'Command', script: 'Script' };
 const PRESETS = [['nye', "New Year's Eve"], ['christmas', 'Christmas'], ['halloween', 'Halloween'], ['birthday', 'Birthday'], ['', 'Other date']];
 
 // Outside #root, so a re-render while the file dialog is open doesn't lose its answer.
-const srcFile = Object.assign(document.createElement('input'), { type: 'file', accept: '.json,application/json', multiple: true });
+// A script plugin is its manifest and its .js file, chosen (or dropped) together.
+const srcFile = Object.assign(document.createElement('input'), { type: 'file', accept: '.json,.js,application/json,text/javascript', multiple: true });
 srcFile.style.display = 'none';
 document.body.appendChild(srcFile);
 srcFile.addEventListener('change', () => { importFiles(srcFile.files); srcFile.value = ''; });
@@ -208,8 +209,9 @@ function viewSources() {
         <button class="btn" data-act="srcPicker">${SR.picker ? 'Close' : 'Add source…'}</button>
         <button class="btn" data-act="srcImport">Import…</button>
         <button class="btn" data-act="cmOpen" title="Browse plugins other people made">Community plugins</button>
-        <span class="hint">Or drop a .rattleboard-plugin.json file here</span>
+        <span class="hint">Or drop plugin files here</span>
       </div>
+      ${SR.fileConfirm ? linkConfirmBox(SR.fileConfirm, 'srcFileYes', 'srcFileNo') : ''}
       ${SR.msg ? `<div style="font-size:12px; color:${SR.msg.ok ? '#2f8a4c' : '#c0392b'}; text-wrap:pretty">${esc(SR.msg.text)}</div>` : ''}
       ${SR.picker ? picker() : ''}
     </div>
@@ -292,7 +294,7 @@ function secretRow(x, s) {
 
 function editor(x, p) {
   if (!p) return `<div style="padding:0 14px 12px" class="hint">Its plugin (${esc(x.plugin)}) was removed.</div>`;
-  const countdown = p.id === 'rattleboard.countdown', feed = p.kind === 'rss' || p.kind === 'json';
+  const countdown = p.id === 'rattleboard.countdown', feed = p.kind === 'rss' || p.kind === 'json' || p.kind === 'script';
   const specs = (p.settings || []).filter(s => !countdown || !['preset', 'title', 'date', 'time', 'yearly'].includes(s.key));
   const sch = x.schedule || { days: [], from: null, to: null }, timed = !!(x.schedule && (x.schedule.days.length || x.schedule.from));
   const dwells = DWELLS.some(dw => dw[0] === x.dwell) ? DWELLS : [...DWELLS, [x.dwell, fmtDur(x.dwell)]];
@@ -324,6 +326,7 @@ function editor(x, p) {
       <div class="lbl">Alert on</div><div style="display:flex; align-items:center; gap:10px"><input class="field" style="width:240px" value="${esc((x.alertWords || []).join(', '))}" data-src-words="alertWords" placeholder="e.g. outage, launch"><span class="hint">Interrupts, then goes back</span></div>` : ''}
     ${p.kind === 'command' ? `<div class="lbl">Program</div><div style="display:flex; align-items:center; gap:10px; min-width:0"><span class="mono" style="font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${esc([p.run.path, ...(p.run.args || [])].join(' '))}</span>
       ${p.approved ? `<span class="hint" style="color:#2f8a4c">Approved</span><button class="btn" data-act="srcRevoke" data-v="${esc(p.id)}">Revoke</button>` : `<button class="btn" data-act="srcApprove" data-v="${esc(p.id)}">Review and allow…</button>`}</div>` : ''}
+    ${p.kind === 'script' ? scriptRows(x, p) : ''}
     <div></div>
     <div style="display:flex; gap:6px; margin-top:4px">
       <button class="btn" data-act="srcPreviewNow" data-v="${esc(x.id)}" ${SR.refreshing === x.id ? 'disabled' : ''}>${SR.refreshing === x.id ? 'Refreshing…' : 'Refresh preview'}</button>
@@ -332,6 +335,19 @@ function editor(x, p) {
       <button class="btn" style="color:#c0392b" data-act="srcRemove" data-v="${esc(x.id)}">Remove</button>
     </div>
   </div>`;
+}
+
+// A script source: where it may fetch from, and how its last run went.
+function scriptRows(x, p) {
+  const hosts = p.hosts || [], r = x.run;
+  const last = r ? `${clock(r.at)} · ${r.ms < 1000 ? r.ms + ' ms' : (r.ms / 1000).toFixed(1) + ' s'}${r.errorKind ? ` · <span style="color:#c0392b">${esc(x.error || r.errorKind)}</span>` : ' · <span style="color:#2f8a4c">OK</span>'}` : '<span class="hint">Not run yet</span>';
+  const open = SR.logOpen[x.id];
+  const log = r && r.log && r.log.length
+    ? `<a href="#" data-act="srcLog" data-v="${esc(x.id)}" style="color:${RB.ACC}; text-decoration:none">${open ? 'Hide' : 'Show'} its log (${r.log.length} line${r.log.length === 1 ? '' : 's'})</a>
+       ${open ? `<pre class="mono" style="font-size:11px; background:rgba(0,0,0,.05); padding:8px 10px; border-radius:6px; margin:4px 0 0; white-space:pre-wrap; max-height:160px; overflow:auto; user-select:text; -webkit-user-select:text">${esc(r.log.join('\n'))}</pre>` : ''}`
+    : '';
+  return `<div class="lbl">Can reach</div><div style="min-width:0; overflow-wrap:anywhere">${hosts.length ? hosts.map(h => `<span class="mono" style="font-size:11.5px">${esc(h)}</span>`).join(', ') : '<span class="hint">Nothing: it makes its card on this computer</span>'}</div>
+    <div class="lbl" style="align-self:start">Last run</div><div style="display:flex; flex-direction:column; gap:2px; min-width:0">${last}${log}</div>`;
 }
 
 // The countdown's own form: a preset, or a name and a date, and whether it comes round every year.
@@ -376,7 +392,7 @@ function picker() {
 // Asking before installing a plugin fetched from a link (or from Community plugins).
 function linkConfirmBox(c, yes, no, verb = 'Install') {
   return `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:#fff; border-radius:8px; padding:10px 14px; box-shadow:0 0 0 1px rgba(0,0,0,.1)">
-      <span style="flex:1; min-width:0">${verb} <b style="font-weight:600">${esc(c.name)}</b> (${esc(KINDS[c.kind] || c.kind)})${c.url ? ` from <span class="mono" style="font-size:11.5px">${esc(String(c.url).replace(/^https?:\/\//, '').split('/')[0])}</span>` : ''}?${c.description ? ` <span class="hint">${esc(c.description)}</span>` : ''}</span>
+      <span style="flex:1; min-width:0">${verb} <b style="font-weight:600">${esc(c.name)}</b> (${esc(KINDS[c.kind] || c.kind)})${c.url ? ` from <span class="mono" style="font-size:11.5px">${esc(String(c.url).replace(/^https?:\/\//, '').split('/')[0])}</span>` : ''}?${c.description ? ` <span class="hint">${esc(c.description)}</span>` : ''}${c.hosts ? `<br><span class="hint">${c.hosts.length ? 'It runs a sandboxed script that can reach only ' + c.hosts.map(h => `<span class="mono" style="font-size:11.5px">${esc(h)}</span>`).join(', ') + '.' : 'It runs a sandboxed script that never uses the network.'}</span>` : ''}</span>
       <button class="btn" data-act="${yes}">${verb}</button><button class="btn" data-act="${no}">Cancel</button></div>`;
 }
 
@@ -479,12 +495,30 @@ function importText(text, from) {
     })
     .catch(e => flash(e));
 }
+// Plugin files: manifests (.json), and a script plugin's .js next to its manifest.
 function importFiles(files) {
-  [...files].slice(0, 5).forEach(f => {
-    if (f.size > 256 * 1024) return flash(`${f.name} is too large to be a plugin`);
-    const r = new FileReader();
-    r.onload = () => importText(String(r.result), f.name);
-    r.readAsText(f);
+  const list = [...files].slice(0, 10);
+  const big = list.find(f => f.size > 256 * 1024);
+  if (big) return flash(`${big.name} is too large to be a plugin`);
+  const read = f => new Promise(ok => { const r = new FileReader(); r.onload = () => ok([f.name, String(r.result)]); r.onerror = () => ok([f.name, '']); r.readAsText(f); });
+  Promise.all(list.map(read)).then(all => {
+    const scripts = Object.fromEntries(all.filter(([n]) => /\.js$/i.test(n)));
+    const manifests = all.filter(([n]) => !/\.js$/i.test(n));
+    if (!manifests.length) return flash("Choose the plugin's .rattleboard-plugin.json file too, with its script");
+    manifests.slice(0, 5).forEach(([name, text]) => {
+      let v;
+      try { v = JSON.parse(text); } catch (e) { return flash(`${name} isn't a plugin file (it isn't JSON)`); }
+      if (v && v.kind === 'script') {
+        if (v.scriptInline == null && v.script) {
+          const code = scripts[v.script];
+          if (code == null) return flash(`${v.name || name} is a script plugin: choose (or drop) ${v.script} together with ${name}`);
+          v.scriptInline = code;
+        }
+        // Shown first, with the addresses it can reach, as for a link.
+        return RB.invoke('describe_plugin', { manifest: v }).then(c => { SR.fileConfirm = c; render(true); }).catch(e => flash(e));
+      }
+      importText(JSON.stringify(v), name);
+    });
   });
 }
 
@@ -515,6 +549,9 @@ RB.delegate(root, 'click', {
   srcPreviewNow: el => srcRefreshNow(el.dataset.v),
   srcPicker: () => { SR.picker = !SR.picker; SR.linkConfirm = null; render(true); },
   srcImport: () => srcFile.click(),
+  srcFileYes: () => { const c = SR.fileConfirm; SR.fileConfirm = null; if (c) importText(JSON.stringify(c.manifest), c.name); else render(true); },
+  srcFileNo: () => { SR.fileConfirm = null; render(true); },
+  srcLog: (el, e) => { e.preventDefault(); SR.logOpen[el.dataset.v] = !SR.logOpen[el.dataset.v]; render(true); },
   srcAdd: el => {
     const p = plugin(el.dataset.v); if (!p) return;
     if (p.id === 'rattleboard.countdown') { SR.countdown = { preset: 'birthday', title: '', date: '', time: '', yearly: true }; return render(true); }
