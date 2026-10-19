@@ -872,7 +872,7 @@ Each board can be renamed or removed. Removing it deletes its key from the crede
 
 ## Focus and Do Not Disturb
 
-**Settings → Behavior → While Focus is on** (Do Not Disturb on Windows and Linux) decides what a new message does while you don't want to be interrupted:
+**Settings → Behavior → While Do Not Disturb is on** (Windows and Linux) decides what a new message does while you don't want to be interrupted:
 
 - **Hold pop-ups** (the default): the board still changes, and a pinned widget shows each message as usual, but the pop-up stays hidden, the flaps make no sound, and the tray icon shows its dot. The tray menu says "Focus on — holding pop-ups". When the Focus ends, one pop-up shows the latest message with "3 messages while you were focused"; click that line for Message history.
 - **Mute sound only**: pops up as usual, without the flap sound.
@@ -882,7 +882,7 @@ Each board can be renamed or removed. Removing it deletes its key from the crede
 
 How Rattleboard knows:
 
-- **macOS 12 and later:** the Focus status API. macOS asks once whether Rattleboard may see your Focus status, and only reports a Focus whose **Share Focus Status** is on (System Settings → Focus → Focus Status). Apple also requires the app to be signed with its Communication Notifications entitlement. Builds without it don't ask, and Settings says so. On macOS 11, pop-ups always show.
+- **macOS:** not in the released app. macOS only shares Focus status with apps signed with Apple's Communication Notifications entitlement and a matching provisioning profile, which the Developer ID builds don't carry, so the setting is hidden on a Mac. (A build signed with that entitlement uses the Focus status API: macOS asks once, and only reports a Focus whose **Share Focus Status** is on.)
 - **Windows:** full-screen apps and games, presentation mode, quiet time, and Windows 11 Focus sessions, through documented APIs (`SHQueryUserNotificationState`, `FocusSessionManager`). Rattleboard's own full screen doesn't count. Windows may not report Do Not Disturb switched on by hand.
 - **Linux:** GNOME's Do Not Disturb (`org.gnome.desktop.notifications show-banners`) and KDE Plasma's (the notification server's `Inhibited` property). Other desktops don't report it.
 

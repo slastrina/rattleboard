@@ -153,6 +153,10 @@ function focusStatus() {
   return 'This desktop doesn\'t tell apps about Do Not Disturb (GNOME and KDE Plasma do), so pop-ups always show.';
 }
 
+// macOS only shares Focus status with apps signed with the Communication Notifications
+// entitlement; builds without it (and Macs before 12) hide the setting rather than offer one
+// that can't work.
+const focusAvailable = () => !(S.os === 'mac' && S.focus && ['noEntitlement', 'needsMacos12'].includes(S.focus.access) && S.focus.via !== 'fake');
 function focusRows() {
   const s = S.settings, mac = S.os === 'mac', off = s.focusMode === 'ignore';
   return `<div class="lbl">${mac ? 'While Focus is on' : 'While Do Not Disturb is on'}</div>
@@ -189,7 +193,7 @@ function viewSettings() {
       <div style="display:flex; align-items:center; gap:10px">${tog(s.pauseOnHover, 'pauseOnHover')}<span class="hint">Countdown waits while the pointer is over the board</span></div>
       <div class="lbl">Click to open links</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.clickLinks !== false, 'clickLinks')}<span class="hint">A card from a feed story or a page (marked ↗) opens it in your browser when you click the board, full screen too. Turn off for a kiosk.</span></div>
-      ${focusRows()}
+      ${focusAvailable() ? focusRows() : ''}
       <div class="lbl">Flip speed</div>
       <div style="display:flex; align-items:center; gap:10px">${range(0.5, 2, 0.1, s.speed, 'speed')}<span id="speedLabel" style="font-variant-numeric:tabular-nums">${speedLabel(s.speed)}</span></div>
       <div class="lbl">Flap sound</div>
