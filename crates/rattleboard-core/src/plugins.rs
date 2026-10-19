@@ -968,6 +968,23 @@ pub fn clean(s: &str) -> String {
     folded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// A script's text made board-ready without touching its layout: typographic punctuation made
+/// plain and accents folded, as `clean` does, but braces (colour codes like {r} and {63}),
+/// newlines and spacing are kept; other control characters become spaces.
+pub fn plain(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '‘' | '’' | '‚' | '′' | '`' | '´' => '\'',
+            '“' | '”' | '„' | '″' => '"',
+            '–' | '—' | '−' | '‐' | '‑' => '-',
+            '…' => '.',
+            '\n' => '\n',
+            c if c.is_control() => ' ',
+            c => fold_accent(c),
+        })
+        .collect()
+}
+
 /// The board has plain letters only: "é" shows as "E".
 fn fold_accent(c: char) -> char {
     const MAP: [(&str, char); 12] = [

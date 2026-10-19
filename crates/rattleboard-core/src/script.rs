@@ -455,7 +455,7 @@ impl Card {
             .pages
             .iter()
             .map(|p| match p {
-                Page::Text(t) => Face::Text { text: t.clone(), left, chip, pages: overflow.clamp(1, 3) },
+                Page::Text(t) => Face::Text { text: plugins::plain(t), left, chip, pages: overflow.clamp(1, 3) },
                 Page::Grid(g) => Face::Grid { grid: g.clone() },
             })
             .collect();
@@ -514,8 +514,8 @@ impl Output {
                             Some(id) => plugins::hash(&[id]),
                             None => plugins::hash(&[&i.title, &i.body]),
                         },
-                        title: i.title,
-                        body: i.body,
+                        title: plugins::plain(&i.title),
+                        body: plugins::plain(&i.body),
                         time: i.time,
                         link: i.link,
                         chip: color.flatten(),

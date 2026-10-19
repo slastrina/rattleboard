@@ -71,11 +71,12 @@ async fn main() {
     let now_arg = arg(&args, "--now");
     let now = now_arg.map(|t| chrono::DateTime::parse_from_rfc3339(&t).expect("--now").timestamp_millis()).unwrap_or_else(rattleboard_core::now_ms);
     let local = rattleboard_core::plugins::local_of(now);
-    if manifest["kind"] == "script" && !run_script(&e, &inst, &manifest, settings.as_ref(), &secrets, arg(&args, "--mock"), now, local).await {
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::process::exit(1);
-    }
     for (rows, cols, name) in [(6, 22, "Standard"), (3, 15, "Compact"), (8, 30, "Large")] {
+        // A script is run for each size, as each board would run it (ctx.board).
+        if manifest["kind"] == "script" && !run_script(&e, &inst, &manifest, settings.as_ref(), &secrets, arg(&args, "--mock"), now, local, (rows, cols)).await {
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::process::exit(1);
+        }
         let ctx = Ctx { now, local, paused: None, dims: (rows, cols) };
         let (pages, reason) = e.preview(&inst, &ctx, false, false).await.expect("preview");
         println!("{name} {rows}x{cols} ({reason}):");
@@ -97,10 +98,10 @@ async fn main() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// Runs a script plugin once at Standard size (for real, or against --mock answers), prints its
-/// log and timing, and hands the engine its result so the previews below show it.
+/// Runs a script plugin once at a board size (for real, or against --mock answers), prints its
+/// log and timing, and hands the engine its result so the preview shows it.
 #[allow(clippy::too_many_arguments)]
-async fn run_script(e: &Engine, inst: &str, manifest: &Value, settings: Option<&Value>, secrets: &serde_json::Map<String, Value>, mock: Option<String>, now: i64, local: chrono::NaiveDateTime) -> bool {
+async fn run_script(e: &Engine, inst: &str, manifest: &Value, settings: Option<&Value>, secrets: &serde_json::Map<String, Value>, mock: Option<String>, now: i64, local: chrono::NaiveDateTime, (rows, cols): (usize, usize)) -> bool {
     let m = rattleboard_core::plugins::parse(manifest, false).expect("manifest");
     let spec = m.script.clone().expect("script");
     let mut values: serde_json::Map<String, Value> = m.settings.iter().map(|s| (s.key.clone(), s.default.clone())).collect();
@@ -112,8 +113,8 @@ async fn run_script(e: &Engine, inst: &str, manifest: &Value, settings: Option<&
         now,
         local: local.format("%Y-%m-%dT%H:%M:%S").to_string(),
         utc_offset: (local - utc).num_minutes(),
-        rows: 6,
-        cols: 22,
+        rows,
+        cols,
         name: m.name.clone(),
         settings: values,
         declared: m.secrets.iter().map(|s| s.key.clone()).collect(),

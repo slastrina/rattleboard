@@ -618,7 +618,7 @@ The same tools are served over HTTP at `POST /mcp` on the API server and on [Rat
 When nothing else is going on, Rattleboard can run a **rotation** of sources: each takes its turn on the board, then the next comes round. Set it up in **Settings → Sources**.
 
 - **Built in:** a clock, countdowns, the weather, RSS and Atom feeds, a calendar (iCal address), any JSON API, a message of the day and a quote of the day. See [Built-in sources](#built-in-sources).
-- **Plugins:** a `.rattleboard-plugin.json` file adds a source of your own: a feed, a JSON API, a text card, or (on this computer, once you allow it) a program's output. See [Plugin manifests](#plugin-manifests).
+- **Plugins:** a `.rattleboard-plugin.json` file adds a source of your own: a feed, a JSON API, a text card, a sandboxed script, or (on this computer, once you allow it) a program's output. See [Plugin manifests](#plugin-manifests).
 - **Community plugins:** browse plugins other people made, from the [rattleboard-plugins](https://github.com/slastrina/rattleboard-plugins) repository, and install one in two clicks. See [Community plugins](#community-plugins).
 - Everything runs on this computer. There's no cloud service, and nothing is sent anywhere but the sources' own addresses.
 
@@ -709,7 +709,7 @@ A plugin is one JSON file, `*.rattleboard-plugin.json`:
 | `format` | `1` |
 | `id` | 3–100 letters, digits, dots, dashes or underscores, like `com.example.news`. Installing a manifest with the same id updates it. `rattleboard.` is kept for the built-ins. |
 | `name`, `description` | Shown in Settings → Sources |
-| `kind` | `rss` (RSS and Atom), `json`, `ical`, `text`, or `command` (this computer only) |
+| `kind` | `rss` (RSS and Atom), `json`, `ical`, `text`, `script` (since 0.8.0, see [Script plugins](#script-plugins)) or `command` (this computer only) |
 | `fetch` | `url`, optional `method` (`GET` or `POST`) and `headers`, `every` (at least `1m`, default `15m`), and since 0.7.0 `sign` (`{"type": "hmac-sha1", "key": "{{secret.key}}"}`: an HMAC of the path and query added as `&signature=`, as PTV's API wants). For `rss`, `json` and `ical`. The address must be `https://`, or `http://` to a host on your own network (a private IP address, `localhost`, `*.local`, `*.lan`, `*.home.arpa` or a single-word name). Each fetch has 10 s, and the answer may be up to 2 MB. |
 | `pick` | For `json`: JSONPath for `items` (optional: without it the whole document is one card), and for each item's `id`, `title`, `body`, `time` and (since 0.7.0) `link`, its web address. The supported subset is `$`, `.key`, `['key']`, `[n]` and `[*]`. RSS, Atom and iCal need no `pick`. Since 0.7.0 also `fields` (more values, as `{{field.name}}`), `where` (conditions like `{"path": "$.alt", "op": ">", "value": 300}`), `sort` (`{"path": "$.alt", "order": "asc"}`) and `as: "status"` (the list as one card, with `card.row` for `{{rows}}` and `card.empty`). See the community repository's [contributor guide](https://github.com/slastrina/rattleboard-plugins/blob/main/CONTRIBUTING.md#lists-filter-sort-and-status-cards-070-and-later). |
 | `card` | `template` (laid out over the whole board with the standard text layout; colour codes like `{r}` or `{63}` work), `chip` (a colour: red, orange, yellow, green, blue, violet, white or black), `align` (`center` or `left`) and `pages` (1–3: long text continues on more cards rather than being cut; words are never split). Without a template, the card has the source's name and the time across the top and the item below. |
@@ -740,6 +740,32 @@ Unknown fields are ignored, so a newer manifest still loads; anything invalid is
 - **`rss`, `json`, `ical`** fetch `fetch.url`. Feed items (RSS, or JSON with an items path) show once each; a JSON value without items, and a calendar's next event, show as they are now.
 - **`text`** fetches nothing: its card is its template, re-drawn every `every` (at least `10s`), for example `"{{now:dddd}}\nTAKE THE BINS OUT"`.
 - **`command`** runs a program on this computer and puts what it prints on the board: plain text, or JSON `{"text": "…", "priority": "alert", "id": "…"}` or `{"characters": [[…]]}`. There's no shell; it gets no input, and only the first 64 KB of its output is read. It's stopped at its timeout. **It never runs until you allow it here**: Settings shows the full path and arguments first, and changing the file in any way needs allowing again. Importing a command plugin never turns it on, and the API and plugin links refuse command plugins.
+
+### Script plugins
+
+Since 0.8.0 a plugin can be a small JavaScript module (`"kind": "script"`) for cards a feed and a template can't make: combining requests, working things out, colours that depend on the data, or a layout drawn tile by tile. It runs the same on the desktop and Rattleboard Web (and later the phone and TV apps).
+
+```json
+{ "format": 1, "id": "com.example.joke", "name": "Dad joke", "kind": "script", "script": "script.js",
+  "hosts": ["icanhazdadjoke.com"], "every": "1h", "card": { "chip": "orange", "pages": 3 } }
+```
+
+```js
+export default async function (ctx) {
+  const r = await ctx.fetch("https://icanhazdadjoke.com/", { headers: { Accept: "application/json" } });
+  const j = await r.json();
+  return { text: j.joke, id: j.id };
+}
+```
+
+- **`hosts`** (required) lists every host the script may fetch from (`api.example.com`, or `*.example.com` for subdomains; `[]` for none). Rattleboard shows them before installing, and refuses any other address.
+- **`ctx`**: `settings`, `board` (`{rows, cols}`), `now` and `local` (the time; `Date` is frozen at it), `fetch(url, {method, headers, body})` → `{status, ok, headers, text(), json()}`, `secret("token")` (a stand-in Rattleboard fills in only in a fetch's URL or headers: the script never sees the value), `hasSecret`, `hmac(algo, key, data)`, `store` (16 KB of JSON kept between runs), and `log`.
+- **It returns** text (laid out like a template, with colour codes), a card (`{text}`, `{characters: [[…]]}` or `{pages: [...]}`, with `color`, `align`, `link`, `priority`, `id`, `dwell`), `{items: [...]}` (shown like a feed: each new item once), or `null`.
+- **The sandbox:** a fresh QuickJS runtime each run, 16 MB of memory, 250 ms of JavaScript (waiting for the network doesn't count), 15 s in all, at most 5 fetches of up to 2 MB, `https://` (or `http://` on your own network), no cookies. No `import`, `eval`, timers, files, environment or other plugins' data. Errors show in the source's settings and preview, with the last run's time and log.
+- `script` is the file next to the manifest: Import both files together (or drop both). A plugin link or the community directory fetches it from beside the manifest. A single-file plugin can carry its code in `"scriptInline"` instead.
+- Script plugins need no approval (unlike command plugins), and can be installed over the API. The 32-bit ARM image of Rattleboard Web doesn't run them; `/rattleboard/info` lists `"scripts"` in `features` where they run.
+
+The community repository's [contributor guide](https://github.com/slastrina/rattleboard-plugins/blob/main/CONTRIBUTING.md#script-plugins-080-and-later) has the whole API, the limits, six examples and how to test one with `plugin_card`.
 
 ### Sharing plugins
 
@@ -889,6 +915,7 @@ The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The desktop
 | `crates/rattleboard-core/src/send.rs` | Groups, and sending to several boards at once |
 | `crates/rattleboard-core/src/sources.rs` | The sources engine: rotation, priorities, calm rules, Up next |
 | `crates/rattleboard-core/src/plugins.rs` | Plugin manifests, placeholders, fetching, feed and calendar parsing, commands |
+| `crates/rattleboard-core/src/script.rs`, `script_prelude.js` | Script plugins: the QuickJS sandbox, its limits, fetch and secrets, checking results (tests in `tests/script_conformance.rs` run the shared vectors) |
 | `crates/rattleboard-core/src/builtins.rs` | Clock, countdowns, weather, message and quote of the day |
 | `crates/rattleboard-core/src/cards.rs` | Laying cards out for any board size |
 | `data/quotes.json` | The public-domain quotes, shared with the phone and TV apps |
