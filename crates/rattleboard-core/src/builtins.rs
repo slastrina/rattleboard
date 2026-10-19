@@ -531,7 +531,7 @@ mod tests {
                 out.push((format!("Clock · style {style} · colour {colour} · Sun 18 Oct 9:41 PM"), clock(&set(json!({"style": style, "colour": colour})), now, 0, false, Some(69), None)));
             }
         }
-        out.push(("Clock · style colour · 7:05 AM (hour 7: green bar, 2 tiles at :05 on 22 cols)".into(), clock(&set(json!({"style": "colour"})), at(2026, 10, 19, 7, 5), 0, false, Some(69), None)));
+        out.push(("Clock · style colour · 7:05 AM (hour 7: orange bar, 2 tiles at :05 on 22 cols)".into(), clock(&set(json!({"style": "colour"})), at(2026, 10, 19, 7, 5), 0, false, Some(69), None)));
         for (h, m, when) in [(6, 30, "dawn"), (12, 0, "day"), (18, 15, "dusk"), (23, 50, "night")] {
             out.push((format!("Clock · style daypart · {when} {h:02}:{m:02} (24-hour)"), clock(&set(json!({"style": "daypart"})), at(2026, 10, 19, h, m), 0, true, Some(69), None)));
         }
