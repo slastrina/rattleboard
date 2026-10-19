@@ -1,0 +1,25 @@
+{
+  "name": "throws",
+  "about": "An uncaught error fails the run with its message.",
+  "script": "export default () => { throw new Error('boom'); }",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "error": "exception",
+    "message": "The script failed: boom"
+  }
+}

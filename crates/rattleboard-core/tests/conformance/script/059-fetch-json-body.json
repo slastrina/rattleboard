@@ -1,0 +1,73 @@
+{
+  "name": "fetch-json-body",
+  "about": "An object body is sent as JSON with a content-type, unless one is given.",
+  "script": "export default async function (ctx) {\n  await ctx.fetch('https://api.example.com/a', { method: 'POST', body: { q: [1, 'two'] } });\n  await ctx.fetch('https://api.example.com/a', { method: 'put', headers: { 'Content-Type': 'text/plain' }, body: { q: 1 } });\n  return 'ok';\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "fetch": [
+    {
+      "method": "POST",
+      "url": "https://api.example.com/a",
+      "response": {
+        "status": 200,
+        "body": ""
+      }
+    },
+    {
+      "method": "PUT",
+      "url": "https://api.example.com/a",
+      "response": {
+        "status": 200,
+        "body": ""
+      }
+    }
+  ],
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "ok"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    },
+    "requests": [
+      {
+        "method": "POST",
+        "url": "https://api.example.com/a",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"q\":[1,\"two\"]}"
+      },
+      {
+        "method": "PUT",
+        "url": "https://api.example.com/a",
+        "headers": {
+          "content-type": "text/plain"
+        },
+        "body": "{\"q\":1}"
+      }
+    ]
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "name": "fetch-sixth",
+  "about": "At most 5 fetches per run; refused calls count too.",
+  "script": "export default async function (ctx) {\n  const out = [];\n  for (let i = 1; i <= 6; i++) {\n    try { await ctx.fetch('https://api.example.com/' + i); out.push(i); } catch (e) { out.push(e.code); }\n  }\n  return out.join(' ');\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "fetch": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/1",
+      "response": {
+        "status": 200,
+        "body": "x"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/2",
+      "response": {
+        "status": 200,
+        "body": "x"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/3",
+      "response": {
+        "status": 200,
+        "body": "x"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/4",
+      "response": {
+        "status": 200,
+        "body": "x"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/5",
+      "response": {
+        "status": 200,
+        "body": "x"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/6",
+      "response": {
+        "status": 200,
+        "body": "x"
+      }
+    }
+  ],
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "1 2 3 4 5 too_many_fetches"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    },
+    "requests": [
+      {
+        "method": "GET",
+        "url": "https://api.example.com/1",
+        "headers": {},
+        "body": null
+      },
+      {
+        "method": "GET",
+        "url": "https://api.example.com/2",
+        "headers": {},
+        "body": null
+      },
+      {
+        "method": "GET",
+        "url": "https://api.example.com/3",
+        "headers": {},
+        "body": null
+      },
+      {
+        "method": "GET",
+        "url": "https://api.example.com/4",
+        "headers": {},
+        "body": null
+      },
+      {
+        "method": "GET",
+        "url": "https://api.example.com/5",
+        "headers": {},
+        "body": null
+      }
+    ]
+  }
+}

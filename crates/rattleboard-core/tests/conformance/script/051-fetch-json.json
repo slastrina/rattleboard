@@ -1,0 +1,58 @@
+{
+  "name": "fetch-json",
+  "about": "A response: status, ok, url, lower-case headers, text() and json().",
+  "script": "export default async function (ctx) {\n  const r = await ctx.fetch('https://api.example.com/v1/now');\n  const j = await r.json();\n  return [r.status, r.ok, r.url, r.headers['content-type'], j.value, typeof r.text].join(' ');\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "fetch": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/v1/now",
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"value\": 12.5}"
+      }
+    }
+  ],
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "200 true https://api.example.com/v1/now application/json 12.5 function"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    },
+    "requests": [
+      {
+        "method": "GET",
+        "url": "https://api.example.com/v1/now",
+        "headers": {},
+        "body": null
+      }
+    ]
+  }
+}

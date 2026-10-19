@@ -1,0 +1,25 @@
+{
+  "name": "items-too-many",
+  "about": "At most 50 items.",
+  "script": "export default () => ({ items: Array.from({ length: 51 }, (_, i) => ({ title: 'T' + i })) })",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "error": "result",
+    "message": "The script's result isn't valid: items must be a list of at most 50"
+  }
+}

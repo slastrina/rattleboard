@@ -1,0 +1,30 @@
+{
+  "name": "log-lines",
+  "about": "console.log and ctx.log both log; non-strings are written as JSON.",
+  "script": "export default async function (ctx) {\n  console.log('a', 1, { b: true });\n  ctx.log('second');\n  return null;\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "none"
+    },
+    "log": [
+      "a 1 {\"b\":true}",
+      "second"
+    ]
+  }
+}

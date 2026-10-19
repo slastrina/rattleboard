@@ -1,0 +1,38 @@
+{
+  "name": "fetch-bad-requests",
+  "about": "Methods, headers and bodies the host refuses.",
+  "script": "export default async function (ctx) {\n  const out = [];\n  const tries = [\n    ['https://api.example.com/', { method: 'TRACE' }],\n    ['https://api.example.com/', { headers: { Cookie: 'a=b' } }],\n    ['https://api.example.com/', { headers: { 'User-Agent': 'me' } }],\n    ['https://api.example.com/', { body: 'x' }],\n    ['https://api.example.com/', { method: 'POST', body: 'x'.repeat(65537) }],\n    ['https://api.example.com/', 'nope'],\n  ];\n  for (const [u, init] of tries) {\n    try { await ctx.fetch(u, init); out.push('sent'); } catch (e) { out.push(e.code + ': ' + e.message); }\n  }\n  return out.join('\\n');\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "bad_request: Method TRACE isn't allowed; use GET, POST, PUT, PATCH, DELETE or HEAD\nbad_request: Header Cookie isn't allowed\nbad_request: Header User-Agent isn't allowed\nbad_request: A GET request has no body\nbad_request: The body is larger than 64 KB\nbad_request: fetch(url, init): init must be an object"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    },
+    "requests": []
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "result-card-fields",
+  "about": "Every card field, as the canonical form writes it.",
+  "script": "export default async function (ctx) {\n  return { text: 'Open', color: 'Green', align: 'left', link: 'https://example.com/a b', priority: 'alert', id: 42, dwell: 45 };\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "Open"
+        }
+      ],
+      "color": "green",
+      "align": "left",
+      "link": "https://example.com/a%20b",
+      "priority": "alert",
+      "id": "42",
+      "dwell": 45
+    }
+  }
+}

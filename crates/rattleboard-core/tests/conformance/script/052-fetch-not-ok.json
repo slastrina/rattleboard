@@ -1,0 +1,47 @@
+{
+  "name": "fetch-not-ok",
+  "about": "An HTTP error status is an answer, not a rejection.",
+  "script": "export default async function (ctx) {\n  const r = await ctx.fetch('https://api.example.com/missing');\n  return r.status + ' ' + r.ok + ' ' + (await r.text());\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "fetch": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/missing",
+      "response": {
+        "status": 404,
+        "body": "nope"
+      }
+    }
+  ],
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "404 false nope"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    }
+  }
+}

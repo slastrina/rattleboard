@@ -452,6 +452,10 @@ fn features(ctx: &Ctx) -> Vec<&'static str> {
     let mut f = vec!["sequence", "strategy", "notify"];
     if ctx.board.sources().is_some() {
         f.push("sources");
+        // Script plugins run here (not on 32-bit ARM builds of Rattleboard Web).
+        if crate::script::SUPPORTED {
+            f.push("scripts");
+        }
     }
     f
 }
@@ -1179,7 +1183,7 @@ mod tests {
             assert_eq!(r.headers()["access-control-allow-origin"], "*");
         }
         let v: Value = key(c.get(format!("{base}/info"))).send().await.unwrap().json().await.unwrap();
-        assert_eq!(v["features"], json!(["sequence", "strategy", "notify", "sources"]));
+        assert_eq!(v["features"], json!(["sequence", "strategy", "notify", "sources", "scripts"]));
 
         let v: Value = key(c.get(url(""))).send().await.unwrap().json().await.unwrap();
         let ids: Vec<&str> = v["plugins"].as_array().unwrap().iter().filter_map(|p| p["id"].as_str()).collect();

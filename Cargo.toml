@@ -11,6 +11,11 @@ repository = "https://github.com/slastrina/rattleboard"
 edition = "2021"
 rust-version = "1.90"
 
+# QuickJS (script plugins) at full speed in debug builds too, so a script's 250 ms of
+# JavaScript means the same in development as in a release.
+[profile.dev.package.rquickjs-sys]
+opt-level = 3
+
 [profile.release]
 codegen-units = 1
 lto = true

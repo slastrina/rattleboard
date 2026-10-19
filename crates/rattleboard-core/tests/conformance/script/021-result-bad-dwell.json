@@ -1,0 +1,25 @@
+{
+  "name": "result-bad-dwell",
+  "about": "dwell is 10 s to 1 h.",
+  "script": "export default () => ({ text: 'x', dwell: 5 })",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "error": "result",
+    "message": "The script's result isn't valid: dwell must be from 10s to 1h (seconds, or like \"30s\")"
+  }
+}

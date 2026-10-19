@@ -1,0 +1,40 @@
+{
+  "name": "ctx-fields",
+  "about": "What a run is given; Date is frozen at ctx.now.",
+  "script": "export default async function (ctx) {\n  return [ctx.board.rows, ctx.board.cols, ctx.now, ctx.local, ctx.utcOffset, ctx.name, ctx.settings.city, ctx.settings.n, Date.now(), new Date().toISOString(), typeof Date(), new Date(0).getTime(), new Date(0) instanceof Date].join('|');\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 3,
+      "cols": 15
+    },
+    "name": "Lobby",
+    "settings": {
+      "city": "Melbourne",
+      "n": 5
+    },
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "3|15|1792363260000|2026-10-19T09:41:00|660|Lobby|Melbourne|5|1792363260000|2026-10-18T22:41:00.000Z|string|0|true"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    }
+  }
+}

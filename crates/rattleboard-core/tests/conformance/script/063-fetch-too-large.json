@@ -1,0 +1,46 @@
+{
+  "name": "fetch-too-large",
+  "about": "Answers over 2 MB reject with too_large.",
+  "script": "export default async function (ctx) {\n  try { await ctx.fetch('https://api.example.com/big'); } catch (e) { return e.code + ': ' + e.message; }\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "fetch": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/big",
+      "response": {
+        "fail": "too_large"
+      }
+    }
+  ],
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "too_large: The response is larger than 2 MB"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    }
+  }
+}

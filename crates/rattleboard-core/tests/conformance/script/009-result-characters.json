@@ -1,0 +1,65 @@
+{
+  "name": "result-characters",
+  "about": "characters are exact tiles, centred on the board.",
+  "script": "export default () => ({ characters: [[63,64,65],[8,9,0],[66,67,68]] })",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "characters": [
+            [
+              63,
+              64,
+              65
+            ],
+            [
+              8,
+              9,
+              0
+            ],
+            [
+              66,
+              67,
+              68
+            ]
+          ]
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    },
+    "render": {
+      "pages": [
+        [
+          "                      ",
+          "         roy          ",
+          "         HI           ",
+          "         gbv          ",
+          "                      ",
+          "                      "
+        ]
+      ]
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "syntax-error",
+  "about": "A script that doesn't parse.",
+  "script": "export default function ( {",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "error": "syntax"
+  }
+}

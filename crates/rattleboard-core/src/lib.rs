@@ -9,6 +9,7 @@ pub mod cards;
 pub mod community;
 pub mod mcp;
 pub mod plugins;
+pub mod script;
 pub mod secrets;
 pub mod send;
 pub mod sequence;

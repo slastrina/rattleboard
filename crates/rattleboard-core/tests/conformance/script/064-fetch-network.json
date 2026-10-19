@@ -1,0 +1,38 @@
+{
+  "name": "fetch-network",
+  "about": "A network failure rejects with network (the message may differ by platform).",
+  "script": "export default async function (ctx) {\n  try { await ctx.fetch('https://api.example.com/down'); } catch (e) { return e.name + ' ' + e.code; }\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "fetch": [],
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "FetchError network"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    }
+  }
+}

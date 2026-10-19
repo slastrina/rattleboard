@@ -1,0 +1,66 @@
+{
+  "name": "fetch-parallel",
+  "about": "Fetches made together wait together: the batch takes as long as its slowest (9 s of 15).",
+  "script": "export default async function (ctx) {\n  const rs = await Promise.all([1, 2, 3].map((i) => ctx.fetch('https://api.example.com/' + i)));\n  return (await Promise.all(rs.map((r) => r.text()))).join(' ');\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "fetch": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/1",
+      "response": {
+        "status": 200,
+        "body": "a",
+        "delayMs": 3000
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/2",
+      "response": {
+        "status": 200,
+        "body": "b",
+        "delayMs": 9000
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/3",
+      "response": {
+        "status": 200,
+        "body": "c",
+        "delayMs": 6000
+      }
+    }
+  ],
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "a b c"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    }
+  }
+}

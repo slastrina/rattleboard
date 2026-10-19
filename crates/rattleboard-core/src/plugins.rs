@@ -23,7 +23,7 @@ use serde_json::{json, Map, Value};
 use std::time::Duration;
 
 pub const FORMAT: u64 = 1;
-pub const USER_KINDS: [&str; 5] = ["rss", "json", "ical", "text", "command"];
+pub const USER_KINDS: [&str; 6] = ["rss", "json", "ical", "text", "command", "script"];
 pub const MAX_MANIFEST: usize = 64 * 1024;
 pub const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,6 +45,8 @@ pub struct Manifest {
     pub kind: String,
     pub fetch: Option<Fetch>,
     pub run: Option<Run>,
+    /// For `script`: the module's source and the hosts it may fetch from
+    pub script: Option<ScriptSpec>,
     pub pick: Pick,
     pub card: CardSpec,
     pub alert: bool,
@@ -82,6 +84,14 @@ pub struct Sign {
     pub key: String,
     pub param: String,
     pub upper: bool,
+}
+
+/// A script plugin's code (`scriptInline`, or `script` read from the file next to the
+/// manifest when it was installed) and its allow-list (`hosts`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptSpec {
+    pub source: String,
+    pub hosts: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -359,6 +369,40 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
         Some(Value::Object(f)) => Some(f),
         Some(_) => return Err("fetch must be an object".into()),
     };
+    let script = if kind == "script" {
+        if fetch_o.is_some() {
+            return Err("A script plugin fetches with ctx.fetch: \"fetch\" is for rss, json and ical plugins".into());
+        }
+        let hosts = crate::script::parse_hosts(o.get("hosts"))?;
+        match o.get("permissions") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(a)) => {
+                if let Some(p) = a.first() {
+                    return Err(format!("permissions: {p} isn't a permission this Rattleboard knows (none are defined yet)"));
+                }
+            }
+            Some(_) => return Err("permissions must be a list".into()),
+        }
+        let file = opt_str(o, "script", "script")?;
+        if let Some(f) = file {
+            crate::script::check_file_name(f)?;
+        }
+        let source = match opt_str(o, "scriptInline", "scriptInline")? {
+            Some(src) => src.to_string(),
+            None if file.is_some() => return Err(format!("The script file {} wasn't included: import the manifest together with its script, or put the code in scriptInline", file.unwrap_or_default())),
+            None => return Err("A script plugin needs its code: \"script\": \"script.js\" (a file next to the manifest) or \"scriptInline\"".into()),
+        };
+        if source.trim().is_empty() {
+            return Err("The script is empty".into());
+        }
+        if source.len() > crate::script::MAX_SCRIPT {
+            return Err("The script is larger than 64 KB".into());
+        }
+        Some(ScriptSpec { source, hosts })
+    } else {
+        None
+    };
+
     let fetch = match (http, fetch_o) {
         (false, _) => None,
         (true, None) => return Err(format!("A {kind} plugin needs fetch.url")),
@@ -436,6 +480,8 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
     let every_v = fetch_o.and_then(|f| f.get("every")).or_else(|| o.get("run").and_then(|r| r.get("every"))).or_else(|| o.get("every")).filter(|v| !v.is_null());
     let (min_every, def_every) = match kind.as_str() {
         "text" | "command" | "native" => (10, if kind == "command" { 300 } else { 60 }),
+        // A script that can't fetch may run as often as a text card.
+        "script" if script.as_ref().is_some_and(|s| s.hosts.is_empty()) => (10, 60),
         _ => (60, 900),
     };
     let every = match every_v {
@@ -443,9 +489,18 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
         Some(v) => duration(v)?,
     };
     if every < min_every || every > 7 * 86400 {
+        if kind == "script" {
+            return Err("every must be at least 1m for a script plugin that fetches (10s for one with no hosts)".into());
+        }
         return Err(format!("every must be at least {} for a {kind} plugin", if min_every == 60 { "1m" } else { "10s" }));
     }
 
+    if kind == "script" && o.get("pick").is_some_and(|p| !p.is_null()) {
+        return Err("pick is for json plugins: a script returns its own items".into());
+    }
+    if kind == "script" && o.get("card").and_then(|c| c.get("template")).is_some_and(|t| !t.is_null()) {
+        return Err("A script lays out its own card: card.template isn't used by script plugins".into());
+    }
     let mut pick = Pick::default();
     match o.get("pick") {
         None | Some(Value::Null) => {}
@@ -611,7 +666,7 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
     if (card.row.is_some() || card.empty.is_some()) && !pick.status {
         return Err("card.row and card.empty are for \"pick\": {\"as\": \"status\"}".into());
     }
-    Ok(Manifest { id, name, description, kind, fetch, run, pick, card, alert, alert_words, max_items, dwell, every, schedule, settings, secrets, builtin, raw: v.clone() })
+    Ok(Manifest { id, name, description, kind, fetch, run, script, pick, card, alert, alert_words, max_items, dwell, every, schedule, settings, secrets, builtin, raw: v.clone() })
 }
 
 fn parse_sign(g: &Map<String, Value>) -> Result<Sign, String> {
@@ -838,6 +893,9 @@ pub struct Item {
     /// Its web address, checked by `safe_link`: a feed entry's link, an event's URL, pick.link
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// A script plugin's card, as it returned it (pages, colour, alignment, dwell)
+    #[serde(skip)]
+    pub script: Option<crate::script::Card>,
 }
 
 /// A card's link, if it's one the board may open: an absolute http:// or https:// address with

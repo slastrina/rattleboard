@@ -1,0 +1,37 @@
+{
+  "name": "hmac-text-key",
+  "about": "ctx.hmac with a text key, sha256 and sha1, lower-case hex.",
+  "script": "export default async function (ctx) {\n  const d = 'The quick brown fox jumps over the lazy dog';\n  return ctx.hmac('sha256', 'key', d) + ' ' + ctx.hmac('SHA1', 'key', d);\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8 de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    }
+  }
+}

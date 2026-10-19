@@ -33,5 +33,9 @@ sha2 = "0.10"
 sha1 = "0.10"
 hmac = "0.12"
 
+# Script plugins: QuickJS. Not on 32-bit ARM musl (see build.rs).
+[target.'cfg(not(all(target_arch = "arm", target_env = "musl")))'.dependencies]
+rquickjs = { version = "0.14", features = ["allocator"] }
+
 [dev-dependencies]
 futures-util = { version = "0.3", default-features = false }

@@ -1,0 +1,37 @@
+{
+  "name": "no-globals",
+  "about": "No timers, no host objects, no shared memory.",
+  "script": "export default () => ['setTimeout','setInterval','fetch','require','process','eval','Atomics','SharedArrayBuffer','__rbHost','__rbInput','XMLHttpRequest','WebSocket'].map((n) => typeof globalThis[n]).join(' ')",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "undefined undefined undefined undefined undefined undefined undefined undefined undefined undefined undefined undefined"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    }
+  }
+}

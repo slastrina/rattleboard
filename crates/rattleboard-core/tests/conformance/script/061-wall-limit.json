@@ -1,0 +1,45 @@
+{
+  "name": "wall-limit",
+  "about": "15 s in all, waiting included: a second slow batch runs past it.",
+  "script": "export default async function (ctx) {\n  await ctx.fetch('https://api.example.com/1');\n  await ctx.fetch('https://api.example.com/2');\n  return 'never';\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "fetch": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/1",
+      "response": {
+        "status": 200,
+        "body": "",
+        "delayMs": 8000
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/2",
+      "response": {
+        "status": 200,
+        "body": "",
+        "delayMs": 8000
+      }
+    }
+  ],
+  "expect": {
+    "error": "wall",
+    "message": "The script took more than 15 s"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "result-text-too-long",
+  "about": "Card text is at most 4000 characters.",
+  "script": "export default () => 'x'.repeat(4001)",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "error": "result",
+    "message": "The script's result isn't valid: The text is longer than 4000 characters"
+  }
+}

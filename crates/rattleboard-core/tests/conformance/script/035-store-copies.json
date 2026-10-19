@@ -1,0 +1,42 @@
+{
+  "name": "store-copies",
+  "about": "store.get returns a copy.",
+  "script": "export default async function (ctx) {\n  ctx.store.set('a', { x: 1 });\n  ctx.store.get('a').x = 2;\n  return String(ctx.store.get('a').x);\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "1"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    },
+    "store": {
+      "a": {
+        "x": 1
+      }
+    }
+  }
+}

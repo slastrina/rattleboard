@@ -1,0 +1,25 @@
+{
+  "name": "result-two-kinds",
+  "about": "text and characters together are refused.",
+  "script": "export default () => ({ text: 'x', characters: [[1]] })",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "error": "result",
+    "message": "The script's result isn't valid: Use only one of text, characters and pages"
+  }
+}

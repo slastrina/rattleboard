@@ -25,6 +25,7 @@
 use crate::builtins;
 use crate::cards::Face;
 use crate::plugins::{self, Data, Item, Manifest, Schedule};
+use crate::script;
 use crate::secrets;
 use crate::vestaboard::Grid;
 use chrono::{NaiveDateTime, Timelike};
@@ -328,6 +329,9 @@ pub struct Card {
     /// Where clicking the board goes: the item's web address (see `plugins::safe_link`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// How long it stays up, when the card itself says (a script's "dwell"), in seconds
+    #[serde(skip)]
+    pub dwell: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -381,10 +385,34 @@ pub struct HttpJob {
     instance: String,
 }
 
+/// A script plugin's run, with its secrets still to look up.
+#[derive(Clone, Debug)]
+pub struct ScriptJob {
+    source: String,
+    hosts: Vec<String>,
+    name: String,
+    settings: Map<String, Value>,
+    secret_keys: Vec<String>,
+    instance: String,
+    dims: (usize, usize),
+}
+
+/// A script's last run, for Settings: when, how long, its log, and how it failed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunInfo {
+    pub at: i64,
+    pub ms: u64,
+    pub cpu_ms: u64,
+    pub log: Vec<String>,
+    pub error_kind: Option<String>,
+}
+
 /// What a fetch is for.
 #[derive(Clone, Debug)]
 pub enum Job {
     Http(Box<HttpJob>),
+    Script(Box<ScriptJob>),
     Command(plugins::Run),
     Weather(Map<String, Value>),
     Zones(Vec<String>),
@@ -402,6 +430,8 @@ struct Feed {
     queue: VecDeque<Item>,
     /// A burst of new items: how many, and the newest
     digest: Option<(usize, Item)>,
+    /// A script's last run
+    run: Option<RunInfo>,
 }
 
 /// Feed items already shown (or summed up in a digest), per instance; persisted.
@@ -524,6 +554,10 @@ struct Inner {
     status: Status,
     /// False on boards that never run command plugins (Rattleboard Web, like the phones)
     commands: bool,
+    /// Each script source's store (ctx.store), kept in script-store.json
+    stores: HashMap<String, Map<String, Value>>,
+    /// This board's size, as the rotation last saw it (a script's ctx.board)
+    dims: (usize, usize),
 }
 
 pub struct Paths {
@@ -545,6 +579,11 @@ pub struct Engine {
 
 const NO_COMMANDS: &str = "Command plugins don't run on this board";
 
+/// script-store.json, next to seen.json.
+fn store_path(paths: &Paths) -> Option<PathBuf> {
+    paths.seen.as_ref().map(|p| p.with_file_name("script-store.json"))
+}
+
 fn secret_account(instance: &str, key: &str) -> String {
     format!("source-{instance}-{key}")
 }
@@ -552,7 +591,7 @@ fn secret_account(instance: &str, key: &str) -> String {
 /// A feed has items to show once each (RSS, JSON with an items path); anything else is a
 /// status, shown as it is now.
 fn is_feed(p: &Manifest, data: Option<&Data>) -> bool {
-    p.kind == "rss" || (p.kind == "json" && data.is_some_and(|d| !d.single))
+    p.kind == "rss" || ((p.kind == "json" || p.kind == "script") && data.is_some_and(|d| !d.single))
 }
 
 impl Engine {
@@ -588,6 +627,8 @@ impl Engine {
                 next_requested: false,
                 status: Status::default(),
                 commands: true,
+                stores: store_path(&paths).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
+                dims: (6, 22),
             }),
             wake: Notify::new(),
             paths,
@@ -623,6 +664,12 @@ impl Engine {
             o.insert("rotation".into(), json!(i.config.rotation.iter().map(|x| x.to_json()).collect::<Vec<_>>()));
             o.insert("approvals".into(), json!(i.config.approvals));
             write(p, &Value::Object(o));
+        }
+    }
+
+    fn save_stores(&self, i: &Inner) {
+        if let Some(p) = store_path(&self.paths) {
+            write(&p, &json!(i.stores));
         }
     }
 
@@ -721,19 +768,24 @@ impl Engine {
             let i = self.inner.lock().unwrap();
             let plugins: Vec<Value> = i.plugins.iter().map(|p| Self::plugin_json(&i, p)).collect();
             let specs: HashMap<String, Vec<String>> = i.plugins.iter().map(|p| (p.id.clone(), p.secrets.iter().map(|s| s.key.clone()).collect())).collect();
-            let feeds: HashMap<String, (Option<String>, Option<i64>)> = i.feeds.iter().map(|(k, f)| (k.clone(), (f.error.clone(), f.fetched))).collect();
-            let rotation: Vec<(Instance, Option<String>, Option<i64>, String)> = i.config.rotation.iter().map(|x| {
-                let (e, f) = feeds.get(&x.id).cloned().unwrap_or_default();
+            type Fed = (Option<String>, Option<i64>, Option<RunInfo>);
+            let feeds: HashMap<String, Fed> = i.feeds.iter().map(|(k, f)| (k.clone(), (f.error.clone(), f.fetched, f.run.clone()))).collect();
+            #[allow(clippy::type_complexity)]
+            let rotation: Vec<(Instance, Option<String>, Option<i64>, String, Option<RunInfo>)> = i.config.rotation.iter().map(|x| {
+                let (e, f, r) = feeds.get(&x.id).cloned().unwrap_or_default();
                 let name = i.plugins.iter().find(|p| p.id == x.plugin).map(|p| label(x, p)).unwrap_or_else(|| x.name.clone());
-                (x.clone(), e, f, name)
+                (x.clone(), e, f, name, r)
             }).collect();
             (plugins, rotation, i.config.settings_json(), i.status.clone(), specs)
         };
         // Credential store reads happen with no lock held.
         let rotation: Vec<Value> = rotation
             .into_iter()
-            .map(|(x, error, fetched, name)| {
+            .map(|(x, error, fetched, name, run)| {
                 let mut v = x.to_json();
+                if let Some(r) = run {
+                    v["run"] = json!(r);
+                }
                 v["label"] = json!(name);
                 let secrets: Map<String, Value> = specs.get(&x.plugin).into_iter().flatten().map(|k| (k.clone(), json!({ "set": self.secret_set(&x.id, k) }))).collect();
                 v["secrets"] = Value::Object(secrets);
@@ -818,6 +870,9 @@ impl Engine {
                 i.seen.forget(&o.id);
                 i.wrr.remove(&o.id);
             }
+            if removed.iter().any(|(o, _)| i.stores.remove(&o.id).is_some()) {
+                self.save_stores(&i);
+            }
             // Settings changed: fetch again, and re-draw what's showing.
             for f in i.feeds.values_mut() {
                 f.next_at = 0;
@@ -866,6 +921,9 @@ impl Engine {
         if m.kind == "command" && remote {
             return Err(Refused(403, "Command plugins can only be installed at the board itself".into()));
         }
+        if m.kind == "script" && !script::SUPPORTED {
+            return Err(Refused(403, script::UNSUPPORTED.into()));
+        }
         {
             let mut i = self.inner.lock().unwrap();
             let existing = i.plugins.iter().position(|p| p.id == m.id);
@@ -910,6 +968,9 @@ impl Engine {
             for x in &removed {
                 i.feeds.remove(&x.id);
                 i.seen.forget(&x.id);
+            }
+            if removed.iter().any(|x| i.stores.remove(&x.id).is_some()) {
+                self.save_stores(&i);
             }
             if i.showing.as_ref().is_some_and(|s| removed.iter().any(|x| x.id == s.card.instance)) {
                 i.showing = None;
@@ -1037,7 +1098,7 @@ impl Engine {
             if !Self::approved(&i, &p) {
                 continue;
             }
-            let job = job_for(&x, &p);
+            let job = job_for(&x, &p, i.dims);
             let Some(job) = job else { continue };
             let f = i.feeds.entry(x.id.clone()).or_default();
             if f.busy || f.next_at > now {
@@ -1078,10 +1139,54 @@ impl Engine {
                     _ => plugins::parse_json(&body, &pick, max),
                 }
             }
+            Job::Script(job) => self.run_script(*job, local, now).await,
             Job::Command(run) => plugins::run_command(&run).await.map(|out| plugins::parse_output(&out)),
             Job::Weather(settings) => builtins::weather(&self.http, &settings).await,
             Job::Zones(cities) => builtins::zones(&self.http, &cities).await,
         }
+    }
+
+    /// Runs a script plugin in a blocking thread of its own (QuickJS isn't async), then keeps
+    /// its store (if it succeeded) and what Settings shows about the run.
+    async fn run_script(&self, job: ScriptJob, local: NaiveDateTime, now: i64) -> Result<Data, String> {
+        if !script::SUPPORTED {
+            return Err(script::UNSUPPORTED.into());
+        }
+        let ScriptJob { source, hosts, name, settings, secret_keys, instance, dims } = job;
+        let secrets: HashMap<String, String> = secret_keys.iter().map(|k| (k.clone(), self.secret(&instance, k))).collect();
+        let store = self.inner.lock().unwrap().stores.get(&instance).cloned().unwrap_or_default();
+        let utc = chrono::DateTime::from_timestamp_millis(now).map(|d| d.naive_utc()).unwrap_or(local);
+        let input = script::Input {
+            now,
+            local: local.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            utc_offset: ((local - utc).num_seconds() as f64 / 60.0).round() as i64,
+            rows: dims.0,
+            cols: dims.1,
+            name,
+            settings,
+            declared: secret_keys,
+            secrets,
+            store: store.clone(),
+            hosts,
+        };
+        let handle = tokio::runtime::Handle::current();
+        let out = tokio::task::spawn_blocking(move || script::run(&source, &input, &script::NetFetcher { handle }))
+            .await
+            .map_err(|_| "The script stopped unexpectedly".to_string())?;
+        {
+            let mut i = self.inner.lock().unwrap();
+            let info = RunInfo { at: now, ms: out.wall_ms, cpu_ms: out.cpu_ms, log: out.log.clone(), error_kind: out.result.as_ref().err().map(|e| e.kind.to_string()) };
+            i.feeds.entry(instance.clone()).or_default().run = Some(info);
+            if let Some(s) = out.store.filter(|s| *s != store) {
+                if s.is_empty() {
+                    i.stores.remove(&instance);
+                } else {
+                    i.stores.insert(instance.clone(), s);
+                }
+                self.save_stores(&i);
+            }
+        }
+        out.result.map(script::Output::into_data).map_err(|e| e.message)
     }
 
     /// A fetch's result: new feed items are queued (or summed up in a digest), alerts noted.
@@ -1182,7 +1287,7 @@ impl Engine {
     pub fn fetch_state(&self, instance: &str) -> (bool, Option<i64>) {
         let i = self.inner.lock().unwrap();
         let fetches = i.config.rotation.iter().find(|x| x.id == instance)
-            .and_then(|x| i.plugins.iter().find(|p| p.id == x.plugin).map(|p| job_for(x, p).is_some()))
+            .and_then(|x| i.plugins.iter().find(|p| p.id == x.plugin).map(|p| job_for(x, p, i.dims).is_some()))
             .unwrap_or(false);
         (fetches, i.feeds.get(instance).and_then(|f| f.fetched))
     }
@@ -1204,7 +1309,7 @@ impl Engine {
             let feed = i.feeds.get(instance);
             let has = feed.is_some_and(|f| f.data.is_some());
             let recent = feed.and_then(|f| f.fetched).is_some_and(|t| (ctx.now - t).abs() < REFRESH_FLOOR_MS);
-            let job = job_for(&x, &p);
+            let job = job_for(&x, &p, ctx.dims);
             (x, p, job, !has || (refresh && !recent))
         };
         if let (Some(job), true) = (job, fetch) {
@@ -1239,6 +1344,7 @@ impl Engine {
     pub fn tick(&self, ctx: &Ctx) -> Vec<Action> {
         let out = {
             let mut guard = self.inner.lock().unwrap();
+            guard.dims = ctx.dims;
             let out = tick(&mut guard, ctx);
             let i = &mut *guard;
             i.status = Status {
@@ -1295,9 +1401,20 @@ fn keep(x: &Instance, it: &Item) -> bool {
     (x.include.is_empty() || mentions(it, x.include.iter())) && !mentions(it, x.exclude.iter())
 }
 
-fn job_for(x: &Instance, p: &Manifest) -> Option<Job> {
+fn job_for(x: &Instance, p: &Manifest, dims: (usize, usize)) -> Option<Job> {
     match (p.kind.as_str(), p.id.as_str()) {
         ("command", _) => p.run.clone().map(Job::Command),
+        ("script", _) => p.script.as_ref().map(|s| {
+            Job::Script(Box::new(ScriptJob {
+                source: s.source.clone(),
+                hosts: s.hosts.clone(),
+                name: x.name.clone(),
+                settings: x.settings.clone(),
+                secret_keys: p.secrets.iter().map(|s| s.key.clone()).collect(),
+                instance: x.id.clone(),
+                dims,
+            }))
+        }),
         ("native", builtins::WEATHER) => Some(Job::Weather(x.settings.clone())),
         ("native", builtins::CLOCK) if x.settings.get("style").and_then(|s| s.as_str()) == Some("world") => Some(Job::Zones(builtins::cities(&x.settings))),
         ("rss" | "json" | "ical", _) => {
@@ -1329,8 +1446,10 @@ fn label(x: &Instance, p: &Manifest) -> String {
     builtins::label(&p.id, &x.settings).unwrap_or_else(|| x.name.clone())
 }
 
-fn dwell_of(x: &Instance, p: &Manifest) -> u64 {
-    if x.dwell > 0 { x.dwell } else { p.dwell.unwrap_or(DEFAULT_DWELL) }.max(MIN_DWELL)
+/// A card's time: the source's own setting, else what the card asked for (a script's
+/// "dwell"), else the plugin's.
+fn card_dwell(x: &Instance, p: &Manifest, c: &Card) -> u64 {
+    if x.dwell > 0 { x.dwell } else { c.dwell.or(p.dwell).unwrap_or(DEFAULT_DWELL) }.max(MIN_DWELL)
 }
 
 fn chip_of(x: &Instance, p: &Manifest) -> Option<u8> {
@@ -1350,6 +1469,11 @@ fn item_card(x: &Instance, p: &Manifest, it: &Item, now: i64, clock24: bool, rea
 /// `list` is a status list's items, for {{rows}} and {{count}}.
 #[allow(clippy::too_many_arguments)]
 fn item_card_in(x: &Instance, p: &Manifest, it: &Item, list: &[Item], local: NaiveDateTime, now: i64, clock24: bool, reason: &str) -> Card {
+    if let Some(sc) = &it.script {
+        // A script's card: its pages, in its colour unless the source has a chip of its own.
+        let face = sc.face(x.chip.or(sc.chip(p.card.chip)), p.card.left, p.card.pages);
+        return Card { instance: x.id.clone(), name: label(x, p), face, live: false, reason: reason.into(), seen: vec![it.key.clone()], link: it.link.clone(), dwell: sc.dwell };
+    }
     let face = template_face(x, p, Some(it), list, local, now, clock24).unwrap_or_else(|| {
         if let Some(g) = &it.characters {
             return Face::Grid { grid: g.clone() };
@@ -1361,7 +1485,7 @@ fn item_card_in(x: &Instance, p: &Manifest, it: &Item, list: &[Item], local: Nai
         }
         Face::Standard { chip, name: x.name.clone(), time: short_time(it.time.unwrap_or(now), clock24), body, pages: p.card.pages }
     });
-    Card { instance: x.id.clone(), name: label(x, p), face, live: false, reason: reason.into(), seen: vec![it.key.clone()], link: it.link.clone() }
+    Card { instance: x.id.clone(), name: label(x, p), face, live: false, reason: reason.into(), seen: vec![it.key.clone()], link: it.link.clone(), dwell: None }
 }
 
 fn template_face(x: &Instance, p: &Manifest, it: Option<&Item>, list: &[Item], now: NaiveDateTime, now_ms: i64, clock24: bool) -> Option<Face> {
@@ -1408,7 +1532,7 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
     let chip = chip_of(x, p);
     let feed = i.feeds.get(&x.id);
     let data = feed.and_then(|f| f.data.as_ref());
-    let card = |face: Face, live: bool, reason: &str| Card { instance: x.id.clone(), name: label(x, p), face, live, reason: reason.into(), seen: vec![], link: None };
+    let card = |face: Face, live: bool, reason: &str| Card { instance: x.id.clone(), name: label(x, p), face, live, reason: reason.into(), seen: vec![], link: None, dwell: None };
     match (p.kind.as_str(), p.id.as_str()) {
         ("native", builtins::CLOCK) => {
             let world = x.settings.get("style").and_then(|s| s.as_str()) == Some("world");
@@ -1487,11 +1611,13 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
             c.live = true;
             Some(c)
         }
-        // A status: one JSON value, a command's output
+        // A status: one JSON value, a command's output, a script's card
         _ => {
             let it = data?.items.first()?;
             let mut c = item_card(x, p, it, ctx.now, clock24, "ambient");
             c.seen.clear();
+            // A script's card is re-drawn in place as its runs change it (a countdown).
+            c.live = p.kind == "script";
             Some(c)
         }
     }
@@ -1608,21 +1734,21 @@ fn collect_due(i: &mut Inner, ctx: &Ctx) {
                         let mins = (start - ctx.now + 59_999) / 60_000;
                         let body = [it.title.clone(), it.body.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
                         let face = Face::Standard { chip: 63, name: format!("In {mins} min"), time: short_time(start, clock24), body, pages: 1 };
-                        alerts.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "alert · starts in 10 min".into(), seen: vec![key], link: it.link.clone() });
+                        alerts.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "alert · starts in 10 min".into(), seen: vec![key], link: it.link.clone(), dwell: None });
                     }
                 }
             }
             ("native", builtins::COUNTDOWN) => {
                 if let Some((key, face)) = builtins::countdown(&x.settings, ctx.local, chip_of(x, p)).and_then(|c| c.celebrating) {
                     if !already(&key) {
-                        alerts.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "alert · celebration".into(), seen: vec![key], link: None });
+                        alerts.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "alert · celebration".into(), seen: vec![key], link: None, dwell: None });
                     }
                 }
             }
             ("native", builtins::QUOTE) => {
                 if let (Some(key), Some(face)) = (builtins::quote_due(&x.settings, ctx.local), builtins::quote(&x.settings, ctx.local, chip_of(x, p))) {
                     if !already(&key) {
-                        messages.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "message · quote of the day".into(), seen: vec![key], link: None });
+                        messages.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "message · quote of the day".into(), seen: vec![key], link: None, dwell: None });
                     }
                 }
             }
@@ -1759,7 +1885,7 @@ fn tick(i: &mut Inner, ctx: &Ctx) -> Vec<Action> {
     let Some((x, p, card)) = choose(i, ctx, force) else {
         return out;
     };
-    let dwell = dwell_of(&x, &p) as i64 * 1000;
+    let dwell = card_dwell(&x, &p, &card) as i64 * 1000;
     if let Some(s) = i.showing.as_mut() {
         if s.card.instance == card.instance && !force && (s.card.face == card.face || (card.live && s.how == How::Ambient)) {
             // The same card again (it's the only one): it just stays up. A live one that has
@@ -1848,7 +1974,7 @@ fn plan(i: &Inner, ctx: &Ctx) -> Vec<Entry> {
         let k = if i.config.shuffle { pick_shuffle(&mut rng, &weights, last.as_deref()) } else { pick_wrr(&mut wrr, &weights, last.as_deref()) };
         let (x, p, card) = list.swap_remove(k);
         let pages = card.face.render(ctx.dims.0, ctx.dims.1).len().max(1) as i64;
-        let dwell = dwell_of(&x, &p) as i64 * 1000 * pages;
+        let dwell = card_dwell(&x, &p, &card) as i64 * 1000 * pages;
         let feed = is_feed(&p, i.feeds.get(&x.id).and_then(|f| f.data.as_ref()));
         if feed {
             *taken.entry(x.id.clone()).or_default() += 1;
@@ -2379,6 +2505,126 @@ pub mod tests {
         // removing the source deletes its secret
         e.put_rotation(&json!([]), true).unwrap();
         assert_eq!(e.secret("cal", "url"), "");
+    }
+
+    /// Runs whatever is due, as the desktop's loop does.
+    async fn run_due(e: &Engine, c: &Ctx) {
+        for (id, job) in e.due_jobs(c.now) {
+            let r = e.run_job(job, c.local, c.now).await;
+            e.store(&id, r, c.now);
+        }
+    }
+
+    #[tokio::test]
+    async fn script_cards_store_and_dwell() {
+        use crate::cards::ascii;
+        let (e, dir) = engine("script-card");
+        let m = json!({"format": 1, "id": "com.t.count", "name": "Count", "kind": "script", "hosts": [], "every": "10s", "card": {"chip": "blue"},
+            "scriptInline": "export default function (ctx) { const n = (ctx.store.get('n') || 0) + 1; ctx.store.set('n', n); ctx.log('run', n); return { text: 'RUN ' + n + ' ' + ctx.board.rows + 'X' + ctx.board.cols, color: n > 1 ? 'red' : undefined, dwell: 20 }; }"});
+        // Script plugins are sandboxed, so the API may install them (unlike commands).
+        e.install(&m, true).unwrap();
+        let id = e.add("com.t.count", None).unwrap();
+        let c = ctx(0);
+        let (pages, _) = e.preview(&id, &c, true, false).await.unwrap();
+        let a = ascii(&pages[0]);
+        assert!(a[2].contains("RUN 1 6X22"), "{a:?}");
+        assert!(a[0].starts_with('b'), "the manifest's chip: {a:?}");
+        // The next run sees the store, and its colour wins over the manifest's chip.
+        let c = at(&c, 11);
+        run_due(&e, &c).await;
+        let (pages, _) = e.preview(&id, &c, true, false).await.unwrap();
+        let a = ascii(&pages[0]);
+        assert!(a[2].contains("RUN 2") && a[0].starts_with('r'), "{a:?}");
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("script-store.json")).unwrap()).unwrap();
+        assert_eq!(saved[&id], json!({"n": 2}));
+        // Settings sees the run.
+        let v = e.view();
+        let run = &v["rotation"][0]["run"];
+        assert_eq!(run["log"], json!(["run 2"]));
+        assert!(run["errorKind"].is_null() && run["ms"].is_number(), "{run}");
+        // The card's own dwell: 20 s, as the source doesn't set one.
+        let acts = e.tick(&c);
+        assert!(matches!(acts.as_slice(), [Action::Show { how: How::Ambient, .. }]), "{acts:?}");
+        assert_eq!(e.status().until, Some(c.now + 20_000));
+        // A board that reopens keeps the store.
+        let again = Engine::new(Paths { config: Some(dir.join("sources.json")), plugins: Some(dir.join("plugins.json")), seen: Some(dir.join("seen.json")) });
+        assert_eq!(again.inner.lock().unwrap().stores[&id], json!({"n": 2}).as_object().unwrap().clone());
+        // Removing the source forgets its store.
+        e.put_rotation(&json!([]), false).unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("script-store.json")).unwrap()).unwrap();
+        assert_eq!(saved, json!({}));
+    }
+
+    #[tokio::test]
+    async fn script_items_feed_the_list_pipeline() {
+        let (e, _) = engine("script-items");
+        // ctx.store counts runs; each run adds two newer items to the list (newest first).
+        let m = json!({"format": 1, "id": "com.t.items", "name": "Items", "kind": "script", "hosts": [], "every": "10s", "alertWhen": ["keyword:fire"],
+            "scriptInline": "export default function (ctx) { const n = (ctx.store.get('n') || 0) + 1; ctx.store.set('n', n); const items = []; for (let k = 2 * n; k >= 1; k--) items.push({ id: 'i' + k, title: (k === 6 ? 'FIRE ' : 'ITEM ') + k, time: ctx.now - (10 - k) * 1000 }); return { items }; }"});
+        e.install(&m, false).unwrap();
+        let id = e.add("com.t.items", None).unwrap();
+        let c = ctx(0);
+        run_due(&e, &c).await;
+        // A new source shows its newest item and remembers the rest.
+        let queue = |e: &Engine| e.inner.lock().unwrap().feeds[&id].queue.iter().map(|q| q.title.clone()).collect::<Vec<_>>();
+        assert_eq!(queue(&e), vec!["ITEM 2"]);
+        let acts = e.tick(&c);
+        assert!(matches!(acts.as_slice(), [Action::Show { .. }]));
+        // Two new items: queued, oldest first.
+        let c = at(&c, 11);
+        run_due(&e, &c).await;
+        assert_eq!(queue(&e), vec!["ITEM 3", "ITEM 4"]);
+        // An alert word interrupts.
+        let c = at(&c, 11);
+        run_due(&e, &c).await;
+        assert_eq!(e.inner.lock().unwrap().alerts.len(), 1);
+        assert!(queue(&e).contains(&"ITEM 5".to_string()));
+    }
+
+    #[tokio::test]
+    async fn script_errors_and_manifests() {
+        let (e, _) = engine("script-errors");
+        let bad = |extra: Value| {
+            let mut m = json!({"format": 1, "id": "com.t.s", "name": "S", "kind": "script", "hosts": ["api.example.com"], "scriptInline": "export default () => 'x'"});
+            for (k, v) in extra.as_object().unwrap() {
+                if v.is_null() {
+                    m.as_object_mut().unwrap().remove(k);
+                } else {
+                    m[k] = v.clone();
+                }
+            }
+            e.install(&m, false).map(|_| ()).map_err(|r| r.1)
+        };
+        assert!(bad(json!({})).is_ok());
+        for (extra, msg) in [
+            (json!({"hosts": null}), "needs \"hosts\""),
+            (json!({"hosts": ["https://api.example.com"]}), "isn't a host name"),
+            (json!({"hosts": ["*.com"]}), "too broad"),
+            (json!({"every": "30s"}), "at least 1m"),
+            (json!({"permissions": ["fs"]}), "isn't a permission"),
+            (json!({"fetch": {"url": "https://api.example.com"}}), "ctx.fetch"),
+            (json!({"pick": {"title": "$.x"}}), "pick is for json"),
+            (json!({"card": {"template": "{{title}}"}}), "card.template"),
+            (json!({"scriptInline": null, "script": "script.js"}), "wasn't included"),
+            (json!({"scriptInline": null, "script": "../x.js"}), "file name"),
+            (json!({"scriptInline": null}), "needs its code"),
+        ] {
+            let r = bad(extra.clone()).unwrap_err();
+            assert!(r.contains(msg), "{extra}: {r}");
+        }
+        // No hosts: it may run every 10 s.
+        assert!(bad(json!({"hosts": [], "every": "10s"})).is_ok());
+        // A script that throws: the preview says why, and so does Settings.
+        let m = json!({"format": 1, "id": "com.t.boom", "name": "Boom", "kind": "script", "hosts": [], "scriptInline": "export default () => { throw new Error('boom'); }"});
+        e.install(&m, false).unwrap();
+        let id = e.add("com.t.boom", None).unwrap();
+        let (_, reason) = e.preview(&id, &ctx(0), false, false).await.unwrap();
+        assert_eq!(reason, "The script failed: boom");
+        run_due(&e, &ctx(0)).await;
+        let v = e.view();
+        let x = v["rotation"].as_array().unwrap().iter().find(|x| x["id"] == id.as_str()).unwrap().clone();
+        assert_eq!(x["error"], "The script failed: boom");
+        assert_eq!(x["run"]["errorKind"], "exception");
     }
 
     #[test]

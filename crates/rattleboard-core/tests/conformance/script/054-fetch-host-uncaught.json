@@ -1,0 +1,25 @@
+{
+  "name": "fetch-host-uncaught",
+  "about": "Uncaught, a refusal fails the run.",
+  "script": "export default async function (ctx) {\n  await ctx.fetch('https://evil.example.net/');\n  return 'x';\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "error": "exception",
+    "message": "The script failed: evil.example.net isn't in this plugin's hosts"
+  }
+}

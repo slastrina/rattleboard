@@ -90,6 +90,8 @@ pub enum Face {
     /// Bands of colour above and below the text, and confetti. `frame` None: every frame, as
     /// pages; Some(k): frame k alone.
     Celebrate { text: String, colour: Colour, accent: u8, frame: Option<usize> },
+    /// Several faces, one after another (a script plugin's "pages").
+    Pages { pages: Vec<Face> },
 }
 
 impl Face {
@@ -116,6 +118,7 @@ impl Face {
                     g
                 })
                 .collect(),
+            Face::Pages { pages } => pages.iter().flat_map(|f| f.render(rows, cols)).collect(),
         };
         if pages.is_empty() {
             vec![vec![vec![0; cols]; rows]]

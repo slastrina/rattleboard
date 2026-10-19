@@ -1,0 +1,49 @@
+{
+  "name": "store-roundtrip",
+  "about": "The store comes in, can change, and goes out after a run that succeeds.",
+  "script": "export default async function (ctx) {\n  const n = (ctx.store.get('n') || 0) + 1;\n  ctx.store.set('n', n);\n  ctx.store.set('gone', undefined);\n  ctx.store.delete('old');\n  ctx.store.set('obj', { a: [1, 2] });\n  return 'n=' + n + ' keys=' + ctx.store.keys().sort().join(',');\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {
+      "n": 3,
+      "old": true
+    },
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "n=4 keys=n,obj"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    },
+    "store": {
+      "n": 4,
+      "obj": {
+        "a": [
+          1,
+          2
+        ]
+      }
+    }
+  }
+}

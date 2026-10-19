@@ -1,0 +1,25 @@
+{
+  "name": "result-too-many-pages",
+  "about": "At most 6 pages.",
+  "script": "export default () => ({ pages: ['1','2','3','4','5','6','7'] })",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "error": "result",
+    "message": "The script's result isn't valid: pages must be a list of 1 to 6 pages"
+  }
+}

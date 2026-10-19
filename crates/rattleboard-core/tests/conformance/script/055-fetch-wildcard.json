@@ -1,0 +1,69 @@
+{
+  "name": "fetch-wildcard",
+  "about": "*.example.com matches subdomains at any depth, but not example.com itself; case and a trailing dot don't matter.",
+  "script": "export default async function (ctx) {\n  const out = [];\n  for (const u of ['https://a.example.com/', 'https://A.B.Example.COM./', 'https://example.com/', 'https://badexample.com/']) {\n    try { await ctx.fetch(u); out.push('sent'); } catch (e) { out.push(e.code); }\n  }\n  return out.join(' ');\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "*.example.com"
+    ]
+  },
+  "fetch": [
+    {
+      "method": "GET",
+      "url": "https://a.example.com/",
+      "response": {
+        "status": 200,
+        "body": ""
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://A.B.Example.COM./",
+      "response": {
+        "status": 200,
+        "body": ""
+      }
+    }
+  ],
+  "expect": {
+    "output": {
+      "type": "card",
+      "pages": [
+        {
+          "text": "sent sent host_not_allowed host_not_allowed"
+        }
+      ],
+      "color": null,
+      "align": null,
+      "link": null,
+      "priority": "ambient",
+      "id": null,
+      "dwell": null
+    },
+    "requests": [
+      {
+        "method": "GET",
+        "url": "https://a.example.com/",
+        "headers": {},
+        "body": null
+      },
+      {
+        "method": "GET",
+        "url": "https://A.B.Example.COM./",
+        "headers": {},
+        "body": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "items-basic",
+  "about": "items feed the list pipeline: ids become strings, times milliseconds, unsafe links are dropped.",
+  "script": "export default async function (ctx) {\n  return { items: [\n    { id: 7, title: '  First  ', body: 'Body', time: '2026-10-19T08:00:00+11:00', link: 'https://example.com/1' },\n    { title: 'Second', time: 1792363000000, link: 'ftp://example.com/2' },\n    { body: 'Only a body' },\n  ], color: 'blue' };\n}",
+  "input": {
+    "now": 1792363260000,
+    "local": "2026-10-19T09:41:00",
+    "utcOffset": 660,
+    "board": {
+      "rows": 6,
+      "cols": 22
+    },
+    "name": "Test",
+    "settings": {},
+    "secrets": {},
+    "store": {},
+    "hosts": [
+      "api.example.com"
+    ]
+  },
+  "expect": {
+    "output": {
+      "type": "items",
+      "color": "blue",
+      "items": [
+        {
+          "id": "7",
+          "title": "First",
+          "body": "Body",
+          "time": 1792357200000,
+          "link": "https://example.com/1"
+        },
+        {
+          "id": null,
+          "title": "Second",
+          "body": "",
+          "time": 1792363000000,
+          "link": null
+        },
+        {
+          "id": null,
+          "title": "",
+          "body": "Only a body",
+          "time": null,
+          "link": null
+        }
+      ]
+    }
+  }
+}
