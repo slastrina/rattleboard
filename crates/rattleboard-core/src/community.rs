@@ -15,7 +15,7 @@ pub const RAW_PREFIX: &str = "https://raw.githubusercontent.com/slastrina/rattle
 pub const WEB_PREFIX: &str = "https://github.com/slastrina/rattleboard-plugins/";
 /// What a development base URL stands in for (see `resolve`).
 const RAW_MAIN: &str = "https://raw.githubusercontent.com/slastrina/rattleboard-plugins/main/";
-pub const INDEX_URL: &str = "https://raw.githubusercontent.com/slastrina/rattleboard-plugins/main/index.json";
+pub const INDEX_URL: &str = "https://raw.githubusercontent.com/slastrina/rattleboard-plugins/main/index-v2.json";
 pub const FORMAT: u64 = 1;
 pub const MAX_INDEX: usize = 2 * 1024 * 1024;
 pub const MAX_README: usize = 64 * 1024;
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(e.settings[0].kind.as_deref(), Some("text"));
         assert!(e.readme_url.is_some() && e.preview_url.is_none() && e.folder_url.is_some());
         // The real index parses too, if the repository sits next to this one.
-        if let Ok(b) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../rattleboard-plugins/index.json")) {
+        if let Ok(b) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../rattleboard-plugins/index-v2.json")) {
             assert!(!parse_index(&b).unwrap().plugins.is_empty());
         }
     }
@@ -382,7 +382,7 @@ mod tests {
         ] {
             assert!(!is_allowed(bad), "{bad}");
         }
-        assert_eq!(resolve(INDEX_URL, Some("http://127.0.0.1:8099/")), "http://127.0.0.1:8099/index.json");
+        assert_eq!(resolve(INDEX_URL, Some("http://127.0.0.1:8099/")), "http://127.0.0.1:8099/index-v2.json");
         assert_eq!(resolve(INDEX_URL, None), INDEX_URL);
         assert_eq!(resolve(REPO_URL, Some("http://127.0.0.1:8099")), REPO_URL);
         assert_eq!(profile_url("slastrina").as_deref(), Some("https://github.com/slastrina"));
