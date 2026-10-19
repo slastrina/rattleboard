@@ -523,16 +523,14 @@ RB.delegate(root, 'click', {
   },
   srcUninstall: el => {
     const p = plugin(el.dataset.v), n = SR.data.rotation.filter(x => x.plugin === el.dataset.v).length;
-    if (SR.confirmDelete !== el.dataset.v) { SR.confirmDelete = el.dataset.v; return flash(`Click Delete again to remove ${p.name}${n ? ` and its ${n} source${n > 1 ? 's' : ''}` : ''}`); }
-    SR.confirmDelete = null;
-    RB.invoke('remove_plugin', { id: el.dataset.v }).then(() => { flash(`Removed ${p.name}`, true); return srcRefresh(); }).catch(e => flash(e));
+    RB.invoke('remove_plugin', { id: el.dataset.v }).then(() => { flash(`Removed ${p.name}${n ? ` and its ${n} source${n > 1 ? 's' : ''}` : ''}`, true); return srcRefresh(); }).catch(e => flash(e));
   },
   srcExport: el => RB.invoke('export_source', { id: el.dataset.v }).then(path => flash(`Saved to ${path.replace(/^.*[\\/](Downloads[\\/])/, '$1')}`, true)).catch(e => flash(e)),
   srcRemove: el => {
     const x = inst(el.dataset.v);
-    if (SR.confirmRemove !== x.id) { SR.confirmRemove = x.id; return flash(`Click Remove again to take ${x.label || x.name} out of the rotation${Object.keys(x.secrets || {}).length ? ' and delete its secrets' : ''}`); }
-    SR.confirmRemove = null; SR.open = null;
+    SR.open = null;
     saveRot(rot => rot.splice(rot.findIndex(r => r.id === x.id), 1));
+    flash(`Removed ${x.label || x.name}`, true);
   },
   srcWeight: el => saveInst(SR.open, { weight: +el.dataset.v }),
   srcSetToggle: el => { const [id, key] = el.dataset.v.split('|'); const x = inst(id); saveSetting(id, key, !x.settings[key]); },
