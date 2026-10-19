@@ -393,7 +393,7 @@ Rattleboards also answer a few requests of their own under `/rattleboard/`. They
 
 | Request | Body | Response |
 | --- | --- | --- |
-| `GET /rattleboard/info` | — | `{"app":"rattleboard","protocol":3,"version":"0.9.0","platform":"macos","name":"…","board":{"rows":6,"cols":22},"adaptive":true,"features":["sequence","strategy","notify","sources"]}` |
+| `GET /rattleboard/info` | — | `{"app":"rattleboard","protocol":3,"version":"0.9.1","platform":"macos","name":"…","board":{"rows":6,"cols":22},"adaptive":true,"features":["sequence","strategy","notify","sources"]}` |
 | `POST /rattleboard/notify` | `{"text":"…" or "characters":[[…]],"seconds":15,"source":"Build bot","link":"https://…","priority":"alert"}` | `201 {"status":"ok","id":"note-…","seconds":15}`; a [notification](#notifications), shown once |
 | `POST /rattleboard/sequence` | `{"name":"…","loop":true,"frames":[…]}` (up to 256 KB) | `201 {"status":"ok","id":"seq-…","frames":2}` |
 | `GET /rattleboard/sequence` | — | `{"running":true,"id":"seq-…","name":"Morning","frame":2,"frames":5,"loop":true}` or `{"running":false}` |
@@ -872,7 +872,7 @@ Each board can be renamed or removed. Removing it deletes its key from the crede
 
 ## Focus and Do Not Disturb
 
-**Settings → Behavior → While Do Not Disturb is on** (Windows and Linux) decides what a new message does while you don't want to be interrupted:
+**Settings → Behavior → While Focus is on** (Do Not Disturb on Windows and Linux) decides what a new message does while you don't want to be interrupted:
 
 - **Hold pop-ups** (the default): the board still changes, and a pinned widget shows each message as usual, but the pop-up stays hidden, the flaps make no sound, and the tray icon shows its dot. The tray menu says "Focus on — holding pop-ups". When the Focus ends, one pop-up shows the latest message with "3 messages while you were focused"; click that line for Message history.
 - **Mute sound only**: pops up as usual, without the flap sound.
@@ -882,7 +882,7 @@ Each board can be renamed or removed. Removing it deletes its key from the crede
 
 How Rattleboard knows:
 
-- **macOS:** not in the released app. macOS only shares Focus status with apps signed with Apple's Communication Notifications entitlement and a matching provisioning profile, which the Developer ID builds don't carry, so the setting is hidden on a Mac. (A build signed with that entitlement uses the Focus status API: macOS asks once, and only reports a Focus whose **Share Focus Status** is on.)
+- **macOS 12 and later:** the Focus status API. macOS asks once whether Rattleboard may see your Focus status, and only reports a Focus whose **Share Focus Status** is on (System Settings → Focus → Focus Status). The release build is signed with the Communication Notifications entitlement that macOS requires for this; builds without it (from source, for example) hide the setting.
 - **Windows:** full-screen apps and games, presentation mode, quiet time, and Windows 11 Focus sessions, through documented APIs (`SHQueryUserNotificationState`, `FocusSessionManager`). Rattleboard's own full screen doesn't count. Windows may not report Do Not Disturb switched on by hand.
 - **Linux:** GNOME's Do Not Disturb (`org.gnome.desktop.notifications show-banners`) and KDE Plasma's (the notification server's `Inhibited` property). Other desktops don't report it.
 
@@ -954,7 +954,7 @@ The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The desktop
 Pushing a version tag builds the macOS (universal), Windows and Linux x86_64 and arm64 (`.deb`, AppImage) installers in GitHub Actions and attaches them to a GitHub Release, and publishes the Rattleboard Web image to Docker Hub (`slastrina/rattleboard-web`, when the `DOCKERHUB_TOKEN` secret and `DOCKERHUB_USERNAME` variable are set) and to `ghcr.io/slastrina/rattleboard-web`, for amd64, arm64 and arm/v7. The macOS build is signed and notarized when the Developer ID secrets listed in `.github/workflows/release.yml` are set on the repository.
 
 ```sh
-git tag v0.9.0 && git push origin v0.9.0
+git tag v0.9.1 && git push origin v0.9.1
 ```
 
 ## Support Rattleboard
