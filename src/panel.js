@@ -133,6 +133,41 @@ function checkUpdates() {
     .finally(() => render(true));
 }
 
+// Settings → Behavior → "While Focus / Do Not Disturb is on", and what the system reports.
+function focusStatus() {
+  const f = S.focus || {}, mac = S.os === 'mac';
+  if (f.via === 'fake') return `Simulated (RATTLEBOARD_FAKE_FOCUS): ${f.on ? 'on' : 'off'}.`;
+  if (mac) {
+    const share = 'macOS only reports a Focus that has Share Focus Status on (System Settings → Focus → Focus Status).';
+    return f.access === 'ok' ? `${f.on ? 'A Focus is on now.' : 'No Focus is on now.'} ${share}`
+      : f.access === 'notDetermined' ? `Rattleboard hasn't been allowed to see your Focus status yet. <a href="#" data-act="focusAccess" style="color:${RB.ACC}; text-decoration:none">Allow…</a>`
+      : f.access === 'denied' ? 'Rattleboard isn\'t allowed to see your Focus status, so it can\'t tell when a Focus is on. Allow it in System Settings → Privacy & Security → Focus.'
+      : f.access === 'restricted' ? 'Focus status is restricted on this Mac (by a profile or Screen Time), so Rattleboard can\'t tell when a Focus is on.'
+      : f.access === 'noEntitlement' ? 'This build of Rattleboard isn\'t signed with Apple\'s Communication Notifications entitlement, which macOS requires before it shares Focus status, so pop-ups always show.'
+      : f.access === 'needsMacos12' ? 'Focus status needs macOS 12 or later, so on this Mac pop-ups always show.'
+      : 'macOS didn\'t give Rattleboard the Focus status, so pop-ups always show.';
+  }
+  if (f.via === 'windows') return `${f.on ? `${esc(f.what || 'Do Not Disturb')} is on now.` : 'Nothing is holding notifications now.'} Rattleboard sees full-screen apps, presentation mode, quiet time and Focus sessions. Do Not Disturb switched on by hand may not be reported to apps.`;
+  if (f.via === 'gnome') return `Follows GNOME's Do Not Disturb${f.on ? ', which is on now' : ''}.`;
+  if (f.via === 'kde') return `Follows Plasma's Do Not Disturb${f.on ? ', which is on now' : ''}.`;
+  return 'This desktop doesn\'t tell apps about Do Not Disturb (GNOME and KDE Plasma do), so pop-ups always show.';
+}
+
+function focusRows() {
+  const s = S.settings, mac = S.os === 'mac', off = s.focusMode === 'ignore';
+  return `<div class="lbl">${mac ? 'While Focus is on' : 'While Do Not Disturb is on'}</div>
+      <div style="display:flex; flex-direction:column; gap:6px">
+        ${seg([['hold', 'Hold pop-ups'], ['mute', 'Mute sound only'], ['ignore', mac ? 'Ignore Focus' : 'Ignore it']], s.focusMode || 'hold', 'focusMode')}
+        <span class="hint">${s.focusMode === 'mute' ? 'The board pops up as usual, without the flap sound.'
+          : off ? 'The board pops up as usual.'
+          : 'The board still updates, but doesn\'t pop up or make a sound; the tray icon shows a dot. When it ends, one pop-up says how many messages came.'} ${focusStatus()}</span>
+      </div>
+      ${off ? '' : `<div class="lbl">Let alerts through</div>
+      <div style="display:flex; align-items:center; gap:10px">${tog(s.focusAlerts !== false, 'focusAlerts')}<span class="hint">Sources alerts, and messages sent with priority "alert", still pop up with sound</span></div>
+      <div class="lbl">Full screen too</div>
+      <div style="display:flex; align-items:center; gap:10px">${tog(!!s.focusFullscreen, 'focusFullscreen')}<span class="hint">A full-screen board ignores ${mac ? 'Focus' : 'Do Not Disturb'} unless this is on</span></div>`}`;
+}
+
 function viewSettings() {
   const s = S.settings;
   let body = '';
@@ -154,6 +189,7 @@ function viewSettings() {
       <div style="display:flex; align-items:center; gap:10px">${tog(s.pauseOnHover, 'pauseOnHover')}<span class="hint">Countdown waits while the pointer is over the board</span></div>
       <div class="lbl">Click to open links</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.clickLinks !== false, 'clickLinks')}<span class="hint">A card from a feed story or a page (marked ↗) opens it in your browser when you click the board, full screen too. Turn off for a kiosk.</span></div>
+      ${focusRows()}
       <div class="lbl">Flip speed</div>
       <div style="display:flex; align-items:center; gap:10px">${range(0.5, 2, 0.1, s.speed, 'speed')}<span id="speedLabel" style="font-variant-numeric:tabular-nums">${speedLabel(s.speed)}</span></div>
       <div class="lbl">Flap sound</div>
@@ -919,6 +955,10 @@ RB.delegate(root, 'click', {
   notifyQuiet: () => save({ notifyQuiet: !S.settings.notifyQuiet }),
   notifyReturn: el => save({ notifyReturnSec: +el.dataset.v }),
   sound: () => save({ sound: !S.settings.sound }),
+  focusMode: el => { save({ focusMode: el.dataset.v }); if (el.dataset.v !== 'ignore') RB.invoke('focus_request_access'); },
+  focusAlerts: () => save({ focusAlerts: S.settings.focusAlerts === false }),
+  focusFullscreen: () => save({ focusFullscreen: !S.settings.focusFullscreen }),
+  focusAccess: (el, e) => { e.preventDefault(); RB.invoke('focus_request_access'); },
   launchLogin: () => save({ launchLogin: !S.settings.launchLogin }),
   updateCheck: () => save({ updateCheck: !S.settings.updateCheck }),
   pluginUpdateCheck: () => save({ pluginUpdateCheck: S.settings.pluginUpdateCheck === false }),

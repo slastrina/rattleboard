@@ -59,7 +59,8 @@ function render() {
   const pad = Math.max(22, Math.round(tile * 1.15));
   const set = (k, v) => { if (sfb.getAttribute(k) !== String(v)) sfb.setAttribute(k, v); };
   set('tile', tile); set('speed', s.speed); set('finish', s.finish);
-  set('sound', s.sound ? 'on' : 'off'); set('transition', JSON.stringify(S.transition || null));
+  // A Focus may silence the flaps (Settings → Behavior → While Focus is on).
+  set('sound', s.sound && !(S.focus && S.focus.muted) ? 'on' : 'off'); set('transition', JSON.stringify(S.transition || null));
   const geom = rows + 'x' + cols;
   if (geom !== shownGeom && shownGeom) {
     // Resize the (blank) board and its window, then flip the message in, so the flaps never
@@ -115,6 +116,9 @@ function render() {
     : S.conn === 'error' && !stopped ? `${name} · offline` : name) + (stopped ? ' · checking paused ·' : '');
   $('dot').style.background = ui.flipping ? '#f2c230' : S.conn === 'error' ? '#e0553f' : '#3fbf6a';
   $('chrome').style.opacity = ui.hover || ui.dragging || ui.resizing ? 1 : 0;
+  const summary = S.focus && S.focus.summary, sum = $('summary');
+  sum.classList.toggle('on', !!summary);
+  if (summary && sum.textContent !== summary + ' · History') sum.textContent = summary + ' · History';
   $('pinBtn').textContent = float ? 'Unpin' : 'Pin';
   $('pinBtn').title = float ? 'Go back to popping up in a corner' : 'Keep it on screen, wherever you put it';
   $('pinBtn').classList.toggle('on', float);
@@ -127,7 +131,7 @@ function render() {
   $('linkBtn').style.display = linked ? '' : 'none';
   $('ovLink').style.display = linked ? '' : 'none';
   $('linkMark').title = linked ? `Click to open ${S.link}` : '';
-  $('bar').style.opacity = counting ? 1 : 0;
+  $('bar').style.opacity = counting && !summary ? 1 : 0;
   $('fill').style.width = (ui.total ? (ui.remaining / ui.total) * 100 : 0) + '%';
   renderOverlay();
 }
@@ -241,6 +245,7 @@ RB.delegate(document.body, 'click', {
   next: () => RB.invoke('sources_next'),
   openLink,
   hide,
+  focusSummary: () => RB.invoke('focus_summary_open'),
   exitFull: () => RB.invoke('toggle_fullscreen'),
   site: () => { if (ov.shown) RB.invoke('open_site'); },
   settings: () => RB.invoke('open_window', { view: 'settings' }),

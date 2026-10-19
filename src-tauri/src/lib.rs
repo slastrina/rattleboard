@@ -1,5 +1,6 @@
 pub mod agents;
 mod community;
+mod focus;
 mod fullscreen;
 mod notify;
 mod updates;
@@ -101,6 +102,14 @@ struct Runtime {
     display_link: Option<String>,
     /// A timed notification on the board, and what goes back when it's over
     notice: Option<NoticeUp>,
+    /// Focus / Do Not Disturb as last read (see focus.rs)
+    focus: focus::Status,
+    /// Messages that didn't pop up during the Focus, for the summary when it ends
+    held: focus::Held,
+    /// "3 messages while you were focused", while that summary is up
+    focus_summary: Option<String>,
+    /// What's on the board came as an alert (it was let through a Focus, sound and all)
+    shown_alert: bool,
 }
 
 /// A timed notification showing (see `show_notice`).
@@ -222,6 +231,38 @@ struct Snapshot {
     update: UpdateInfo,
     /// Updates offered for plugins installed from Community plugins (see community.rs)
     plugin_updates: usize,
+    focus: FocusInfo,
+}
+
+/// Focus / Do Not Disturb, for Settings, the tray and the board.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FocusInfo {
+    #[serde(flatten)]
+    status: focus::Status,
+    /// Pop-ups are being held now
+    holding: bool,
+    /// The flaps are silent now
+    muted: bool,
+    /// Messages held so far
+    held: usize,
+    summary: Option<String>,
+}
+
+fn focus_rules(s: &Settings) -> focus::Rules {
+    focus::Rules { mode: focus::Mode::of(&s.focus_mode), alerts_through: s.focus_alerts, fullscreen_obeys: s.focus_fullscreen }
+}
+
+fn focus_info(s: &Settings, rt: &Runtime) -> FocusInfo {
+    let (rules, on, full) = (focus_rules(s), rt.focus.on, s.fullscreen());
+    let quiet = focus::decide(rules, on, false, full);
+    FocusInfo {
+        status: rt.focus.clone(),
+        holding: quiet.held,
+        muted: !focus::decide(rules, on, rt.shown_alert, full).sound,
+        held: rt.held.count,
+        summary: rt.focus_summary.clone(),
+    }
 }
 
 /// A newer release, for the tray's "Update available" item and Settings.
@@ -314,6 +355,7 @@ fn snapshot(st: &AppState) -> Snapshot {
             homebrew: updates::from_homebrew(),
         },
         plugin_updates: if s.plugin_update_check { community::offered() } else { 0 },
+        focus: focus_info(&s, &rt),
         settings: s,
     }
 }
@@ -443,7 +485,7 @@ fn notify_here(app: &AppHandle, n: server::Notice) -> String {
 /// A second one while the first is up replaces it, still going back to what was there first.
 fn show_notice(app: &AppHandle, id: String, n: server::Notice) {
     let Some(secs) = n.seconds else {
-        put_on_board(app, n.layout, Some(id), &n.source, n.tr, Shown::Message, n.link);
+        put_on_board_as(app, n.layout, Some(id), &n.source, n.tr, Shown::Message, n.link, n.alert);
         return;
     };
     let st = app.state::<AppState>();
@@ -461,7 +503,7 @@ fn show_notice(app: &AppHandle, id: String, n: server::Notice) {
     // Counted, like a sequence frame's hold, from when the flaps finish.
     let ms = flip + secs * 1000;
     st.sources.begin_notice(now_ms(), ms as i64);
-    put_on_board(app, n.layout, Some(id.clone()), &n.source, n.tr, Shown::Notice, n.link);
+    put_on_board_as(app, n.layout, Some(id.clone()), &n.source, n.tr, Shown::Notice, n.link, n.alert);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -508,6 +550,15 @@ enum Shown {
 }
 
 fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition, how: Shown, link: Option<String>) {
+    put_on_board_as(app, layout, id, src, tr, how, link, false);
+}
+
+/// `alert`: a source's alert, or a message sent with priority "alert", which a Focus may let
+/// through (see focus.rs). During a Focus that holds pop-ups, the board still changes (a
+/// pinned or full-screen board shows it at once) but doesn't pop up, and the message counts
+/// towards the summary shown when the Focus ends.
+#[allow(clippy::too_many_arguments)]
+fn put_on_board_as(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition, how: Shown, link: Option<String>, alert: bool) {
     let st = app.state::<AppState>();
     let loud = matches!(how, Shown::Message | Shown::Alert | Shown::Notice);
     if how == Shown::Message {
@@ -516,19 +567,28 @@ fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
     // A fixed board takes on the size of a board it mirrors (posted messages arrive fitted to
     // it already); an adaptive one just shows each message at its own size.
     let detected = vestaboard::dims_of(&layout);
-    let (setup_done, stays) = {
+    let (setup_done, stays, rules, full) = {
         let mut s = st.settings.lock().unwrap();
         if !s.adaptive && s.dims() != detected {
             s.set_dims(detected);
             s.save(&st.settings_path);
         }
-        (s.setup_done, s.floating() || s.fullscreen())
+        (s.setup_done, s.floating() || s.fullscreen(), focus_rules(&s), s.fullscreen())
     };
     // Ask the window system first: on macOS that call waits for the main thread, which may
     // itself be waiting for `rt`, so it must never happen while a lock is held.
     let tray_open = app.get_webview_window("tray").and_then(|w| w.is_visible().ok()).unwrap_or(false);
-    {
+    let pop_up = {
         let mut rt = st.rt.lock().unwrap();
+        let d = focus::decide(rules, rt.focus.on, alert, full);
+        if loud && d.held {
+            rt.held.note(layout.clone(), link.clone());
+        }
+        if loud && d.pop_up {
+            // A pop-up of its own takes the summary's place.
+            rt.focus_summary = None;
+        }
+        rt.shown_alert = alert;
         let first = rt.layout.is_none();
         if rt.layout.as_ref() == Some(&layout) && rt.display.is_none() {
             // Same picture as before (e.g. an app re-sent it): replay the flip.
@@ -552,16 +612,97 @@ fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
         if loud {
             rt.unread = !tray_open;
         }
-    }
+        loud && d.pop_up
+    };
     if loud {
         save_history(&st);
     }
     broadcast(app);
     // A source's next card never pops the board up, but a pinned or full-screen board is on
     // screen anyway, so it's made sure of.
-    if setup_done && (loud || stays) {
+    if setup_done && (pop_up || stays) {
         present_board(app, false);
     }
+}
+
+// ---------------------------------------------------------------- Focus / Do Not Disturb
+
+/// A new reading of Focus / Do Not Disturb (from `focus::watch`'s thread). When a Focus that
+/// held pop-ups ends, one summary pops up, showing the latest message held.
+fn focus_changed(app: &AppHandle, now: focus::Status) {
+    let st = app.state::<AppState>();
+    let s = st.settings.lock().unwrap().clone();
+    let summary = {
+        let mut rt = st.rt.lock().unwrap();
+        let was = rt.focus.on;
+        rt.focus = now.clone();
+        if !was && now.on {
+            rt.held = focus::Held::default();
+            None
+        } else if was && !now.on {
+            match rt.held.take() {
+                Some((n, latest)) => {
+                    let text = focus::summary_text(n);
+                    rt.focus_summary = Some(text.clone());
+                    // The latest held message, if the board has moved on since (a source's
+                    // card), as "Flip again" shows a history entry.
+                    if rt.layout.as_ref() != Some(&latest.layout) {
+                        rt.display = Some(latest.layout);
+                        rt.display_link = latest.link;
+                    }
+                    Some(text)
+                }
+                None => None,
+            }
+        } else {
+            None
+        }
+    };
+    eprintln!("[focus] {} via {} ({}){}", if now.on { "on" } else { "off" }, if now.via.is_empty() { "nothing" } else { &now.via }, now.access, summary.as_ref().map(|t| format!(": {t}")).unwrap_or_default());
+    broadcast(app);
+    let Some(text) = summary else { return };
+    if s.setup_done {
+        let a = app.clone();
+        let _ = app.run_on_main_thread(move || present_board(&a, false));
+    }
+    // A pinned or full-screen board doesn't hide, so the summary goes by itself.
+    let a = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        let st = a.state::<AppState>();
+        let gone = {
+            let mut rt = st.rt.lock().unwrap();
+            let same = rt.focus_summary.as_deref() == Some(text.as_str());
+            if same {
+                rt.focus_summary = None;
+            }
+            same
+        };
+        if gone {
+            broadcast(&a);
+        }
+    });
+}
+
+fn clear_focus_summary(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    let had = st.rt.lock().unwrap().focus_summary.take().is_some();
+    if had {
+        broadcast(app);
+    }
+}
+
+/// The summary pop-up was clicked: Message history.
+#[tauri::command]
+fn focus_summary_open(app: AppHandle) {
+    clear_focus_summary(&app);
+    open_panel(&app, "history");
+}
+
+/// Settings → Behavior: asks macOS for the Focus status (it asks only once).
+#[tauri::command]
+fn focus_request_access() {
+    focus::request_access(true);
 }
 
 /// The history's part in putting something on the board: a message, an alert or a
@@ -695,7 +836,7 @@ fn run_actions(app: &AppHandle, actions: Vec<sources::Action>) {
                                     rt.alert_return = rt.layout.clone().map(|l| (l, rt.transition.clone(), rt.link.clone()));
                                 }
                             }
-                            put_on_board(&a, layout, Some(id), &src, Transition::default(), shown, link);
+                            put_on_board_as(&a, layout, Some(id), &src, Transition::default(), shown, link, alert);
                         });
                     } else {
                         hub_push(app, d, &card, page, how);
@@ -1444,6 +1585,13 @@ impl server::Board for ApiBoard {
         let (app, l, i) = (self.0.clone(), layout, id.clone());
         // Windows must be touched from the main thread.
         let _ = self.0.run_on_main_thread(move || show_message(&app, l, Some(i), "API server", tr, link));
+        id
+    }
+    fn post_alert(&self, layout: Grid, tr: Transition, link: Option<String>) -> String {
+        let id = next_id(&self.0, "api");
+        stop_player(&self.0, HERE);
+        let (app, l, i) = (self.0.clone(), layout, id.clone());
+        let _ = self.0.run_on_main_thread(move || put_on_board_as(&app, l, Some(i), "API server", tr, Shown::Message, link, true));
         id
     }
     fn link(&self) -> Option<String> {
@@ -2256,6 +2404,7 @@ fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), Strin
         new.save(&st.settings_path);
         (old, new)
     };
+    focus::set_own_fullscreen(new.fullscreen());
     // Into or out of full screen first, so a pop-up or widget is then placed as usual.
     let screen_moved = old.screen_name != new.screen_name || old.screen_pos != new.screen_pos;
     if old.fullscreen() != new.fullscreen() || (new.fullscreen() && screen_moved) {
@@ -2556,6 +2705,7 @@ fn board_hidden(app: AppHandle) {
     if let Some(w) = board(&app) {
         let _ = w.hide();
     }
+    clear_focus_summary(&app);
 }
 
 #[tauri::command]
@@ -2737,6 +2887,8 @@ pub fn run() {
             agents::agents_list,
             agents::agents_preview,
             agents::agents_apply,
+            focus_summary_open,
+            focus_request_access,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -2897,6 +3049,20 @@ pub fn run() {
             tauri::async_runtime::spawn(sources_loop(h.clone()));
             tauri::async_runtime::spawn(watch_screens(h.clone()));
             notify::start(&h);
+            // Focus / Do Not Disturb: read now and then; macOS asks for access once.
+            focus::set_own_fullscreen(full);
+            #[cfg(target_os = "macos")]
+            eprintln!(
+                "[focus] macOS INFocusStatusCenter authorizationStatus at launch: {}; Communication Notifications entitlement: {}",
+                focus::mac::authorization().map_or("class missing (before macOS 12)", focus::mac_access_name),
+                if focus::mac::entitled() { "yes" } else { "no" }
+            );
+            let focus_on = h.state::<AppState>().settings.lock().unwrap().focus_mode != "ignore";
+            if focus_on && !focus::fake_set() {
+                focus::request_access(false);
+            }
+            let h3 = h.clone();
+            focus::watch(move |now| focus_changed(&h3, now));
             tauri::async_runtime::spawn(updates::run(h.clone()));
             tauri::async_runtime::spawn(community::run(h.clone()));
             let h2 = h.clone();

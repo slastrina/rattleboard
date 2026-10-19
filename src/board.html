@@ -63,6 +63,13 @@
   #linkMark { position: absolute; right: 9px; bottom: 5px; font-size: 11px; line-height: 1; color: var(--band); opacity: .5; pointer-events: none; display: none; }
   #stage.linked #linkMark { display: block; }
   html.full #linkMark { right: 12px; bottom: 9px; font-size: 13px; }
+  /* After a Focus that held pop-ups: "3 messages while you were focused", in the bottom band
+     (in place of the countdown bar). A click opens Message history. */
+  #summary { position: absolute; left: 50%; bottom: calc((var(--pad) - 18px) / 2); transform: translateX(-50%); display: none; align-items: center; height: 18px;
+    padding: 0 10px; border-radius: 9px; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 10.5px; white-space: nowrap;
+    color: var(--band); background: var(--bb-on); cursor: pointer; }
+  #summary.on { display: flex; }
+  html.full #summary { position: fixed; bottom: auto; top: 24px; height: 30px; padding: 0 16px; border-radius: 15px; font-size: 13px; background: var(--ov); color: var(--ov-ink); }
   #pair button { border: 1px solid rgba(0,0,0,.15); background: #fff; border-radius: 6px; font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; }
 </style>
 </head>
@@ -82,6 +89,7 @@
   <div id="bar"><div id="fill"></div></div>
   <div id="grip" data-nodrag="1" title="Drag to resize"></div>
   <div id="linkMark" title="Click the board to open its link">↗</div>
+  <div id="summary" data-act="focusSummary" data-nodrag="1" title="Open Message history"></div>
 </div>
 <div id="pair"></div>
 <a id="credit" data-act="site">iokig.com</a>

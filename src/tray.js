@@ -48,6 +48,7 @@ function render() {
       <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:#55575c">
         <div style="width:7px; height:7px; border-radius:50%; background:${connDot}; flex:none"></div><span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${RB.esc(status)}</span>
       </div>
+      ${focusLine()}
       <div data-act="show" style="background:${fin.frame}; padding:8px; border-radius:6px; display:flex; flex-direction:column; gap:3px; align-items:center; cursor:pointer">
         ${RB.mini(S.display, S)}
       </div>
@@ -57,6 +58,17 @@ function render() {
       `<div class="item" data-act="${act}"><span class="chk">${on ? '✓' : ''}</span><span>${label}</span><span class="key">${key}</span></div>`).join('')}</div>`).join('')}`;
   const h = Math.ceil(menu.offsetHeight + 28);
   if (h !== lastH) { lastH = h; RB.invoke('tray_resize', { height: h }); }
+}
+
+// "Focus on — holding pop-ups" (Settings → Behavior → While Focus is on), under the status.
+function focusLine() {
+  const f = S.focus;
+  if (!f || !f.on || !(f.holding || f.muted)) return '';
+  const name = S.os === 'mac' ? 'Focus' : 'Do Not Disturb';
+  const text = f.holding ? `${name} on — holding pop-ups${f.held ? ` · ${f.held} waiting` : ''}` : `${name} on — pop-ups are silent`;
+  return `<div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:#55575c">
+    <div style="width:7px; height:7px; border-radius:50%; background:#8a6ad8; flex:none"></div><span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${RB.esc(text)}</span>
+  </div>`;
 }
 
 // Sequences this computer is playing, each with a Stop button.

@@ -101,6 +101,14 @@ pub struct Settings {
     /// Check the community directory once a day for newer versions of the plugins installed
     /// from it (it only asks; nothing is updated without the user saying so)
     pub plugin_update_check: bool,
+    /// While a Focus (macOS) or Do Not Disturb (Windows, GNOME, KDE) is on: "hold" (the
+    /// board still updates but doesn't pop up or make a sound, and one summary pops up when
+    /// it ends) | "mute" (pops up as usual, silently) | "ignore"
+    pub focus_mode: String,
+    /// Sources alerts and messages sent with priority "alert" still pop up during a Focus
+    pub focus_alerts: bool,
+    /// A full-screen board follows Focus too; off (the default), a kiosk ignores it
+    pub focus_fullscreen: bool,
 }
 
 /// Board sizes by name: rows × columns.
@@ -159,6 +167,9 @@ impl Default for Settings {
             update_latest: String::new(),
             update_url: String::new(),
             plugin_update_check: true,
+            focus_mode: "hold".into(),
+            focus_alerts: true,
+            focus_fullscreen: false,
         }
     }
 }
@@ -216,6 +227,9 @@ impl Settings {
             self.notify_target = "this".into();
         }
         self.notify_return_sec = self.notify_return_sec.min(3600);
+        if !["hold", "mute", "ignore"].contains(&self.focus_mode.as_str()) {
+            self.focus_mode = "hold".into();
+        }
         if !crate::update::is_release_url(&self.update_url) {
             self.update_url.clear();
         }
