@@ -108,20 +108,29 @@ pub fn from_homebrew() -> bool {
     })
 }
 
-/// Puts the "Update available" item at the top of the native tray menu (Windows, Linux), or
-/// takes it away, and notes it in the tray icon's tooltip. No lock is held while the menu
-/// changes (see `available`). Runs on the main thread, so two calls never interleave.
+/// Puts the "Update available" item at the top of the native tray menu (Windows, Linux), and
+/// "Plugin updates (N)…" under it (see community.rs), or takes them away, and notes them in
+/// the tray icon's tooltip. No lock is held while the menu changes (see `available`). Runs on
+/// the main thread, so two calls never interleave.
 pub fn sync_tray(app: &AppHandle) {
     let h = app.clone();
     let _ = app.run_on_main_thread(move || sync_tray_now(&h));
 }
 
+/// The ids of the items at the top of the tray menu, in order; a separator follows them.
+#[cfg(not(target_os = "macos"))]
+const TOP: [&str; 2] = ["update", "plugin_updates"];
+
 fn sync_tray_now(app: &AppHandle) {
     let label = available(app).map(|v| format!("Update available: v{v}…"));
+    let plugins = crate::community::offered();
+    let plugins = (plugins > 0 && app.state::<AppState>().settings.lock().unwrap().plugin_update_check).then_some(plugins);
     if let Some(t) = app.tray_by_id("main") {
-        let tip = match &label {
-            Some(_) => "Rattleboard · update available".to_string(),
-            None => "Rattleboard".to_string(),
+        let tip = match (&label, plugins) {
+            (Some(_), _) => "Rattleboard · update available".to_string(),
+            (None, Some(1)) => "Rattleboard · a plugin update".to_string(),
+            (None, Some(n)) => format!("Rattleboard · {n} plugin updates"),
+            (None, None) => "Rattleboard".to_string(),
         };
         let _ = t.set_tooltip(Some(tip));
     }
@@ -129,23 +138,26 @@ fn sync_tray_now(app: &AppHandle) {
     if let Some(m) = app.try_state::<crate::TrayMenu>() {
         use tauri::menu::{MenuItem, PredefinedMenuItem};
         let m = &m.0;
-        match (m.get("update"), label) {
-            (Some(item), Some(l)) => {
-                if let Some(i) = item.as_menuitem() {
-                    let _ = i.set_text(l);
-                }
-            }
-            (None, Some(l)) => {
-                if let (Ok(item), Ok(sep)) = (MenuItem::with_id(app, "update", l, true, None::<&str>), PredefinedMenuItem::separator(app)) {
-                    let _ = m.insert_items(&[&item, &sep], 0);
-                }
-            }
-            (Some(_), None) => {
-                // The item and the separator after it.
-                let _ = m.remove_at(1);
+        // Take away the top items there are, and the separator after them, then put back the
+        // ones wanted now.
+        let have = m.items().map(|v| v.iter().take_while(|i| TOP.iter().any(|t| i.id() == *t)).count()).unwrap_or(0);
+        if have > 0 {
+            for _ in 0..=have {
                 let _ = m.remove_at(0);
             }
-            (None, None) => {}
+        }
+        let want: Vec<(&str, String)> = [label.map(|l| (TOP[0], l)), plugins.map(|n| (TOP[1], format!("Plugin updates ({n})…")))].into_iter().flatten().collect();
+        if !want.is_empty() {
+            let mut at = 0;
+            for (id, text) in want {
+                if let Ok(item) = MenuItem::with_id(app, id, text, true, None::<&str>) {
+                    let _ = m.insert(&item, at);
+                    at += 1;
+                }
+            }
+            if let Ok(sep) = PredefinedMenuItem::separator(app) {
+                let _ = m.insert(&sep, at);
+            }
         }
     }
 }

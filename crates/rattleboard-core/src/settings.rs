@@ -98,6 +98,9 @@ pub struct Settings {
     /// The newest release that check found, and its page, so a restart shows it at once
     pub update_latest: String,
     pub update_url: String,
+    /// Check the community directory once a day for newer versions of the plugins installed
+    /// from it (it only asks; nothing is updated without the user saying so)
+    pub plugin_update_check: bool,
 }
 
 /// Board sizes by name: rows × columns.
@@ -155,6 +158,7 @@ impl Default for Settings {
             update_last_check: 0,
             update_latest: String::new(),
             update_url: String::new(),
+            plugin_update_check: true,
         }
     }
 }
@@ -329,6 +333,7 @@ mod tests {
         // Settings files from before the update check have none of its fields.
         let old: Settings = serde_json::from_str(r#"{"boardName": "Kitchen"}"#).unwrap();
         assert!(old.update_check && old.update_last_check == 0 && old.update_latest.is_empty());
+        assert!(old.plugin_update_check);
         let s = Settings::default().merge(serde_json::json!({"updateUrl": "https://evil.example/"})).unwrap();
         assert!(s.update_url.is_empty());
     }

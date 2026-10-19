@@ -195,6 +195,7 @@ function viewSources() {
       </div>
     </div>` : '';
   return `<div class="grid" style="gap:14px 16px" id="srcRoot">
+    ${puBanner()}
     <div class="lbl">Now</div>
     <div style="display:flex; align-items:center; gap:10px; min-width:0">
       <div class="dot" id="srcDot" style="background:${dot}"></div><span id="srcStatus" style="flex:1; min-width:0; text-wrap:pretty">${esc(status)}</span>
@@ -223,7 +224,7 @@ function viewSources() {
     ${engineRows()}
     <div style="grid-column:1 / -1" class="hint">Sources run on this computer only. Secrets (tokens, private calendar addresses) are kept in ${RB.keychain(S)}, one entry per source, and never written to a file or sent anywhere but the source's own address.</div>
   </div>
-  ${SR.approve ? approveDialog() : ''}${SR.countdown ? countdownDialog() : ''}`;
+  ${SR.approve ? approveDialog() : ''}${SR.countdown ? countdownDialog() : ''}${PU.open ? puDialog() : ''}`;
 }
 
 function summary(x, p) {

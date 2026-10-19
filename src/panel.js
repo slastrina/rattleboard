@@ -163,6 +163,8 @@ function viewSettings() {
       <div class="lbl">Updates</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.updateCheck, 'updateCheck')}<span class="hint">Check for updates automatically (once a day, on GitHub). Rattleboard never installs anything itself.</span></div>
       <div></div>${updateRow()}
+      <div class="lbl">Plugin updates</div>
+      <div style="display:flex; align-items:center; gap:10px">${tog(s.pluginUpdateCheck !== false, 'pluginUpdateCheck')}<span class="hint">Check once a day for newer versions of the plugins you installed from Community plugins, and ask before updating any of them</span></div>
       <div class="lbl">Full screen at launch</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.fullscreenLaunch, 'fullscreenLaunch')}<span class="hint">Open in full screen at launch, for a spare computer used as a board. Otherwise full screen lasts until Rattleboard quits.</span></div>
       ${S.hasTray === false ? `<div class="lbl">No tray</div>
@@ -816,8 +818,12 @@ document.addEventListener('pointerdown', () => (pointerDown = true), true);
 document.addEventListener('pointerup', () => { pointerDown = false; setTimeout(render, 0); }, true);
 document.addEventListener('focusout', () => setTimeout(render, 0));
 
-function setView(v) {
+// "settings/sources/updates" (the tray's Plugin updates item): a tab, and the review sheet.
+function setView(path) {
+  const [v, tab, more] = String(path).split('/');
   L.view = v;
+  if (v === 'settings' && tab) L.tab = tab;
+  if (more === 'updates') puOpenSoon();
   if (v === 'setup') Object.assign(L, { step: 0, test: 'idle', testLayout: null, setupSource: setupDefault(), su: newSetupChoices(), suBusy: false, suError: '', suRotation: null });
   if (v === 'settings' && L.tab === 'boards' && L.addMode === 'nearby') scanNearby();
   if (v === 'settings' && L.tab === 'display') loadScreens();
@@ -915,6 +921,7 @@ RB.delegate(root, 'click', {
   sound: () => save({ sound: !S.settings.sound }),
   launchLogin: () => save({ launchLogin: !S.settings.launchLogin }),
   updateCheck: () => save({ updateCheck: !S.settings.updateCheck }),
+  pluginUpdateCheck: () => save({ pluginUpdateCheck: S.settings.pluginUpdateCheck === false }),
   checkUpdates,
   openUpdate: (el, e) => { e.preventDefault(); RB.invoke('open_update'); },
   site: (el, e) => { e.preventDefault(); RB.invoke('open_site'); },

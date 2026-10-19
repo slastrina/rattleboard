@@ -34,10 +34,12 @@ function render() {
   ];
   // A newer release (see updates.rs): first thing in the menu; it opens the release page.
   const up = S.update && S.update.available;
+  // Newer versions of community plugins (see community.rs): under it; it opens the review sheet.
+  const pu = S.pluginUpdates || 0;
   menu.style.margin = mac ? '0 auto' : '0';
   menu.innerHTML = `
     ${paused && s.setupDone ? `<div class="update-group"><div class="item update" data-act="resume"><span class="chk">❙❙</span><span>Checking paused · Resume</span><span class="key"></span></div></div>` : ''}
-    ${up ? `<div class="update-group"><div class="item update" data-act="update"><span class="chk">↑</span><span>Update available: v${RB.esc(up)}…</span><span class="key"></span></div></div>` : ''}
+    ${up || pu ? `<div class="update-group">${up ? `<div class="item update" data-act="update"><span class="chk">↑</span><span>Update available: v${RB.esc(up)}…</span><span class="key"></span></div>` : ''}${pu ? `<div class="item update" data-act="pluginUpdates"><span class="chk">↑</span><span>Plugin updates (${pu})…</span><span class="key"></span></div>` : ''}</div>` : ''}
     <div style="padding:8px 10px 10px; display:flex; flex-direction:column; gap:8px">
       <div style="display:flex; justify-content:space-between; align-items:baseline">
         <span style="font-weight:600">${RB.esc(s.boardName || 'Rattleboard')}</span>
@@ -95,6 +97,7 @@ const act = {
   site: () => { RB.invoke('open_site'); RB.invoke('close_window', { label: 'tray' }); },
   kofi: () => { RB.invoke('open_kofi'); RB.invoke('close_window', { label: 'tray' }); },
   update: () => { RB.invoke('open_update'); RB.invoke('close_window', { label: 'tray' }); },
+  pluginUpdates: () => RB.invoke('open_window', { view: 'settings/sources/updates' }),
   resume: () => RB.invoke('update_settings', { patch: { polling: true } }),
   quit: () => RB.invoke('quit')
 };

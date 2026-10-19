@@ -220,6 +220,8 @@ struct Snapshot {
     /// False on a Linux desktop with no tray (see `fullscreen::linux::tray_available`)
     has_tray: bool,
     update: UpdateInfo,
+    /// Updates offered for plugins installed from Community plugins (see community.rs)
+    plugin_updates: usize,
 }
 
 /// A newer release, for the tray's "Update available" item and Settings.
@@ -311,6 +313,7 @@ fn snapshot(st: &AppState) -> Snapshot {
             available: (s.update_check && rattleboard_core::update::is_newer(&s.update_latest, env!("CARGO_PKG_VERSION"))).then(|| s.update_latest.clone()),
             homebrew: updates::from_homebrew(),
         },
+        plugin_updates: if s.plugin_update_check { community::offered() } else { 0 },
         settings: s,
     }
 }
@@ -819,7 +822,8 @@ fn import_plugin(app: AppHandle, manifest: Value) -> Result<Value, String> {
     if manifest["kind"] == "rattleboard-source" {
         let source = manifest.get("source").cloned().ok_or("That file has no source in it")?;
         if let Some(p) = manifest.get("plugin").filter(|p| p.is_object()) {
-            e.install(p, false).map_err(refused)?;
+            let pid = e.install(p, false).map_err(refused)?;
+            community::forget(&app, &pid);
         }
         let plugin = source["plugin"].as_str().ok_or("The source names no plugin")?.to_string();
         let id = e.add(&plugin, source.get("settings")).map_err(refused)?;
@@ -838,6 +842,8 @@ fn import_plugin(app: AppHandle, manifest: Value) -> Result<Value, String> {
         return Ok(json!({ "source": id, "plugin": plugin }));
     }
     let id = e.install(&manifest, false).map_err(refused)?;
+    // Community plugins record their version again straight after (community_installed).
+    community::forget(&app, &id);
     Ok(json!({ "plugin": id }))
 }
 
@@ -2293,6 +2299,9 @@ fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), Strin
     if old.update_check != new.update_check {
         updates::sync_tray(app);
     }
+    if old.plugin_update_check != new.plugin_update_check {
+        community::recheck_cached(app);
+    }
     if old.polling != new.polling || old.source != new.source {
         sync_pause_item(app);
     }
@@ -2713,6 +2722,9 @@ pub fn run() {
             community::community_detail,
             community::community_manifest,
             community::community_installed,
+            community::community_updates,
+            community::community_review,
+            community::community_skip,
             community::open_community,
             remove_plugin,
             approve_plugin,
@@ -2848,6 +2860,7 @@ pub fn run() {
                 sync_pause_item(&h);
                 tray = tray.menu(&menu).on_menu_event(|app, e| match e.id().as_ref() {
                     "update" => updates::open_update(app.clone()),
+                    "plugin_updates" => open_panel(app, "settings/sources/updates"),
                     "show" => present_board(app, true),
                     "next" => sources_next(app.clone()),
                     "fullscreen" => toggle_fullscreen(app.clone()),
@@ -2885,6 +2898,7 @@ pub fn run() {
             tauri::async_runtime::spawn(watch_screens(h.clone()));
             notify::start(&h);
             tauri::async_runtime::spawn(updates::run(h.clone()));
+            tauri::async_runtime::spawn(community::run(h.clone()));
             let h2 = h.clone();
             tauri::async_runtime::spawn(async move { restart_server(&h2).await });
             // Debug profiles: RATTLEBOARD_OPEN=settings/sources opens a window at launch, for

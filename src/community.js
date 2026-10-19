@@ -264,3 +264,166 @@ root.addEventListener('keydown', e => {
     render(true);
   }
 }, true);
+
+// ---------------------------------------------------------------- plugin updates
+// Newer versions of plugins installed from Community plugins (src-tauri/src/community.rs
+// counts them once a day). Settings → Sources shows a banner; Review opens this sheet, which
+// lists each update with what changes against the installed plugin. Nothing is updated until
+// the user says so: Update shows the usual confirm step, and Update all is only offered when
+// no update adds addresses to reach or secrets to give.
+const PU = { open: false, loading: false, error: null, data: null, reviews: {}, confirm: null, busy: null, msg: null };
+
+function puOpen() {
+  Object.assign(PU, { open: true, error: null, confirm: null, busy: null, msg: null, reviews: {} });
+  CM.open = false;
+  render(true);
+  return puLoad();
+}
+// From the tray: once the page has its state.
+function puOpenSoon() {
+  const go = () => (S ? puOpen() : setTimeout(go, 100));
+  go();
+}
+function puLoad() {
+  PU.loading = true; render(true);
+  return RB.invoke('community_updates')
+    .then(d => {
+      PU.data = d;
+      // The manifests themselves, for the exact change summary (did the script change?) and
+      // the confirm step.
+      for (const u of d.updates) if (!u.needsApp && !PU.reviews[u.id]) puReview(u.id);
+    })
+    .catch(e => { PU.error = String(e); })
+    .finally(() => { PU.loading = false; render(true); });
+}
+function puReview(id) {
+  PU.reviews[id] = { loading: true };
+  return RB.invoke('community_review', { id })
+    .then(r => { PU.reviews[id] = r; })
+    .catch(e => { PU.reviews[id] = { error: String(e) }; })
+    .finally(() => render(true));
+}
+const puOffered = () => (PU.data ? PU.data.updates.filter(u => !u.needsApp) : []);
+const puChanges = u => (PU.reviews[u.id] && PU.reviews[u.id].changes) || u.changes;
+const puOwnConfirm = c => c.hostsAdded.length > 0 || c.secretsAdded.length > 0;
+const puAllReady = () => {
+  const list = puOffered();
+  return list.length > 1 && list.every(u => PU.reviews[u.id] && PU.reviews[u.id].confirm && !puOwnConfirm(PU.reviews[u.id].changes));
+};
+
+function puBanner() {
+  const n = (S && S.pluginUpdates) || 0;
+  if (!n) return '';
+  return `<div style="grid-column:1 / -1; display:flex; align-items:center; gap:10px; background:#fff8e6; border-radius:8px; padding:8px 12px; box-shadow:0 0 0 1px rgba(138,90,0,.18)" id="puBanner">
+      <span style="color:#8a5a00; font-weight:600">↑</span><span style="flex:1; min-width:0">${n} plugin update${n === 1 ? '' : 's'} available</span>
+      <button class="btn" data-act="puOpen">Review</button></div>`;
+}
+
+function puChangeLines(u) {
+  const c = puChanges(u), r = PU.reviews[u.id], mono = l => l.map(h => `<span class="mono" style="font-size:11.5px">${esc(h)}</span>`).join(', ');
+  const names = l => l.map(esc).join(', ');
+  const warn = t => `<span style="color:#a8321f">${t}</span>`;
+  const out = [];
+  if (c.kind) out.push(`Kind: ${esc(KINDS[c.kind[0]] || c.kind[0])} → ${esc(KINDS[c.kind[1]] || c.kind[1])}`);
+  if (c.hostsAdded.length) out.push(warn(`Now also reaches ${mono(c.hostsAdded)}`));
+  if (c.hostsRemoved.length) out.push(`No longer reaches ${mono(c.hostsRemoved)}`);
+  if (c.secretsAdded.length) out.push(warn(`Asks for new secrets: ${names(c.secretsAdded)}`));
+  if (c.secretsRemoved.length) out.push(`No longer needs: ${names(c.secretsRemoved)}`);
+  if (c.settingsAdded.length) out.push(`New settings: ${names(c.settingsAdded)} <span class="hint">(with their defaults)</span>`);
+  if (c.settingsRemoved.length) out.push(`Settings removed: ${names(c.settingsRemoved)}`);
+  if (c.scriptChanged === true) out.push('Its script changed');
+  else if (c.scriptChanged === false) out.push('<span class="hint">Its script is the same</span>');
+  else if (r && r.loading) out.push('<span class="hint">Checking the new version…</span>');
+  if (!out.length || (out.length === 1 && c.scriptChanged === false)) out.unshift('<span class="hint">No change to what it reaches, its settings or its secrets</span>');
+  if (r && r.error) out.push(warn(esc(r.error)));
+  return out.map(l => `<div style="font-size:12px; overflow-wrap:anywhere">${l}</div>`).join('');
+}
+
+function puRow(u, i) {
+  const r = PU.reviews[u.id], busy = PU.busy === u.id || PU.busy === 'all';
+  const actions = u.needsApp
+    ? `<span class="hint">Needs Rattleboard ${esc(u.needsApp)} or later</span><div style="flex:1"></div><button class="btn" data-act="puSkip" data-v="${esc(u.id)}">Skip this version</button>`
+    : `<button class="primary" data-act="puUpdate" data-v="${esc(u.id)}" ${busy || !r || !r.confirm ? 'disabled' : ''}>${busy ? 'Updating…' : 'Update'}</button>
+       <button class="btn" data-act="puSkip" data-v="${esc(u.id)}" ${busy ? 'disabled' : ''}>Skip this version</button>`;
+  const link = u.readme || u.folder ? cmA('cmGitHub', 'readme:' + u.id, u.readme ? 'README on GitHub' : 'View on GitHub') : '';
+  return `<div class="puRow" data-id="${esc(u.id)}" style="display:flex; flex-direction:column; gap:6px; padding:10px 14px; border-top:${i ? '1px solid rgba(0,0,0,.06)' : '0'}">
+      <div style="display:flex; align-items:baseline; gap:8px; min-width:0">
+        <b style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${esc(u.name)}</b>
+        <span class="mono" style="font-size:11.5px; color:#55575c; white-space:nowrap">${esc(u.from)} → ${esc(u.to)}</span>
+        <div style="flex:1"></div>${link}
+      </div>
+      <div style="display:flex; flex-direction:column; gap:2px">${puChangeLines(u)}</div>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">${actions}</div>
+      ${PU.confirm === u.id && r && r.confirm ? linkConfirmBox(r.confirm, 'puUpdateYes', 'puUpdateNo', 'Update') : ''}
+    </div>`;
+}
+
+function puDialog() {
+  const d = PU.data, list = d ? d.updates : [], n = puOffered().length;
+  const body = PU.error ? `<div style="font-size:12px; color:#c0392b">${esc(PU.error)}</div>`
+    : !d ? `<div class="hint" style="padding:18px 0; text-align:center">Checking for plugin updates…</div>`
+    : !list.length ? `<div class="hint" style="padding:18px 0; text-align:center">All your community plugins are up to date.</div>`
+    : cmBox(list.map(puRow).join(''));
+  const all = puAllReady(), ownConfirm = puOffered().some(u => puOwnConfirm(puChanges(u)));
+  return modal(`<div style="display:flex; align-items:baseline; gap:10px"><div style="font-size:15px; font-weight:600; flex:1">Plugin updates</div>${d && d.fetched ? `<span class="hint">Checked ${esc(clock(d.fetched))}</span>` : ''}</div>
+    <div class="hint" style="line-height:1.45; text-wrap:pretty">Newer versions of plugins you installed from Community plugins. Nothing changes until you update; your sources keep their settings and keys.</div>
+    ${d && d.warning ? `<div style="font-size:12px; color:#8a5a00">${esc(d.warning)}</div>` : ''}
+    ${body}
+    ${PU.msg ? `<div style="font-size:12px; color:${PU.msg.ok ? '#2f8a4c' : '#c0392b'}; text-wrap:pretty">${esc(PU.msg.text)}</div>` : ''}
+    <div style="display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:4px">
+      ${n > 1 && ownConfirm ? `<span class="hint" style="flex:1; text-wrap:pretty">Updates that reach new addresses or ask for new secrets are updated one at a time.</span>` : ''}
+      <button class="btn" style="font-size:13px; padding:5px 14px" data-act="puClose">Close</button>
+      ${n > 1 ? `<button class="primary" data-act="puAll" ${all && !PU.busy ? '' : 'disabled'}>${PU.busy === 'all' ? 'Updating…' : 'Update all'}</button>` : ''}
+    </div>`);
+}
+
+// Installs a reviewed update as Community plugins would (import_plugin checks the manifest
+// again), then records its version.
+function puInstall(id) {
+  const r = PU.reviews[id], u = PU.data && PU.data.updates.find(x => x.id === id);
+  if (!r || !r.confirm || !u) return Promise.reject(new Error('Nothing to update'));
+  return RB.invoke('import_plugin', { manifest: r.confirm.manifest })
+    .then(() => RB.invoke('community_installed', { id }))
+    .then(() => { delete PU.reviews[id]; return u; });
+}
+function puDone(names) {
+  CM.data = null;
+  PU.msg = { ok: true, text: `Updated ${names.join(', ')}. Sources using ${names.length === 1 ? 'it' : 'them'} keep their settings and keys.` };
+  return Promise.all([puLoad(), srcRefresh()]);
+}
+
+RB.delegate(root, 'click', {
+  puOpen: () => puOpen(),
+  puClose: () => { PU.open = false; PU.confirm = null; render(true); },
+  puUpdate: el => { PU.confirm = el.dataset.v; PU.msg = null; render(true); },
+  puUpdateNo: () => { PU.confirm = null; render(true); },
+  puUpdateYes: () => {
+    const id = PU.confirm; PU.confirm = null; PU.busy = id; render(true);
+    puInstall(id).then(u => puDone([u.name]))
+      .catch(e => { PU.msg = { ok: false, text: String(e) }; })
+      .finally(() => { PU.busy = null; render(true); });
+  },
+  puAll: () => {
+    if (!puAllReady()) return;
+    PU.busy = 'all'; PU.confirm = null; PU.msg = null; render(true);
+    const names = [];
+    puOffered().reduce((p, u) => p.then(() => puInstall(u.id)).then(x => names.push(x.name)), Promise.resolve())
+      .then(() => puDone(names))
+      .catch(e => { PU.msg = { ok: false, text: (names.length ? `Updated ${names.join(', ')}, then: ` : '') + String(e) }; return puLoad(); })
+      .finally(() => { PU.busy = null; render(true); });
+  },
+  puSkip: el => {
+    const u = PU.data && PU.data.updates.find(x => x.id === el.dataset.v); if (!u) return;
+    RB.invoke('community_skip', { id: u.id, version: u.to })
+      .then(() => { PU.msg = { ok: true, text: `Skipped ${u.name} ${u.to}. You'll be asked again when a newer version comes out.` }; return puLoad(); })
+      .catch(e => { PU.msg = { ok: false, text: String(e) }; render(true); });
+  }
+});
+root.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && PU.open && L.view === 'settings' && L.tab === 'sources') {
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (PU.confirm) PU.confirm = null; else PU.open = false;
+    render(true);
+  }
+}, true);
+if (location.hash.split('/')[2] === 'updates') puOpenSoon();

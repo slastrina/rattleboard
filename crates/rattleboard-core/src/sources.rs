@@ -800,6 +800,11 @@ impl Engine {
         Value::Object(out)
     }
 
+    /// An installed (not built-in) plugin's manifest, as installed.
+    pub fn manifest(&self, id: &str) -> Option<Manifest> {
+        self.inner.lock().unwrap().plugins.iter().find(|p| p.id == id && !p.builtin).cloned()
+    }
+
     /// Installed (not built-in) plugins: id, the manifest's own "version" if it has one, and
     /// how many sources in the rotation use it. For the community directory's badges.
     pub fn installed(&self) -> Vec<(String, Option<String>, usize)> {
