@@ -9,7 +9,10 @@ name: Release
 #   DEVELOPER_ID_CERT_P12 (base64 .p12 holding only the Developer ID Application identity),
 #   DEVELOPER_ID_CERT_PASSWORD, APPLE_SIGNING_IDENTITY ("Developer ID Application: … (TEAMID)"),
 #   APPLE_ID, APPLE_APP_PASSWORD (app-specific password),
-#   APPLE_ORG_NAME (not used by Tauri; referenced only so the log masks it).
+#   APPLE_ORG_NAME (not used by Tauri; referenced only so the log masks it),
+#   RATTLEBOARD_PROVISION_PROFILE (base64 Developer ID provisioning profile for
+#   io.github.slastrina.rattleboard with Communication Notifications, which macOS requires
+#   before it shares Focus status; optional: without it the app ships without the entitlement).
 on:
   push:
     tags: ['v*']
@@ -79,6 +82,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          PROVISION_PROFILE: ${{ secrets.RATTLEBOARD_PROVISION_PROFILE }}
           # Not secret: the team ID is embedded in every app it signs.
           APPLE_TEAM_ID: LN23P43535
         run: |
@@ -90,6 +94,13 @@ jobs:
             [ -n "${!v}" ] && { echo "$v<<__RB_EOF__"; echo "${!v}"; echo "__RB_EOF__"; } >> "$GITHUB_ENV"
           done
           echo "Signing with the Developer ID identity."
+          # The Focus entitlement needs its provisioning profile inside the app, or the app
+          # won't launch; so both go in only together, and only in this signed build.
+          if [ -n "$PROVISION_PROFILE" ]; then
+            echo "$PROVISION_PROFILE" | base64 --decode > src-tauri/macos/embedded.provisionprofile
+            echo "RB_MAC_ARGS=--config src-tauri/tauri.macos-release.conf.json" >> "$GITHUB_ENV"
+            echo "Embedding the provisioning profile and the Focus entitlement."
+          fi
 
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
@@ -97,7 +108,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_ORG_NAME: ${{ secrets.APPLE_ORG_NAME }}
         with:
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ env.RB_MAC_ARGS }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: Rattleboard ${{ github.ref_name }}
           releaseBody: |

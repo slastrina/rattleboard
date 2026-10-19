@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Used only by the signed Developer ID release build (see tauri.macos-release.conf.json and
+     .github/workflows/release.yml), together with the embedded provisioning profile that
+     grants it. macOS only shares Focus status with apps that carry this entitlement. -->
+<dict>
+	<key>com.apple.application-identifier</key>
+	<string>LN23P43535.io.github.slastrina.rattleboard</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>LN23P43535</string>
+	<key>com.apple.developer.usernotifications.communication</key>
+	<true/>
+</dict>
+</plist>

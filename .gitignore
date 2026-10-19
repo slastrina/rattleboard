@@ -22,3 +22,6 @@ history.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Written by the release workflow from a secret; never committed.
+src-tauri/macos/embedded.provisionprofile

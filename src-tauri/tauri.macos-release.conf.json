@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "macOS": {
+      "entitlements": "macos/Rattleboard.entitlements",
+      "files": {
+        "embedded.provisionprofile": "macos/embedded.provisionprofile"
+      }
+    }
+  }
+}
