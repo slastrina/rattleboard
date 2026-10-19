@@ -392,7 +392,7 @@ Rattleboards also answer a few requests of their own under `/rattleboard/`. They
 
 | Request | Body | Response |
 | --- | --- | --- |
-| `GET /rattleboard/info` | — | `{"app":"rattleboard","protocol":3,"version":"0.6.1","platform":"macos","name":"…","board":{"rows":6,"cols":22},"adaptive":true,"features":["sequence","strategy","notify","sources"]}` |
+| `GET /rattleboard/info` | — | `{"app":"rattleboard","protocol":3,"version":"0.7.0","platform":"macos","name":"…","board":{"rows":6,"cols":22},"adaptive":true,"features":["sequence","strategy","notify","sources"]}` |
 | `POST /rattleboard/notify` | `{"text":"…" or "characters":[[…]],"seconds":15,"source":"Build bot","link":"https://…"}` | `201 {"status":"ok","id":"note-…","seconds":15}`; a [notification](#notifications), shown once |
 | `POST /rattleboard/sequence` | `{"name":"…","loop":true,"frames":[…]}` (up to 256 KB) | `201 {"status":"ok","id":"seq-…","frames":2}` |
 | `GET /rattleboard/sequence` | — | `{"running":true,"id":"seq-…","name":"Morning","frame":2,"frames":5,"loop":true}` or `{"running":false}` |
@@ -904,7 +904,7 @@ The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The desktop
 Pushing a version tag builds the macOS (universal), Windows and Linux x86_64 and arm64 (`.deb`, AppImage) installers in GitHub Actions and attaches them to a GitHub Release, and publishes the Rattleboard Web image to Docker Hub (`slastrina/rattleboard-web`, when the `DOCKERHUB_TOKEN` secret and `DOCKERHUB_USERNAME` variable are set) and to `ghcr.io/slastrina/rattleboard-web`, for amd64, arm64 and arm/v7. The macOS build is signed and notarized when the Developer ID secrets listed in `.github/workflows/release.yml` are set on the repository.
 
 ```sh
-git tag v0.6.1 && git push origin v0.6.1
+git tag v0.7.0 && git push origin v0.7.0
 ```
 
 ## Support Rattleboard
