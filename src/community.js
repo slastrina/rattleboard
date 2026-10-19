@@ -11,7 +11,7 @@ const cmEntry = id => (CM.data ? CM.data.plugins.find(p => p.id === id) : null);
 const cmA = (act, v, text, title) => `<a href="#" data-act="${act}" data-v="${esc(v)}" ${title ? `title="${esc(title)}"` : ''} style="color:${RB.ACC}; text-decoration:none">${esc(text)}</a>`;
 const cmBadge = (text, bg, fg) => `<span style="font-size:10.5px; font-weight:600; padding:1px 7px; border-radius:8px; background:${bg}; color:${fg}; white-space:nowrap">${esc(text)}</span>`;
 const cmState = p => (p.update ? cmBadge('Update available', '#fff1cc', '#8a5a00') : p.installed ? cmBadge('Installed', '#e2f3e7', '#2f8a4c') : '');
-const cmKey = p => (p.needsSecrets ? cmBadge('Needs a key', '#eef0f3', '#55575c') : '');
+const cmKey = p => (p.needsApp ? cmBadge(`Needs Rattleboard ${p.needsApp} or later`, '#fdecea', '#a8321f') : '') + (p.needsSecrets ? cmBadge('Needs a key', '#eef0f3', '#55575c') : '');
 const cmBox = inner => `<div style="display:flex; flex-direction:column; border-radius:8px; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.1); overflow:hidden">${inner}</div>`;
 const cmSizeKey = id => { const z = RB.sizeOf(S.settings); return `${id}@${z.rows}x${z.cols}`; };
 
@@ -110,7 +110,8 @@ function viewCommunityDetail(p) {
   const line = (label, html) => `<div class="lbl">${label}</div><div style="min-width:0; overflow-wrap:anywhere">${html}</div>`;
   const fieldList = (list, none) => (list.length ? list.map(f => esc(f.label || f.key)).join(', ') : `<span class="hint">${none}</span>`);
   const installedText = p.installed && p.installedVersion && p.installedVersion !== p.version ? ` <span class="hint">(${esc(p.installedVersion)} installed)</span>` : '';
-  const action = CM.busy === p.id ? `<button class="primary" disabled>Checking…</button>`
+  const action = p.needsApp ? `<button class="primary" disabled title="Update Rattleboard to install this plugin">${p.installed ? 'Update' : 'Install'}</button><span class="hint">Needs Rattleboard ${esc(p.needsApp)} or later</span>`
+    : CM.busy === p.id ? `<button class="primary" disabled>Checking…</button>`
     : p.update ? `<button class="primary" data-act="cmInstall" data-v="${esc(p.id)}">Update to ${esc(p.version)}</button>`
     : p.installed ? `<button class="btn" disabled style="color:#2f8a4c; font-size:13px; padding:5px 14px">Installed ✓</button>`
     : `<button class="primary" data-act="cmInstall" data-v="${esc(p.id)}">Install</button>`;
@@ -220,7 +221,7 @@ RB.delegate(root, 'click', {
   cmShow: el => cmShow(el.dataset.v),
   cmGitHub: (el, e) => { e.preventDefault(); RB.invoke('open_community', { target: el.dataset.v }).catch(err => flash(err)); },
   cmInstall: el => {
-    const p = cmEntry(el.dataset.v); if (!p) return;
+    const p = cmEntry(el.dataset.v); if (!p || p.needsApp) return;
     CM.busy = p.id; CM.msg = null; CM.confirm = null; render(true);
     RB.invoke('community_manifest', { id: p.id })
       .then(c => { CM.confirm = c; })

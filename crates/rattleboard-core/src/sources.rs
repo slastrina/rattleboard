@@ -365,6 +365,7 @@ pub struct HttpJob {
     url: String,
     headers: Vec<(String, String)>,
     kind: String,
+    sign: Option<plugins::Sign>,
     pick: plugins::Pick,
     max: usize,
     name: String,
@@ -1013,21 +1014,24 @@ impl Engine {
     pub async fn run_job(&self, job: Job, local: NaiveDateTime, now: i64) -> Result<Data, String> {
         match job {
             Job::Http(job) => {
-                let HttpJob { method, url, headers, kind, pick, max, name, settings, secret_keys, instance } = *job;
+                let HttpJob { method, url, headers, kind, sign, pick, max, name, settings, secret_keys, instance } = *job;
                 // Filled in before the request, so nothing borrowed is held across it.
-                let (url, headers, pick) = {
+                let (url, headers, pick, key) = {
                     let secrets: HashMap<String, String> = secret_keys.iter().map(|k| (k.clone(), self.secret(&instance, k))).collect();
                     let lookup = |k: &str| secrets.get(k).cloned().unwrap_or_default();
-                    let ctx = plugins::Ctx { name: &name, item: None, settings: &settings, secret: Some(&lookup), now: local, clock24: false };
+                    let ctx = plugins::Ctx { name: &name, item: None, settings: &settings, secret: Some(&lookup), now: local, now_ms: now, clock24: false, list: &[], row: None };
                     let url = plugins::render(&url, &ctx, plugins::Mode::Url);
                     let headers: Vec<(String, String)> = headers.iter().map(|(k, v)| (k.clone(), plugins::render(v, &ctx, plugins::Mode::Header))).collect();
-                    let path = |p: &Option<String>| p.as_ref().map(|p| plugins::render(p, &ctx, plugins::Mode::Card)).filter(|p| !p.trim().is_empty());
-                    let pick = plugins::Pick { items: path(&pick.items), id: path(&pick.id), title: path(&pick.title), body: path(&pick.body), time: path(&pick.time) };
-                    (url, headers, pick)
+                    let key = sign.as_ref().map(|s| plugins::render(&s.key, &ctx, plugins::Mode::Header));
+                    (url, headers, pick.resolve(&ctx), key)
                 };
                 if url.trim().is_empty() {
                     return Err("Set the address in this source's settings".into());
                 }
+                let url = match (&sign, key) {
+                    (Some(s), Some(k)) => plugins::sign_url(url.trim(), s, k.trim())?,
+                    _ => url,
+                };
                 let body = plugins::fetch(&self.http, &method, url.trim(), &headers).await?;
                 match kind.as_str() {
                     "rss" => plugins::parse_feed(&body, max),
@@ -1264,6 +1268,7 @@ fn job_for(x: &Instance, p: &Manifest) -> Option<Job> {
                 url: f.url.clone(),
                 headers: f.headers.clone(),
                 kind: p.kind.clone(),
+                sign: f.sign.clone(),
                 pick: p.pick.clone(),
                 max: p.max_items,
                 name: x.name.clone(),
@@ -1300,7 +1305,13 @@ fn short_time(ms: i64, clock24: bool) -> String {
 /// A feed item (or a status) as a card: the plugin's template if it has one, otherwise the
 /// standard card with the source's name and the item's time across the top.
 fn item_card(x: &Instance, p: &Manifest, it: &Item, now: i64, clock24: bool, reason: &str) -> Card {
-    let face = template_face(x, p, Some(it), plugins::local_of(now), clock24).unwrap_or_else(|| {
+    item_card_in(x, p, it, &[], plugins::local_of(now), now, clock24, reason)
+}
+
+/// `list` is a status list's items, for {{rows}} and {{count}}.
+#[allow(clippy::too_many_arguments)]
+fn item_card_in(x: &Instance, p: &Manifest, it: &Item, list: &[Item], local: NaiveDateTime, now: i64, clock24: bool, reason: &str) -> Card {
+    let face = template_face(x, p, Some(it), list, local, now, clock24).unwrap_or_else(|| {
         if let Some(g) = &it.characters {
             return Face::Grid { grid: g.clone() };
         }
@@ -1314,9 +1325,14 @@ fn item_card(x: &Instance, p: &Manifest, it: &Item, now: i64, clock24: bool, rea
     Card { instance: x.id.clone(), name: label(x, p), face, live: false, reason: reason.into(), seen: vec![it.key.clone()] }
 }
 
-fn template_face(x: &Instance, p: &Manifest, it: Option<&Item>, now: NaiveDateTime, clock24: bool) -> Option<Face> {
+fn template_face(x: &Instance, p: &Manifest, it: Option<&Item>, list: &[Item], now: NaiveDateTime, now_ms: i64, clock24: bool) -> Option<Face> {
     let t = p.card.template.as_ref()?;
-    let ctx = plugins::Ctx { name: &x.name, item: it, settings: &x.settings, secret: None, now, clock24 };
+    template_text(x, p, t, it, list, now, now_ms, clock24)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn template_text(x: &Instance, p: &Manifest, t: &str, it: Option<&Item>, list: &[Item], now: NaiveDateTime, now_ms: i64, clock24: bool) -> Option<Face> {
+    let ctx = plugins::Ctx { name: &x.name, item: it, settings: &x.settings, secret: None, now, now_ms, clock24, list, row: p.card.row.as_deref() };
     let mut text = plugins::render(t, &ctx, plugins::Mode::Card);
     // A template from settings (the JSON URL built-in) has placeholders of its own.
     if text.contains("{{") {
@@ -1377,13 +1393,13 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
             Some(card(face, false, "ambient"))
         }
         ("text", _) => {
-            let face = template_face(x, p, None, ctx.local, clock24).unwrap_or_else(|| Face::Text { text: x.name.clone(), left: false, chip, pages: 1 });
+            let face = template_face(x, p, None, &[], ctx.local, ctx.now, clock24).unwrap_or_else(|| Face::Text { text: x.name.clone(), left: false, chip, pages: 1 });
             Some(card(face, true, "ambient"))
         }
         ("ical", _) => {
             let d = data?;
             let next = d.items.iter().find(|it| it.end.unwrap_or(0) > ctx.now)?;
-            let face = template_face(x, p, Some(next), ctx.local, clock24).unwrap_or_else(|| Face::Standard {
+            let face = template_face(x, p, Some(next), &[], ctx.local, ctx.now, clock24).unwrap_or_else(|| Face::Standard {
                 chip: chip.unwrap_or(0),
                 name: x.name.clone(),
                 time: short_time(ctx.now, clock24),
@@ -1415,6 +1431,21 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
                 }),
                 None => None,
             }
+        }
+        // A status list (pick.as "status"): the first item, with the list for {{rows}};
+        // card.empty when nothing's left. Re-drawn while it's up, as its data and times change.
+        _ if p.pick.status => {
+            let d = data?;
+            let mut c = match d.items.first() {
+                Some(it) => item_card_in(x, p, it, &d.items, ctx.local, ctx.now, clock24, "ambient · status"),
+                None => {
+                    let face = template_text(x, p, p.card.empty.as_deref()?, None, &[], ctx.local, ctx.now, clock24)?;
+                    card(face, true, "ambient · nothing listed")
+                }
+            };
+            c.seen.clear();
+            c.live = true;
+            Some(c)
         }
         // A status: one JSON value, a command's output
         _ => {
@@ -1869,6 +1900,72 @@ pub mod tests {
         let (g, _) = e.preview(&id, &at(&c, 10), false, true).await.unwrap();
         assert_eq!(HITS.load(Ordering::SeqCst), 2);
         assert!(shows(&g, "COUNT 2"));
+    }
+
+    /// Format 1.1 end to end: a PTV-style signed request (checked by the server), a status
+    /// list filtered, sorted and cut, drawn with {{rows}} and filters; card.empty when the
+    /// filter leaves nothing; and a status card is live (re-drawn while it's up).
+    #[tokio::test]
+    async fn signed_status_lists() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static BAD: AtomicUsize = AtomicUsize::new(0);
+        const KEY: &str = "aaaabbbb-cccc-dddd-eeee-ffff00001111";
+        let app = axum::Router::new().fallback(|uri: axum::http::Uri| async move {
+            // What PTV does: the HMAC-SHA1 of path?query (without &signature=...) must match.
+            let pq = uri.path_and_query().unwrap().as_str().to_string();
+            let (rest, sig) = pq.rsplit_once("&signature=").unwrap_or((&pq, ""));
+            if plugins::hmac_hex("hmac-sha1", KEY.as_bytes(), rest.as_bytes(), true) != sig {
+                BAD.fetch_add(1, Ordering::SeqCst);
+                return (axum::http::StatusCode::FORBIDDEN, "bad signature").into_response();
+            }
+            axum::Json(json!({"departures": [
+                {"route_id": 6, "direction_id": 1, "run_ref": "a", "platform_number": "2", "scheduled_departure_utc": "2026-10-19T12:09:00Z", "estimated_departure_utc": null},
+                {"route_id": 6, "direction_id": 1, "run_ref": "b", "platform_number": "1", "scheduled_departure_utc": "2026-10-19T12:03:00Z", "estimated_departure_utc": "2026-10-19T12:04:00Z"},
+                {"route_id": 16, "direction_id": 8, "run_ref": "c", "platform_number": "13", "scheduled_departure_utc": "2026-10-19T12:01:00Z", "estimated_departure_utc": null},
+                {"route_id": 6, "direction_id": 1, "run_ref": "d", "platform_number": "2", "scheduled_departure_utc": "2026-10-19T12:30:00Z", "estimated_departure_utc": null}
+            ], "status": {"version": "3.0", "health": 1}})).into_response()
+        });
+        use axum::response::IntoResponse;
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        let manifest = json!({"format": 1, "id": "com.example.trains", "name": "Trains", "kind": "json",
+            "fetch": {"url": format!("{base}/v3/departures/route_type/0/stop/{{{{settings.stop}}}}?max_results=6&devid={{{{settings.devid}}}}"), "every": "1m",
+                      "sign": {"type": "hmac-sha1", "key": "{{secret.key}}"}},
+            "pick": {"items": "$.departures[*]", "id": "$.run_ref", "title": "$.platform_number", "as": "status",
+                     "fields": {"when": ["$.estimated_departure_utc", "$.scheduled_departure_utc"], "platform": "$.platform_number"},
+                     "where": [{"path": "$.direction_id", "op": "==", "value": "{{settings.direction}}"}],
+                     "sort": {"path": "$.scheduled_departure_utc"}},
+            "maxItems": 2,
+            "card": {"template": "{{settings.label|upper}}\n{{rows}}", "row": "{{field.when|mins|pad:-2}} MIN PLAT {{field.platform}}", "empty": "No trains", "align": "left"},
+            "settings": [{"key": "devid"}, {"key": "stop", "default": "1071"}, {"key": "label", "default": "Flinders St"}, {"key": "direction"}],
+            "secrets": [{"key": "key"}]});
+        let (e, _) = engine("signed");
+        e.install(&manifest, false).unwrap();
+        let id = e.add("com.example.trains", Some(&json!({"devid": "1000123", "direction": "1"}))).unwrap();
+        let text = |g: &Grid| crate::cards::ascii(g).join("\n");
+        // No key yet: refused before anything is sent
+        let (g, reason) = e.preview(&id, &ctx(0), false, false).await.unwrap();
+        assert!(reason.contains("signing key"), "{reason}: {}", text(&g[0]));
+        e.set_secrets(&id, &json!({"key": KEY})).unwrap();
+        let c = ctx(0);
+        let (g, reason) = e.preview(&id, &c, false, true).await.unwrap();
+        assert_eq!(BAD.load(Ordering::SeqCst), 0, "the server accepted the signature");
+        assert_eq!(reason, "ambient · status");
+        // 12:00 now (local taken as UTC): run b at 12:04 (estimated), run a at 12:09; c is the other way, d cut by maxItems
+        assert_eq!(text(&g[0]), ["                      ", "FLINDERS ST           ", " 4 MIN PLAT 1         ", " 9 MIN PLAT 2         ", "                      ", "                      "].join("\n"));
+        {
+            let i = e.inner.lock().unwrap();
+            let x = i.config.rotation[0].clone();
+            let p = i.plugins.iter().find(|p| p.id == x.plugin).unwrap().clone();
+            assert!(card_for(&i, &x, &p, &c, 0, false).unwrap().live, "a status list is live");
+        }
+        // A direction with nothing in it: card.empty
+        let mut rot = e.view()["rotation"].clone();
+        rot[0]["settings"]["direction"] = json!("5");
+        e.put_rotation(&json!({"rotation": rot}), false).unwrap();
+        let (g, _) = e.preview(&id, &at(&c, 10), false, true).await.unwrap();
+        assert!(text(&g[0]).contains("NO TRAINS"), "{}", text(&g[0]));
     }
 
     pub fn ctx(min: i64) -> Ctx {

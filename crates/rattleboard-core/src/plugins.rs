@@ -68,6 +68,20 @@ pub struct Fetch {
     pub url: String,
     pub method: String,
     pub headers: Vec<(String, String)>,
+    /// Format 1.1: an HMAC signature appended to the URL as a query parameter
+    pub sign: Option<Sign>,
+}
+
+/// `fetch.sign`: an HMAC over the URL's path and query (as sent), in hex, appended as one
+/// more query parameter. PTV's Timetable API v3 signs requests this way.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sign {
+    /// "hmac-sha1" or "hmac-sha256"
+    pub kind: String,
+    /// A template, usually {{secret.key}}
+    pub key: String,
+    pub param: String,
+    pub upper: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -85,7 +99,40 @@ pub struct Pick {
     pub title: Option<String>,
     pub body: Option<String>,
     pub time: Option<String>,
+    /// Format 1.1: extra values for templates ({{field.name}}), each the first of up to five
+    /// paths that has something
+    pub fields: Vec<(String, Vec<String>)>,
+    /// Format 1.1: conditions every item must meet (pick.where)
+    pub conds: Vec<Cond>,
+    pub sort: Option<SortSpec>,
+    /// Format 1.1: "pick.as": "status": the list is one status card, not a feed
+    pub status: bool,
 }
+
+/// One `pick.where` condition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cond {
+    pub path: String,
+    /// == != > >= < <= contains exists missing
+    pub op: String,
+    /// Null for exists and missing
+    pub value: Value,
+    /// Applies only while setting `.0` is one of `.1`
+    pub when: Option<(String, Vec<String>)>,
+}
+
+/// `pick.sort`. `numeric` None is automatic: numeric when every key that's there is a number.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SortSpec {
+    pub path: String,
+    pub desc: bool,
+    pub numeric: Option<bool>,
+}
+
+pub const OPS: [&str; 9] = ["==", "!=", ">", ">=", "<", "<=", "contains", "exists", "missing"];
+pub const FILTERS: [&str; 9] = ["upper", "lower", "trim", "num", "round", "default", "pad", "time", "mins"];
+pub const MAX_FIELDS: usize = 20;
+pub const MAX_CONDS: usize = 20;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CardSpec {
@@ -93,11 +140,15 @@ pub struct CardSpec {
     pub chip: Option<u8>,
     pub left: bool,
     pub pages: usize,
+    /// Format 1.1: a status list's line for each item, joined into {{rows}}
+    pub row: Option<String>,
+    /// Format 1.1: what a status list says when no item is left
+    pub empty: Option<String>,
 }
 
 impl Default for CardSpec {
     fn default() -> Self {
-        Self { template: None, chip: None, left: false, pages: 1 }
+        Self { template: None, chip: None, left: false, pages: 1, row: None, empty: None }
     }
 }
 
@@ -343,7 +394,16 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
                 }
                 Some(_) => return Err("fetch.headers must be an object of strings".into()),
             }
-            Some(Fetch { url, method, headers })
+            for (_, v) in &headers {
+                check_filters(v, "fetch.headers")?;
+            }
+            check_filters(&url, "fetch.url")?;
+            let sign = match f.get("sign") {
+                None | Some(Value::Null) => None,
+                Some(Value::Object(g)) => Some(parse_sign(g)?),
+                Some(_) => return Err("fetch.sign must be an object".into()),
+            };
+            Some(Fetch { url, method, headers, sign })
         }
     };
 
@@ -397,7 +457,22 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
                 }
                 Ok(s)
             };
-            pick = Pick { items: path("items")?, id: path("id")?, title: path("title")?, body: path("body")?, time: path("time")? };
+            pick = Pick { items: path("items")?, id: path("id")?, title: path("title")?, body: path("body")?, time: path("time")?, ..Default::default() };
+            pick.fields = parse_fields(p.get("fields"))?;
+            pick.conds = parse_where(p.get("where"))?;
+            pick.sort = parse_sort(p.get("sort"))?;
+            pick.status = match opt_str(p, "as", "pick.as")? {
+                None | Some("feed") => false,
+                Some("status") => true,
+                Some(a) => return Err(format!("pick.as {a:?} must be feed or status")),
+            };
+            let extra = !pick.fields.is_empty() || !pick.conds.is_empty() || pick.sort.is_some() || pick.status;
+            if extra && kind != "json" {
+                return Err("pick.fields, pick.where, pick.sort and pick.as are for json plugins".into());
+            }
+            if (!pick.conds.is_empty() || pick.sort.is_some() || pick.status) && pick.items.is_none() {
+                return Err("pick.where, pick.sort and pick.as need pick.items (the list)".into());
+            }
         }
         Some(_) => return Err("pick must be an object".into()),
     }
@@ -416,6 +491,19 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
                 }
                 if t.contains("{{secret.") {
                     return Err("Secrets can only be used in fetch.url and fetch.headers, never in card.template".into());
+                }
+                check_filters(t, "card.template")?;
+            }
+            for (k, slot) in [("row", &mut card.row), ("empty", &mut card.empty)] {
+                *slot = opt_str(c, k, &format!("card.{k}"))?.map(str::to_string).filter(|t| !t.trim().is_empty());
+                if let Some(t) = slot {
+                    if t.len() > 2000 {
+                        return Err(format!("card.{k} is too long"));
+                    }
+                    if t.contains("{{secret.") {
+                        return Err(format!("Secrets can only be used in fetch.url and fetch.headers, never in card.{k}"));
+                    }
+                    check_filters(t, &format!("card.{k}"))?;
                 }
             }
             card.chip = chip(c.get("chip").unwrap_or(&Value::Null))?;
@@ -511,7 +599,177 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
             secrets.push(SecretSpec { key, label });
         }
     }
+    for c in &pick.conds {
+        if let Some((k, _)) = &c.when {
+            if !settings.iter().any(|s| &s.key == k) {
+                return Err(format!("pick.where: when.setting {k:?} isn't one of the settings"));
+            }
+        }
+    }
+    if (card.row.is_some() || card.empty.is_some()) && !pick.status {
+        return Err("card.row and card.empty are for \"pick\": {\"as\": \"status\"}".into());
+    }
     Ok(Manifest { id, name, description, kind, fetch, run, pick, card, alert, alert_words, max_items, dwell, every, schedule, settings, secrets, builtin, raw: v.clone() })
+}
+
+fn parse_sign(g: &Map<String, Value>) -> Result<Sign, String> {
+    let kind = opt_str(g, "type", "fetch.sign.type")?.unwrap_or("").to_string();
+    if kind != "hmac-sha1" && kind != "hmac-sha256" {
+        return Err("fetch.sign.type must be hmac-sha1 or hmac-sha256".into());
+    }
+    let key = opt_str(g, "key", "fetch.sign.key")?.unwrap_or("").trim().to_string();
+    if key.is_empty() || key.len() > 500 {
+        return Err("fetch.sign.key must be the signing key, like {{secret.key}}".into());
+    }
+    match opt_str(g, "over", "fetch.sign.over")? {
+        None | Some("path+query") => {}
+        Some(o) => return Err(format!("fetch.sign.over {o:?} must be path+query")),
+    }
+    let param = opt_str(g, "param", "fetch.sign.param")?.unwrap_or("signature").to_string();
+    if param.is_empty() || param.len() > 40 || !param.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
+        return Err("fetch.sign.param must be 1–40 letters, digits, _ . or -".into());
+    }
+    let upper = match opt_str(g, "case", "fetch.sign.case")? {
+        None | Some("upper") => true,
+        Some("lower") => false,
+        Some(c) => return Err(format!("fetch.sign.case {c:?} must be upper or lower")),
+    };
+    Ok(Sign { kind, key, param, upper })
+}
+
+/// A pick path: checked now unless it's made from placeholders.
+fn check_path(s: &str, what: &str) -> Result<String, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(format!("{what} needs a path like $.name"));
+    }
+    if !s.contains("{{") {
+        parse_path(s).map_err(|e| format!("{what}: {e}"))?;
+    }
+    Ok(s.to_string())
+}
+
+fn parse_fields(v: Option<&Value>) -> Result<Vec<(String, Vec<String>)>, String> {
+    let o = match v {
+        None | Some(Value::Null) => return Ok(vec![]),
+        Some(Value::Object(o)) if o.len() <= MAX_FIELDS => o,
+        Some(_) => return Err(format!("pick.fields must be an object of at most {MAX_FIELDS} names and paths")),
+    };
+    let mut out = vec![];
+    for (k, v) in o {
+        if !valid_key(k) {
+            return Err(format!("pick.fields name {k:?} must be letters, digits or _"));
+        }
+        let what = format!("pick.fields.{k}");
+        let paths = match v {
+            Value::String(s) => vec![check_path(s, &what)?],
+            Value::Array(a) if (1..=5).contains(&a.len()) => a.iter().map(|p| p.as_str().ok_or(format!("{what} must be a path or a list of up to 5 paths")).and_then(|p| check_path(p, &what))).collect::<Result<_, _>>()?,
+            _ => return Err(format!("{what} must be a path or a list of up to 5 paths")),
+        };
+        out.push((k.clone(), paths));
+    }
+    Ok(out)
+}
+
+fn parse_where(v: Option<&Value>) -> Result<Vec<Cond>, String> {
+    let a = match v {
+        None | Some(Value::Null) => return Ok(vec![]),
+        Some(Value::Array(a)) if a.len() <= MAX_CONDS => a,
+        Some(_) => return Err(format!("pick.where must be a list of at most {MAX_CONDS} conditions")),
+    };
+    let mut out = vec![];
+    for c in a {
+        let o = c.as_object().ok_or("each pick.where condition is an object like {\"path\": \"$.x\", \"op\": \"==\", \"value\": 1}")?;
+        let path = check_path(opt_str(o, "path", "pick.where path")?.unwrap_or(""), "pick.where")?;
+        let op = opt_str(o, "op", "pick.where op")?.unwrap_or("").trim().to_string();
+        if !OPS.contains(&op.as_str()) {
+            return Err(format!("pick.where op {op:?} must be one of {}", OPS.join(" ")));
+        }
+        let value = o.get("value").cloned().unwrap_or(Value::Null);
+        let unary = op == "exists" || op == "missing";
+        match &value {
+            Value::Null if unary => {}
+            Value::Null => return Err(format!("pick.where {op} needs a value")),
+            _ if unary => return Err(format!("pick.where {op} takes no value")),
+            Value::String(s) if s.len() > 500 => return Err("pick.where value is too long".into()),
+            Value::String(s) if s.contains("{{secret.") => return Err("Secrets can't be used in pick.where".into()),
+            Value::String(_) | Value::Number(_) | Value::Bool(_) => {}
+            _ => return Err("pick.where value must be a string, number or true/false".into()),
+        }
+        if let Value::String(s) = &value {
+            check_filters(s, "pick.where value")?;
+        }
+        let when = match o.get("when") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(w)) => {
+                let k = opt_str(w, "setting", "pick.where when.setting")?.unwrap_or("").to_string();
+                let is: Vec<String> = match w.get("is") {
+                    Some(Value::String(s)) => vec![s.trim().to_string()],
+                    Some(Value::Array(a)) if (1..=20).contains(&a.len()) => a.iter().map(|x| x.as_str().map(|s| s.trim().to_string()).ok_or("when.is must be strings")).collect::<Result<_, _>>()?,
+                    _ => return Err("pick.where when.is must be a value or a list of values".into()),
+                };
+                Some((k, is))
+            }
+            Some(_) => return Err("pick.where when must be {\"setting\": \"key\", \"is\": [\"value\"]}".into()),
+        };
+        out.push(Cond { path, op, value, when });
+    }
+    Ok(out)
+}
+
+fn parse_sort(v: Option<&Value>) -> Result<Option<SortSpec>, String> {
+    let o = match v {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err("pick.sort must be {\"path\": \"$.x\", \"order\": \"asc\"}".into()),
+    };
+    let path = check_path(opt_str(o, "path", "pick.sort.path")?.unwrap_or(""), "pick.sort")?;
+    let desc = match opt_str(o, "order", "pick.sort.order")? {
+        None | Some("asc") => false,
+        Some("desc") => true,
+        Some(x) => return Err(format!("pick.sort.order {x:?} must be asc or desc")),
+    };
+    let numeric = match o.get("numeric") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return Err("pick.sort.numeric must be true or false".into()),
+    };
+    Ok(Some(SortSpec { path, desc, numeric }))
+}
+
+/// Every {{...|filter}} in a template names a known filter with a valid argument.
+pub fn check_filters(t: &str, what: &str) -> Result<(), String> {
+    let mut rest = t;
+    while let Some(i) = rest.find("{{") {
+        let after = &rest[i + 2..];
+        let Some(j) = after.find("}}") else { break };
+        let mut parts = after[..j].split('|');
+        parts.next();
+        for f in parts {
+            let (name, arg) = match f.split_once(':') {
+                Some((n, a)) => (n.trim(), Some(a)),
+                None => (f.trim(), None),
+            };
+            let ok = match (name, arg) {
+                ("upper" | "lower" | "trim" | "num" | "mins", None) => true,
+                ("round", None) => true,
+                ("round", Some(a)) => a.trim().parse::<u32>().is_ok_and(|n| n <= 6),
+                ("default", Some(_)) => true,
+                ("pad", Some(a)) => a.trim().parse::<i32>().is_ok_and(|n| n != 0 && (-40..=40).contains(&n)),
+                ("time", _) => true,
+                _ => false,
+            };
+            if !ok {
+                return Err(if FILTERS.contains(&name) {
+                    format!("{what}: |{f} has a missing or invalid argument")
+                } else {
+                    format!("{what}: unknown filter |{name}; use {}", FILTERS.join(", "))
+                });
+            }
+        }
+        rest = &after[j + 2..];
+    }
+    Ok(())
 }
 
 fn card_template(o: &Map<String, Value>) -> Option<&str> {
@@ -572,6 +830,9 @@ pub struct Item {
     /// Exact characters (a command's {"characters"})
     pub characters: Option<Grid>,
     pub chip: Option<u8>,
+    /// Format 1.1: pick.fields, by name ({{field.name}})
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub fields: std::collections::BTreeMap<String, String>,
 }
 
 /// What a fetch produced. A feed (`single` false) has new items to show once each; a status
@@ -767,8 +1028,15 @@ pub struct Ctx<'a> {
     pub settings: &'a Map<String, Value>,
     /// Looks a secret up; None outside the URL and headers
     pub secret: Option<&'a dyn Fn(&str) -> String>,
+    /// Local time
     pub now: NaiveDateTime,
+    /// The same moment, ms since the epoch ({{now:epoch}}, |mins)
+    pub now_ms: i64,
     pub clock24: bool,
+    /// A status list's items ({{rows}}, {{count}}); empty otherwise
+    pub list: &'a [Item],
+    /// card.row, for {{rows}}
+    pub row: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -804,19 +1072,69 @@ fn encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>().replace('+', "%20")
 }
 
+/// One placeholder: `name[:format][|filter[:arg]]...`.
 fn lookup(key: &str, ctx: &Ctx, mode: Mode) -> String {
-    let (name, fmt) = match key.split_once(':') {
+    let mut parts = key.split('|');
+    let head = parts.next().unwrap_or("").trim();
+    let mut v = value_of(head, ctx, mode);
+    for f in parts {
+        v = filter(&v, f, ctx);
+    }
+    v
+}
+
+/// "now", "now+2h", "now-90m" as an offset in ms from now (None if it isn't one of those).
+fn now_offset(name: &str) -> Option<i64> {
+    let rest = name.strip_prefix("now")?.trim();
+    if rest.is_empty() {
+        return Some(0);
+    }
+    let (sign, d) = match rest.split_at(1) {
+        ("+", d) => (1, d),
+        ("-", d) => (-1, d),
+        _ => return None,
+    };
+    let secs = duration(&json!(d.trim())).ok()?;
+    Some(sign * secs as i64 * 1000)
+}
+
+/// A time formatted, or as seconds ("epoch") or milliseconds ("epochms") since the epoch.
+fn time_text(local: NaiveDateTime, ms: i64, fmt: &str) -> String {
+    match fmt.trim() {
+        "epoch" => ms.div_euclid(1000).to_string(),
+        "epochms" => ms.to_string(),
+        f => format_time(local, f),
+    }
+}
+
+fn value_of(head: &str, ctx: &Ctx, mode: Mode) -> String {
+    let (name, fmt) = match head.split_once(':') {
         Some((n, f)) => (n.trim(), Some(f.trim())),
-        None => (key, None),
+        None => (head, None),
     };
     let default_fmt = if ctx.clock24 { "HH:mm" } else { "h:mm" };
     match name {
         "name" => ctx.name.to_string(),
         "title" => ctx.item.map(|i| i.title.clone()).unwrap_or_default(),
         "body" => ctx.item.map(|i| i.body.clone()).unwrap_or_default(),
-        "time" => ctx.item.and_then(|i| i.time).map(|t| format_time(local_of(t), fmt.unwrap_or(default_fmt))).unwrap_or_default(),
-        "now" => format_time(ctx.now, fmt.unwrap_or(default_fmt)),
+        "time" => ctx.item.and_then(|i| i.time).map(|t| time_text(local_of(t), t, fmt.unwrap_or(default_fmt))).unwrap_or_default(),
+        "count" => ctx.list.len().to_string(),
+        "rows" => {
+            let row = ctx.row.unwrap_or("{{title}}");
+            ctx.list
+                .iter()
+                .map(|it| render(row, &Ctx { item: Some(it), list: &[], row: None, ..*ctx }, Mode::Card))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
         _ => {
+            if let Some(off) = now_offset(name) {
+                let ms = ctx.now_ms + off;
+                return time_text(ctx.now + chrono::Duration::milliseconds(off), ms, fmt.unwrap_or(default_fmt));
+            }
+            if let Some(k) = name.strip_prefix("field.") {
+                return ctx.item.and_then(|i| i.fields.get(k).cloned()).unwrap_or_default();
+            }
             if let Some(k) = name.strip_prefix("settings.") {
                 return ctx.settings.get(k).map(|v| match v {
                     Value::String(s) => s.clone(),
@@ -829,6 +1147,90 @@ fn lookup(key: &str, ctx: &Ctx, mode: Mode) -> String {
             }
             String::new()
         }
+    }
+}
+
+/// |x| rounded half away from zero to `places` decimals, as digits: (negative, integer part,
+/// fraction digits). None past 1e15, where doubles stop being exact enough.
+fn rounded(x: f64, places: u32) -> Option<(bool, u64, String)> {
+    let scale = 10f64.powi(places as i32);
+    let m = (x.abs() * scale + 0.5).floor();
+    if !m.is_finite() || x.abs() >= 1e15 {
+        return None;
+    }
+    let m = m as u64;
+    let p = 10u64.pow(places);
+    let frac = if places == 0 { String::new() } else { format!("{:0width$}", m % p, width = places as usize) };
+    Some((x < 0.0 && m != 0, m / p, frac))
+}
+
+fn thousands(n: u64) -> String {
+    let d = n.to_string();
+    let mut out = String::new();
+    for (i, c) in d.chars().enumerate() {
+        if i > 0 && (d.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// One template filter (see FILTERS). A filter that doesn't apply (|num on words) leaves the
+/// value as it is.
+fn filter(v: &str, f: &str, ctx: &Ctx) -> String {
+    let (name, arg) = match f.split_once(':') {
+        Some((n, a)) => (n.trim(), Some(a)),
+        None => (f.trim(), None),
+    };
+    match name {
+        "upper" => v.to_uppercase(),
+        "lower" => v.to_lowercase(),
+        "trim" => v.trim().to_string(),
+        "num" => match numeric(v).and_then(|x| rounded(x, 2)) {
+            Some((neg, int, frac)) => {
+                let frac = frac.trim_end_matches('0');
+                format!("{}{}{}{frac}", if neg { "-" } else { "" }, thousands(int), if frac.is_empty() { "" } else { "." })
+            }
+            None => v.to_string(),
+        },
+        "round" => {
+            let places = arg.and_then(|a| a.trim().parse::<u32>().ok()).unwrap_or(0).min(6);
+            match numeric(v).and_then(|x| rounded(x, places)) {
+                Some((neg, int, frac)) => format!("{}{int}{}{frac}", if neg { "-" } else { "" }, if frac.is_empty() { "" } else { "." }),
+                None => v.to_string(),
+            }
+        }
+        "default" => {
+            if v.trim().is_empty() {
+                arg.unwrap_or("").to_string()
+            } else {
+                v.to_string()
+            }
+        }
+        "pad" => {
+            let n = arg.and_then(|a| a.trim().parse::<i32>().ok()).unwrap_or(0);
+            let width = crate::vestaboard::parse(v).len() as i32;
+            let fill = "{0}".repeat((n.abs() - width).max(0) as usize);
+            if n < 0 {
+                fill + v
+            } else {
+                v.to_string() + &fill
+            }
+        }
+        "time" | "mins" => {
+            let t = numeric(v).and_then(|n| parse_time(&json!(n))).or_else(|| parse_time(&json!(v.trim())));
+            match (name, t) {
+                ("time", Some(t)) => {
+                    let default_fmt = if ctx.clock24 { "HH:mm" } else { "h:mm" };
+                    let fmt = arg.map(str::trim).filter(|a| !a.is_empty()).unwrap_or(default_fmt);
+                    time_text(local_of(t), t, fmt)
+                }
+                (_, Some(t)) => ((t - ctx.now_ms).max(0) / 60_000).to_string(),
+                _ => v.to_string(),
+            }
+        }
+        _ => v.to_string(),
     }
 }
 
@@ -979,6 +1381,42 @@ pub async fn fetch(c: &reqwest::Client, method: &str, url: &str, headers: &[(Str
     Ok(body)
 }
 
+/// HMAC of `msg` under `key`, in hex.
+pub fn hmac_hex(kind: &str, key: &[u8], msg: &[u8], upper: bool) -> String {
+    use hmac::{Hmac, Mac};
+    let bytes = if kind == "hmac-sha256" {
+        let mut m = Hmac::<sha2::Sha256>::new_from_slice(key).expect("any key length");
+        m.update(msg);
+        m.finalize().into_bytes().to_vec()
+    } else {
+        let mut m = Hmac::<sha1::Sha1>::new_from_slice(key).expect("any key length");
+        m.update(msg);
+        m.finalize().into_bytes().to_vec()
+    };
+    bytes.iter().map(|b| if upper { format!("{b:02X}") } else { format!("{b:02x}") }).collect()
+}
+
+/// Signs a URL whose placeholders are filled in: the HMAC of its path and query, exactly as
+/// they'll be sent ("/v3/departures/route_type/0/stop/1071?devid=123"), appended as one more
+/// query parameter. A fragment is dropped first. The error never includes the URL or key.
+pub fn sign_url(url: &str, s: &Sign, key: &str) -> Result<String, String> {
+    if key.is_empty() {
+        return Err("Add this source's signing key in Settings → Sources".into());
+    }
+    let mut u = url::Url::parse(url).map_err(|_| "The address isn't a valid URL".to_string())?;
+    u.set_fragment(None);
+    if u.query() == Some("") {
+        u.set_query(None);
+    }
+    let msg = match u.query() {
+        Some(q) => format!("{}?{q}", u.path()),
+        None => u.path().to_string(),
+    };
+    let sig = hmac_hex(&s.kind, key.as_bytes(), msg.as_bytes(), s.upper);
+    let sep = if u.query().is_some() { '&' } else { '?' };
+    Ok(format!("{u}{sep}{}={sig}", s.param))
+}
+
 fn describe(e: reqwest::Error) -> String {
     if e.is_timeout() {
         "Timed out after 10 s".into()
@@ -1017,6 +1455,8 @@ pub fn parse_feed(bytes: &[u8], max: usize) -> Result<Data, String> {
 }
 
 /// A JSON document: a list of items at `pick.items`, or one value.
+/// `pick` has its placeholders filled in and its conditions settled (see `Pick::resolve`).
+/// A list is filtered by pick.where, then sorted by pick.sort, then cut to `max` (maxItems).
 pub fn parse_json(bytes: &[u8], pick: &Pick, max: usize) -> Result<Data, String> {
     let v: Value = serde_json::from_slice(bytes).map_err(|_| "The response isn't JSON".to_string())?;
     let item = |x: &Value| {
@@ -1025,18 +1465,233 @@ pub fn parse_json(bytes: &[u8], pick: &Pick, max: usize) -> Result<Data, String>
         let time = pick.time.as_ref().and_then(|p| parse_path(p).ok()).and_then(|p| select(x, &p).first().and_then(|t| parse_time(t)));
         let id = first_text(x, &pick.id);
         let key = if id.is_empty() { hash(&[&title, &body]) } else { hash(&[&id]) };
-        Item { key, title: short(&title, 400), body: short(&body, 400), time, ..Default::default() }
+        let fields = pick.fields.iter().map(|(k, paths)| (k.clone(), short(&field_text(x, paths), 400))).collect();
+        Item { key, title: short(&title, 400), body: short(&body, 400), time, fields, ..Default::default() }
     };
     match &pick.items {
         Some(p) => {
             let path = parse_path(p).map_err(|e| format!("pick.items: {e}"))?;
             let found = select(&v, &path);
-            if found.is_empty() {
+            if found.is_empty() && !pick.status {
                 return Err(format!("Nothing found at {p}"));
             }
-            Ok(Data { items: found.into_iter().take(max).map(item).collect(), single: false })
+            let mut kept: Vec<&Value> = found.into_iter().filter(|x| pick.conds.iter().all(|c| cond_holds(x, c))).collect();
+            if let Some(s) = &pick.sort {
+                sort_items(&mut kept, s);
+            }
+            Ok(Data { items: kept.into_iter().take(max).map(item).collect(), single: pick.status })
         }
         None => Ok(Data { items: vec![item(&v)], single: true }),
+    }
+}
+
+/// A field: the first of its paths whose first match is there and says something.
+fn field_text(x: &Value, paths: &[String]) -> String {
+    for p in paths {
+        let Ok(p) = parse_path(p) else { continue };
+        if let Some(v) = select(x, &p).into_iter().next().filter(|v| !v.is_null()) {
+            let t = value_text(v);
+            if !t.is_empty() {
+                return t;
+            }
+        }
+    }
+    String::new()
+}
+
+/// A number written plainly: [+-] digits [. digits] [e[+-]digits], nothing else (no "inf",
+/// no thousands separators), after trimming.
+pub fn numeric(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let b = s.as_bytes();
+    let mut i = 0;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    let int = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+    i += int;
+    let mut frac = 0;
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        frac = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+        i += frac;
+    }
+    if int + frac == 0 {
+        return None;
+    }
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        i += 1;
+        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+            i += 1;
+        }
+        let e = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if e == 0 {
+            return None;
+        }
+        i += e;
+    }
+    if i != b.len() {
+        return None;
+    }
+    s.parse::<f64>().ok().filter(|f| f.is_finite())
+}
+
+/// A JSON value's number: a number, or a string that's a plain number.
+fn num_of(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => numeric(s),
+        _ => None,
+    }
+}
+
+/// A scalar's text for comparing: strings trimmed, numbers as the board writes them.
+fn cmp_text(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.trim().to_string()),
+        Value::Number(_) => Some(value_text(v)),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Whether an item meets one pick.where condition (already resolved: no placeholders, and
+/// `when` settled).
+pub fn cond_holds(x: &Value, c: &Cond) -> bool {
+    let Ok(path) = parse_path(&c.path) else { return false };
+    let left = select(x, &path).into_iter().next().filter(|v| !v.is_null());
+    match (c.op.as_str(), left) {
+        ("exists", l) => l.is_some(),
+        ("missing", l) => l.is_none(),
+        (_, None) => false,
+        ("contains", Some(Value::Array(a))) => {
+            let r = cmp_text(&c.value).unwrap_or_default().to_ascii_lowercase();
+            a.iter().filter_map(cmp_text).any(|t| t.to_ascii_lowercase() == r)
+        }
+        (_, Some(Value::Array(_) | Value::Object(_))) => false,
+        (op, Some(l)) => {
+            if op != "contains" {
+                if let (Some(a), Some(b)) = (num_of(l), num_of(&c.value)) {
+                    return match op {
+                        "==" => a == b,
+                        "!=" => a != b,
+                        ">" => a > b,
+                        ">=" => a >= b,
+                        "<" => a < b,
+                        _ => a <= b,
+                    };
+                }
+            }
+            let (Some(a), Some(b)) = (cmp_text(l), cmp_text(&c.value)) else { return false };
+            let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
+            match op {
+                "==" => a == b,
+                "!=" => a != b,
+                ">" => a > b,
+                ">=" => a >= b,
+                "<" => a < b,
+                "<=" => a <= b,
+                _ => a.contains(&b),
+            }
+        }
+    }
+}
+
+/// Sorts a list by pick.sort: stable, and items without the key last whichever the order.
+pub fn sort_items(list: &mut [&Value], s: &SortSpec) {
+    let Ok(path) = parse_path(&s.path) else { return };
+    let key = |x: &Value| select(x, &path).into_iter().next().filter(|v| !v.is_null() && !v.is_array() && !v.is_object()).cloned();
+    let numeric = s.numeric.unwrap_or_else(|| {
+        let present: Vec<Value> = list.iter().filter_map(|x| key(x)).collect();
+        !present.is_empty() && present.iter().all(|v| num_of(v).is_some())
+    });
+    let mut keyed: Vec<(usize, Option<f64>, Option<String>)> = list
+        .iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let k = key(x);
+            if numeric {
+                (i, k.as_ref().and_then(num_of), None)
+            } else {
+                (i, None, k.as_ref().and_then(cmp_text).map(|t| t.to_ascii_lowercase()))
+            }
+        })
+        .collect();
+    use std::cmp::Ordering;
+    keyed.sort_by(|a, b| {
+        let o = if numeric {
+            match (a.1, b.1) {
+                (Some(x), Some(y)) => {
+                    let o = x.partial_cmp(&y).unwrap_or(Ordering::Equal);
+                    if s.desc { o.reverse() } else { o }
+                }
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            }
+        } else {
+            match (&a.2, &b.2) {
+                (Some(x), Some(y)) => {
+                    let o = x.cmp(y);
+                    if s.desc { o.reverse() } else { o }
+                }
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            }
+        };
+        o.then(a.0.cmp(&b.0))
+    });
+    let orig: Vec<&Value> = list.to_vec();
+    for (slot, (i, _, _)) in list.iter_mut().zip(keyed) {
+        *slot = orig[i];
+    }
+}
+
+impl Pick {
+    /// The pick for one fetch: placeholders in its paths and condition values filled in from
+    /// the source's settings, conditions whose `when` doesn't match the setting dropped, and
+    /// conditions whose value came out blank from a placeholder dropped (a filter on a blank
+    /// setting is off).
+    pub fn resolve(&self, ctx: &Ctx) -> Pick {
+        let path = |p: &Option<String>| p.as_ref().map(|p| render(p, ctx, Mode::Card)).filter(|p| !p.trim().is_empty());
+        let one = |p: &String| render(p, ctx, Mode::Card).trim().to_string();
+        let conds = self
+            .conds
+            .iter()
+            .filter(|c| match &c.when {
+                None => true,
+                Some((k, is)) => {
+                    let v = lookup(&format!("settings.{k}"), ctx, Mode::Card);
+                    is.iter().any(|x| x == v.trim())
+                }
+            })
+            .filter_map(|c| {
+                let value = match &c.value {
+                    Value::String(s) if s.contains("{{") => {
+                        let r = render(s, ctx, Mode::Card).trim().to_string();
+                        if r.is_empty() {
+                            return None;
+                        }
+                        Value::String(r)
+                    }
+                    Value::String(s) => Value::String(s.trim().to_string()),
+                    v => v.clone(),
+                };
+                Some(Cond { path: one(&c.path), op: c.op.clone(), value, when: None })
+            })
+            .collect();
+        Pick {
+            items: path(&self.items),
+            id: path(&self.id),
+            title: path(&self.title),
+            body: path(&self.body),
+            time: path(&self.time),
+            fields: self.fields.iter().map(|(k, ps)| (k.clone(), ps.iter().map(one).collect())).collect(),
+            conds,
+            sort: self.sort.as_ref().map(|s| SortSpec { path: one(&s.path), ..s.clone() }),
+            status: self.status,
+        }
     }
 }
 
@@ -1449,7 +2104,7 @@ mod tests {
         let settings: Map<String, Value> = serde_json::from_value(json!({"city": "New York", "n": 3})).unwrap();
         let secret = |k: &str| if k == "token" { "s3cr3t".to_string() } else { String::new() };
         let item = Item { title: "Hello".into(), body: "World".into(), time: None, ..Default::default() };
-        let ctx = Ctx { name: "News", item: Some(&item), settings: &settings, secret: Some(&secret), now: at(2026, 10, 18, 21, 5), clock24: false };
+        let ctx = Ctx { name: "News", item: Some(&item), settings: &settings, secret: Some(&secret), now: at(2026, 10, 18, 21, 5), now_ms: 0, clock24: false, list: &[], row: None };
         assert_eq!(render("https://x.io/w?q={{settings.city}}&k={{secret.token}}", &ctx, Mode::Url), "https://x.io/w?q=New%20York&k=s3cr3t");
         assert_eq!(render("{{settings.city}}", &ctx, Mode::Url), "New York");
         assert_eq!(render("Bearer {{secret.token}}", &ctx, Mode::Header), "Bearer s3cr3t");
@@ -1457,6 +2112,240 @@ mod tests {
         assert_eq!(render("{{now:ddd d MMM}} {{now:HH:mm}} {{now}} {{now:h:mm tt}}", &ctx, Mode::Card), "Sun 18 Oct 21:05 9:05 9:05 PM");
         assert_eq!(render("{{nope}}{{settings.n}} {{ unclosed", &ctx, Mode::Card), "3 {{ unclosed");
         assert_eq!(format_time(at(2026, 1, 2, 0, 7), "yyyy-MM-dd hh:mm [at] dddd MMMM"), "2026-01-02 12:07 at Friday January");
+    }
+
+    // ------------------------------------------------------------ format 1.1
+
+    fn ctx_at<'a>(settings: &'a Map<String, Value>, item: Option<&'a Item>, list: &'a [Item], row: Option<&'a str>) -> Ctx<'a> {
+        // 2026-10-19 09:38:30 UTC; the local time is given as the same wall time for the test
+        let now_ms = chrono::DateTime::parse_from_rfc3339("2026-10-19T09:38:30Z").unwrap().timestamp_millis();
+        Ctx { name: "Trains", item, settings, secret: None, now: NaiveDate::from_ymd_opt(2026, 10, 19).unwrap().and_hms_opt(9, 38, 30).unwrap(), now_ms, clock24: false, list, row }
+    }
+
+    fn json_plugin(pick: Value, card: Value) -> Result<Manifest, String> {
+        parse(&json!({"format": 1, "id": "com.example.list", "name": "List", "kind": "json", "fetch": {"url": "https://example.com/x"},
+            "pick": pick, "card": card, "settings": [{"key": "phase", "type": "select", "default": "departures", "options": ["departures", "arrivals", "airborne"]}, {"key": "dir", "type": "text", "default": ""}]}), false)
+    }
+
+    #[test]
+    fn manifest_format_1_1() {
+        let ok = json_plugin(json!({"items": "$.ac[*]", "title": "$.flight", "as": "status",
+            "fields": {"type": "$.t", "alt": ["$.alt_baro", "$.alt_geom"]},
+            "where": [{"path": "$.alt_baro", "op": "!=", "value": "ground"}, {"path": "$.baro_rate", "op": ">", "value": 300, "when": {"setting": "phase", "is": "departures"}}, {"path": "$.r", "op": "exists"}],
+            "sort": {"path": "$.alt_baro", "order": "asc", "numeric": true}}),
+            json!({"template": "{{settings.phase|upper}}\n{{rows}}", "row": "{{title|pad:8}}{{field.type}} {{field.alt|num}} FT", "empty": "Nothing nearby"})).unwrap();
+        assert_eq!(ok.pick.fields, vec![("alt".to_string(), vec!["$.alt_baro".to_string(), "$.alt_geom".to_string()]), ("type".to_string(), vec!["$.t".to_string()])]);
+        assert_eq!(ok.pick.conds.len(), 3);
+        assert_eq!(ok.pick.conds[1].when, Some(("phase".to_string(), vec!["departures".to_string()])));
+        assert_eq!(ok.pick.sort, Some(SortSpec { path: "$.alt_baro".into(), desc: false, numeric: Some(true) }));
+        assert!(ok.pick.status && ok.card.row.is_some() && ok.card.empty.is_some());
+        for (pick, card, msg) in [
+            (json!({"items": "$.a[*]", "title": "$.t", "where": [{"path": "$.x", "op": "=~", "value": 1}]}), json!({}), "op \"=~\""),
+            (json!({"items": "$.a[*]", "title": "$.t", "where": [{"path": "$.x", "op": "=="}]}), json!({}), "needs a value"),
+            (json!({"items": "$.a[*]", "title": "$.t", "where": [{"path": "$.x", "op": "exists", "value": 1}]}), json!({}), "takes no value"),
+            (json!({"items": "$.a[*]", "title": "$.t", "where": [{"path": "x", "op": "exists"}]}), json!({}), "starts with $"),
+            (json!({"items": "$.a[*]", "title": "$.t", "where": [{"path": "$.x", "op": "==", "value": [1]}]}), json!({}), "string, number"),
+            (json!({"items": "$.a[*]", "title": "$.t", "where": [{"path": "$.x", "op": "==", "value": "{{secret.k}}"}]}), json!({}), "Secrets"),
+            (json!({"items": "$.a[*]", "title": "$.t", "where": [{"path": "$.x", "op": "==", "value": 1, "when": {"setting": "nope", "is": "a"}}]}), json!({}), "when.setting"),
+            (json!({"title": "$.t", "where": [{"path": "$.x", "op": "exists"}]}), json!({}), "need pick.items"),
+            (json!({"items": "$.a[*]", "title": "$.t", "sort": {"path": "$.x", "order": "up"}}), json!({}), "asc or desc"),
+            (json!({"items": "$.a[*]", "title": "$.t", "sort": {"path": "$.x", "numeric": "yes"}}), json!({}), "numeric"),
+            (json!({"items": "$.a[*]", "title": "$.t", "fields": {"a b": "$.x"}}), json!({}), "pick.fields name"),
+            (json!({"items": "$.a[*]", "title": "$.t", "fields": {"a": "$[x]"}}), json!({}), "pick.fields.a"),
+            (json!({"items": "$.a[*]", "title": "$.t", "fields": {"a": []}}), json!({}), "up to 5 paths"),
+            (json!({"items": "$.a[*]", "title": "$.t", "as": "table"}), json!({}), "feed or status"),
+            (json!({"items": "$.a[*]", "title": "$.t"}), json!({"row": "{{title}}"}), "card.row and card.empty"),
+            (json!({"title": "$.t"}), json!({"template": "{{title|shout}}"}), "unknown filter |shout"),
+            (json!({"title": "$.t"}), json!({"template": "{{title|pad:0}}"}), "|pad:0"),
+            (json!({"title": "$.t"}), json!({"template": "{{title|round:9}}"}), "|round:9"),
+            (json!({"title": "$.t"}), json!({"template": "{{title|default}}"}), "|default"),
+        ] {
+            let e = json_plugin(pick.clone(), card.clone()).unwrap_err();
+            assert!(e.contains(msg), "{pick} {card}: {e}");
+        }
+        // Only json plugins pick fields
+        let rss = json!({"format": 1, "id": "com.example.r", "name": "R", "kind": "rss", "fetch": {"url": "https://example.com/f"}, "pick": {"fields": {"a": "$.a"}}});
+        assert!(parse(&rss, false).unwrap_err().contains("json plugins"));
+        // fetch.sign
+        let signed = |sign: Value| parse(&json!({"format": 1, "id": "com.example.ptv", "name": "PTV", "kind": "json",
+            "fetch": {"url": "https://timetableapi.ptv.vic.gov.au/v3/departures/route_type/0/stop/{{settings.stop}}?devid={{settings.devid}}", "sign": sign},
+            "pick": {"title": "$.status.version"}, "settings": [{"key": "stop"}, {"key": "devid"}], "secrets": [{"key": "key"}]}), false);
+        let m = signed(json!({"type": "hmac-sha1", "key": "{{secret.key}}"})).unwrap();
+        assert_eq!(m.fetch.unwrap().sign, Some(Sign { kind: "hmac-sha1".into(), key: "{{secret.key}}".into(), param: "signature".into(), upper: true }));
+        let m = signed(json!({"type": "hmac-sha256", "key": "{{secret.key}}", "over": "path+query", "param": "sig", "case": "lower"})).unwrap();
+        assert_eq!(m.fetch.unwrap().sign.unwrap(), Sign { kind: "hmac-sha256".into(), key: "{{secret.key}}".into(), param: "sig".into(), upper: false });
+        for (sign, msg) in [
+            (json!({"type": "md5", "key": "k"}), "hmac-sha1 or hmac-sha256"),
+            (json!({"type": "hmac-sha1"}), "fetch.sign.key"),
+            (json!({"type": "hmac-sha1", "key": "k", "over": "url"}), "path+query"),
+            (json!({"type": "hmac-sha1", "key": "k", "param": "a b"}), "fetch.sign.param"),
+            (json!({"type": "hmac-sha1", "key": "k", "case": "mixed"}), "upper or lower"),
+            (json!("hmac"), "must be an object"),
+        ] {
+            let e = signed(sign.clone()).unwrap_err();
+            assert!(e.contains(msg), "{sign}: {e}");
+        }
+    }
+
+    /// adsb.lol's /v2/point answer, cut down: one on the ground, one landing, two climbing.
+    const PLANES: &str = r#"{"ac": [
+        {"hex": "7c6b2d", "flight": "QFA401  ", "r": "VH-VXA", "t": "B738", "alt_baro": 3200, "baro_rate": 1856},
+        {"hex": "7c4ef1", "flight": "JST512  ", "r": "VH-VFN", "t": "A320", "alt_baro": "ground"},
+        {"hex": "7c7a3f", "flight": "VOZ825 ", "r": "VH-IJR", "t": "B38M", "alt_baro": 5900, "baro_rate": 2240},
+        {"hex": "7c0156", "flight": "QFA2", "r": "VH-OQA", "t": "A388", "alt_baro": 2400, "baro_rate": -768},
+        {"hex": "7c3311", "r": "VH-ZNA", "t": "B789", "alt_baro": 1100, "baro_rate": 960}
+        ], "msg": "No error", "now": 1792402710000, "total": 5}"#;
+
+    fn planes_pick(phase: &str) -> Pick {
+        let m = json_plugin(json!({"items": "$.ac[*]", "id": "$.hex", "title": "$.flight", "as": "status",
+            "fields": {"flight": ["$.flight", "$.r"], "type": "$.t", "alt": "$.alt_baro"},
+            "where": [{"path": "$.alt_baro", "op": "!=", "value": "ground"},
+                      {"path": "$.baro_rate", "op": ">", "value": 300, "when": {"setting": "phase", "is": "departures"}},
+                      {"path": "$.baro_rate", "op": "<", "value": -300, "when": {"setting": "phase", "is": ["arrivals"]}}],
+            "sort": {"path": "$.alt_baro"}}), json!({})).unwrap();
+        let settings: Map<String, Value> = serde_json::from_value(json!({"phase": phase})).unwrap();
+        m.pick.resolve(&ctx_at(&settings, None, &[], None))
+    }
+
+    #[test]
+    fn where_sort_and_fields() {
+        let titles = |d: &Data| d.items.iter().map(|i| i.fields["flight"].clone()).collect::<Vec<_>>();
+        let d = parse_json(PLANES.as_bytes(), &planes_pick("departures"), 10).unwrap();
+        // Climbing only, lowest first; the one with no callsign falls back to its registration
+        assert_eq!(titles(&d), ["VH-ZNA", "QFA401", "VOZ825"]);
+        assert!(d.single);
+        assert_eq!((d.items[1].fields["type"].as_str(), d.items[1].fields["alt"].as_str()), ("B738", "3200"));
+        assert_eq!(titles(&parse_json(PLANES.as_bytes(), &planes_pick("arrivals"), 10).unwrap()), ["QFA2"]);
+        assert_eq!(titles(&parse_json(PLANES.as_bytes(), &planes_pick("airborne"), 10).unwrap()), ["VH-ZNA", "QFA2", "QFA401", "VOZ825"]);
+        // maxItems applies after where and sort
+        assert_eq!(titles(&parse_json(PLANES.as_bytes(), &planes_pick("airborne"), 2).unwrap()), ["VH-ZNA", "QFA2"]);
+        // A status list may come out empty; a feed's path that finds nothing is still an error
+        let none = parse_json(br#"{"ac": []}"#, &planes_pick("departures"), 10).unwrap();
+        assert!(none.items.is_empty() && none.single);
+        assert!(parse_json(br#"{"ac": []}"#, &Pick { items: Some("$.ac[*]".into()), ..Default::default() }, 10).unwrap_err().contains("Nothing found"));
+
+        // Each operator, against numbers, numeric strings, words, arrays and missing values
+        let x = json!({"n": 5, "s": " 12 ", "w": "Ground", "b": true, "tags": ["Rain", "wind"], "z": null, "o": {"a": 1}});
+        let c = |path: &str, op: &str, value: Value| cond_holds(&x, &Cond { path: path.into(), op: op.into(), value, when: None });
+        assert!(c("$.n", "==", json!(5)) && c("$.n", "==", json!("5.0")) && c("$.n", "<", json!(12)) && c("$.s", ">", json!(5)));
+        assert!(c("$.s", "==", json!(12)) && c("$.s", ">=", json!("12")) && !c("$.s", "<", json!(12)));
+        assert!(c("$.w", "==", json!("ground")) && !c("$.w", "!=", json!("GROUND")) && c("$.w", "contains", json!("ROUN")));
+        assert!(c("$.w", ">", json!("apple")) && c("$.w", "<", json!("h")));
+        assert!(c("$.n", "!=", json!("five")) && c("$.n", "contains", json!("5")));
+        assert!(c("$.b", "==", json!(true)) && c("$.b", "==", json!("TRUE")));
+        assert!(c("$.tags", "contains", json!("rain")) && !c("$.tags", "contains", json!("ra")) && !c("$.tags", "==", json!("Rain")));
+        assert!(!c("$.o", "==", json!(1)) && c("$.o", "exists", Value::Null));
+        assert!(c("$.z", "missing", Value::Null) && c("$.nope", "missing", Value::Null) && !c("$.nope", "exists", Value::Null));
+        assert!(!c("$.nope", "!=", json!(1)) && !c("$.z", "!=", json!(1)), "a missing value never compares");
+
+        // Sorting: numeric, text, descending, missing keys last, stable ties
+        let list = json!([{"k": "10", "i": 0}, {"k": 9, "i": 1}, {"i": 2}, {"k": "b", "i": 3}, {"k": 10, "i": 4}]);
+        let order = |s: SortSpec, items: &Value| {
+            let mut v: Vec<&Value> = items.as_array().unwrap().iter().collect();
+            sort_items(&mut v, &s);
+            v.iter().map(|x| x["i"].as_u64().unwrap()).collect::<Vec<_>>()
+        };
+        let sort = |numeric, desc| SortSpec { path: "$.k".into(), desc, numeric };
+        // Automatic: "b" isn't a number, so it's text order ("10" < "9" < "b")
+        assert_eq!(order(sort(None, false), &list), [0, 4, 1, 3, 2]);
+        // Numeric: "b" isn't a number, so like the missing key it goes last, in list order
+        assert_eq!(order(sort(Some(true), false), &list), [1, 0, 4, 2, 3]);
+        assert_eq!(order(sort(Some(true), true), &list), [0, 4, 1, 2, 3]);
+        assert_eq!(order(sort(Some(false), true), &list), [3, 1, 0, 4, 2]);
+        let nums = json!([{"k": 3, "i": 0}, {"k": "1.5", "i": 1}, {"i": 2}, {"k": -2, "i": 3}]);
+        assert_eq!(order(sort(None, false), &nums), [3, 1, 0, 2]);
+        assert_eq!(order(sort(None, true), &nums), [0, 1, 3, 2]);
+    }
+
+    #[test]
+    fn where_takes_settings() {
+        let m = json_plugin(json!({"items": "$.d[*]", "title": "$.p", "as": "status",
+            "where": [{"path": "$.direction_id", "op": "==", "value": "{{settings.dir}}"}]}), json!({})).unwrap();
+        let data = br#"{"d": [{"p": "a", "direction_id": 1}, {"p": "b", "direction_id": 2}]}"#;
+        let with = |dir: &str| {
+            let settings: Map<String, Value> = serde_json::from_value(json!({"dir": dir, "phase": "departures"})).unwrap();
+            let pick = m.pick.resolve(&ctx_at(&settings, None, &[], None));
+            parse_json(data, &pick, 10).unwrap().items.iter().map(|i| i.title.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(with("2"), ["b"]);
+        // A blank setting switches its condition off
+        assert_eq!(with(""), ["a", "b"]);
+        assert_eq!(with("  "), ["a", "b"]);
+    }
+
+    #[test]
+    fn filters_and_epochs() {
+        let mut fields = std::collections::BTreeMap::new();
+        for (k, v) in [("alt", "3200"), ("big", "-1234567.891"), ("tiny", "-0.004"), ("pi", "3.14159"), ("half", "2.5"), ("neg", "-2.5"),
+            ("word", "ground"), ("blank", ""), ("est", "2026-10-19T09:41:00Z"), ("epoch", "1792402800"), ("flight", "QFA401"), ("e5", "1e5")] {
+            fields.insert(k.to_string(), v.to_string());
+        }
+        let item = Item { title: "  Hello  World ".into(), fields, ..Default::default() };
+        let settings: Map<String, Value> = serde_json::from_value(json!({"city": " melbourne "})).unwrap();
+        let ctx = ctx_at(&settings, Some(&item), &[], None);
+        let r = |t: &str| render(t, &ctx, Mode::Card);
+        assert_eq!(r("{{field.alt|num}} {{field.big|num}} {{field.tiny|num}} {{field.word|num}} {{field.e5|num}}"), "3,200 -1,234,567.89 0 ground 100,000");
+        assert_eq!(r("{{field.pi|round}} {{field.pi|round:2}} {{field.half|round}} {{field.neg|round}} {{field.alt|round:1}} {{field.word|round}}"), "3 3.14 3 -3 3200.0 ground");
+        assert_eq!(r("[{{settings.city|trim|upper}}] [{{settings.city|lower}}] {{title|trim}}"), "[MELBOURNE] [ melbourne ] Hello  World");
+        assert_eq!(r("{{field.blank|default:No data}} {{field.word|default:x}} {{field.nope|default:-}}"), "No data ground -");
+        assert_eq!(r("{{field.flight|pad:8}}|{{field.alt|pad:-6}}|{{field.flight|pad:3}}"), "QFA401{0}{0}|{0}{0}3200|QFA401");
+        assert_eq!(crate::vestaboard::parse(&r("{{field.flight|pad:8}}B738")).len(), 12);
+        // Times: an ISO or epoch field in local time (the test's "local" is UTC), and minutes from now
+        assert_eq!(r("{{field.est|time}} {{field.est|time:HH:mm:ss}} {{field.epoch|time:h:mm tt}} {{field.word|time}}"), plugins_local(&["2026-10-19T09:41:00Z", "2026-10-19T09:41:00Z", "2026-10-19T09:40:00Z"], &["h:mm", "HH:mm:ss", "h:mm tt"]) + " ground");
+        assert_eq!(r("{{field.est|mins}} {{field.epoch|mins}} {{field.word|mins}}"), "2 1 ground");
+        // Epochs and offsets
+        assert_eq!(r("{{now:epoch}} {{now:epochms}} {{now-2h:epoch}} {{now+90m:epoch}} {{now+1h30m:HH:mm}} {{now-1d:ddd}}"), "1792402710 1792402710000 1792395510 1792408110 11:08 Sun");
+        assert_eq!(r("{{now*2:epoch}}{{now+2x:epoch}}"), "");
+        // Filters run left to right; a filter that doesn't apply leaves the value alone
+        assert_eq!(r("{{field.alt|num|default:none}} {{field.blank|default:12000|num}}"), "3,200 12,000");
+        // URLs: filtered, then encoded
+        assert_eq!(render("https://x.io/?q={{settings.city|trim|upper}}", &ctx, Mode::Url), "https://x.io/?q=MELBOURNE");
+    }
+
+    /// The local-time rendering of instants, for tests that run in any time zone.
+    fn plugins_local(isos: &[&str], fmts: &[&str]) -> String {
+        isos.iter().zip(fmts).map(|(t, f)| format_time(local_of(chrono::DateTime::parse_from_rfc3339(t).unwrap().timestamp_millis()), f)).collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn status_rows() {
+        let row = "{{field.flight|pad:8}}{{field.type|pad:5}}{{field.alt|num}} FT";
+        let pick = planes_pick("departures");
+        let d = parse_json(PLANES.as_bytes(), &pick, 3).unwrap();
+        let settings: Map<String, Value> = serde_json::from_value(json!({"phase": "departures"})).unwrap();
+        let ctx = ctx_at(&settings, d.items.first(), &d.items, Some(row));
+        let text = render("MEL {{settings.phase}} ({{count}})\n{{rows}}", &ctx, Mode::Card);
+        assert_eq!(text, "MEL departures (3)\nVH-ZNA{0}{0}B789{0}1,100 FT\nQFA401{0}{0}B738{0}3,200 FT\nVOZ825{0}{0}B38M{0}5,900 FT");
+        let g = crate::vestaboard::text_layout(&text, 6, 22);
+        let line = |r: usize| g[r].iter().map(|&c| match c { 0 => ' ', 1..=26 => (b'A' + c - 1) as char, 27..=35 => (b'1' + c - 27) as char, 36 => '0', 44 => '-', 55 => ',', 41 => '(', 42 => ')', _ => '?' }).collect::<String>();
+        assert_eq!(line(1), "  MEL DEPARTURES (3)  ");
+        assert_eq!(line(2), "VH-ZNA  B789 1,100 FT ");
+    }
+
+    #[test]
+    fn hmac_signing() {
+        // RFC 2104 examples (as on Wikipedia's HMAC page)
+        assert_eq!(hmac_hex("hmac-sha1", b"key", b"The quick brown fox jumps over the lazy dog", false), "de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9");
+        assert_eq!(hmac_hex("hmac-sha256", b"key", b"The quick brown fox jumps over the lazy dog", false), "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8");
+        // PTV's scheme: HMAC-SHA1 of "/v3/...?...&devid=...", upper-case hex, as &signature=
+        let sign = Sign { kind: "hmac-sha1".into(), key: "{{secret.key}}".into(), param: "signature".into(), upper: true };
+        let key = "aaaabbbb-cccc-dddd-eeee-ffff00001111";
+        assert_eq!(
+            sign_url("https://timetableapi.ptv.vic.gov.au/v3/departures/route_type/0/stop/1071?max_results=3&devid=1000123", &sign, key).unwrap(),
+            "https://timetableapi.ptv.vic.gov.au/v3/departures/route_type/0/stop/1071?max_results=3&devid=1000123&signature=1D59EE8EAE144597AB8AC82636D50369F8C0A1F0"
+        );
+        assert_eq!(
+            sign_url("https://timetableapi.ptv.vic.gov.au/v3/search/Flinders%20Street?route_types=0&devid=1000123#x", &sign, key).unwrap(),
+            "https://timetableapi.ptv.vic.gov.au/v3/search/Flinders%20Street?route_types=0&devid=1000123&signature=E3AD26614071C8DCCCEA2CD1E3D0846719CCA5F9"
+        );
+        // No query yet: the signature starts it; lower case on request
+        let lower = Sign { upper: false, param: "sig".into(), ..sign.clone() };
+        let u = sign_url("https://example.com/v3/disruptions/stop/1071", &lower, key).unwrap();
+        assert_eq!(u, format!("https://example.com/v3/disruptions/stop/1071?sig={}", hmac_hex("hmac-sha1", key.as_bytes(), b"/v3/disruptions/stop/1071", false)));
+        assert_eq!(sign_url("https://example.com/a?", &lower, key).unwrap(), format!("https://example.com/a?sig={}", hmac_hex("hmac-sha1", key.as_bytes(), b"/a", false)));
+        // No key: refused, without the URL in the message
+        let e = sign_url("https://example.com/a?devid=1000123", &sign, "").unwrap_err();
+        assert!(e.contains("signing key") && !e.contains("1000123"));
     }
 
     #[test]

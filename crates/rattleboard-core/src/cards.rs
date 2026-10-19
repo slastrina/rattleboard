@@ -54,6 +54,30 @@ impl Face {
     }
 }
 
+/// One tile as a character, for tests, the spec and tools: letters, digits and punctuation
+/// as they are, colour tiles as lower-case initials (r o y g b v w, k for black) and the
+/// filled tile as █.
+pub fn tile_char(c: u8) -> char {
+    const SYM: [(u8, char); 20] = [
+        (37, '!'), (38, '@'), (39, '#'), (40, '$'), (41, '('), (42, ')'), (44, '-'), (46, '+'), (47, '&'), (48, '='),
+        (49, ';'), (50, ':'), (52, '\''), (53, '"'), (54, '%'), (55, ','), (56, '.'), (59, '/'), (60, '?'), (62, '°'),
+    ];
+    match c {
+        0 => ' ',
+        1..=26 => (b'A' + c - 1) as char,
+        27..=35 => (b'1' + c - 27) as char,
+        36 => '0',
+        63..=70 => ['r', 'o', 'y', 'g', 'b', 'v', 'w', 'k'][(c - 63) as usize],
+        71 => '█',
+        _ => SYM.iter().find(|x| x.0 == c).map(|x| x.1).unwrap_or('?'),
+    }
+}
+
+/// A grid as lines of `tile_char`s.
+pub fn ascii(g: &Grid) -> Vec<String> {
+    g.iter().map(|r| r.iter().map(|&c| tile_char(c)).collect()).collect()
+}
+
 fn put(g: &mut Grid, r: usize, c: usize, codes: &[u8]) {
     let cols = g[r].len();
     for (i, &v) in codes.iter().enumerate() {

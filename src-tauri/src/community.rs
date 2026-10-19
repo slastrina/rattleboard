@@ -92,6 +92,7 @@ pub async fn community_index(app: AppHandle, refresh: Option<bool>) -> Result<Va
             v["installedVersion"] = json!(version);
             v["inRotation"] = json!(here.map_or(0, |h| h.1));
             v["update"] = json!(here.is_some() && community::update_available(version.as_deref(), &e.version));
+            v["needsApp"] = json!(community::needs_newer_app(e.min_app_version.as_deref(), community::APP_VERSION));
             v
         })
         .collect();
@@ -136,6 +137,9 @@ pub async fn community_detail(app: AppHandle, id: String) -> Result<Value, Strin
 #[tauri::command]
 pub async fn community_manifest(app: AppHandle, id: String) -> Result<Value, String> {
     let e = entry(&app, &id)?;
+    if let Some(v) = community::needs_newer_app(e.min_app_version.as_deref(), community::APP_VERSION) {
+        return Err(format!("This plugin needs Rattleboard {v} or later"));
+    }
     let body = community::get(http(), &e.manifest_url, base().as_deref(), rattleboard_core::plugins::MAX_MANIFEST).await?;
     let mut v = link_manifest(&body)?;
     if v["id"] != e.id.as_str() {

@@ -88,6 +88,8 @@ pub struct Entry {
     pub homepage: Option<String>,
     pub kind: String,
     pub needs_secrets: bool,
+    /// The oldest Rattleboard the plugin works with (semver), if it says
+    pub min_app_version: Option<String>,
     pub settings: Vec<Field>,
     pub secrets: Vec<Field>,
     pub hosts: Vec<String>,
@@ -136,6 +138,7 @@ pub fn parse_index(bytes: &[u8]) -> Result<Index, String> {
         for u in [&mut e.readme_url, &mut e.preview_url, &mut e.folder_url] {
             *u = u.as_deref().and_then(allowed);
         }
+        e.min_app_version = e.min_app_version.map(|v| clip(&v, 40)).filter(|v| !v.is_empty());
         e.homepage = e.homepage.filter(|h| url::Url::parse(h).is_ok_and(|u| u.scheme() == "https"));
         e.author.github = e.author.github.filter(|g| profile_url(g).is_some());
         e.name = clip(&e.name, 60);
@@ -148,6 +151,15 @@ pub fn parse_index(bytes: &[u8]) -> Result<Index, String> {
     }
     Ok(out)
 }
+
+/// The version of Rattleboard a plugin needs, when it's newer than `app` (this one is
+/// `APP_VERSION`): such a plugin is shown but can't be installed. A minAppVersion that isn't
+/// a version is ignored.
+pub fn needs_newer_app(min: Option<&str>, app: &str) -> Option<String> {
+    min.filter(|m| crate::update::is_newer(m, app)).map(|m| m.trim_start_matches('v').to_string())
+}
+
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Whether the index has a newer version than the one installed (None: not installed, or
 /// installed with no version known).
@@ -377,6 +389,21 @@ mod tests {
         for bad in ["", "-x", "x-", "a/b", "../x", "a b", &"x".repeat(40)] {
             assert_eq!(profile_url(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn min_app_version() {
+        let mut e = entry("community.new-thing");
+        e["minAppVersion"] = json!("0.7.0");
+        let ix = parse_index(&serde_json::to_vec(&json!({"format": 1, "plugins": [e, entry("community.old")]})).unwrap()).unwrap();
+        assert_eq!(ix.plugins[0].min_app_version.as_deref(), Some("0.7.0"));
+        assert_eq!(ix.plugins[1].min_app_version, None);
+        assert_eq!(needs_newer_app(Some("0.7.0"), "0.6.0").as_deref(), Some("0.7.0"));
+        assert_eq!(needs_newer_app(Some("0.7.0"), "0.7.0"), None);
+        assert_eq!(needs_newer_app(Some("0.7.0"), "0.7.1"), None);
+        assert_eq!(needs_newer_app(Some("0.7.0"), "0.7.0-beta.1").as_deref(), Some("0.7.0"));
+        assert_eq!(needs_newer_app(Some("garbage"), "0.6.0"), None);
+        assert_eq!(needs_newer_app(None, "0.6.0"), None);
     }
 
     #[test]

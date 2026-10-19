@@ -30,6 +30,8 @@ feed-rs = "3"
 ical = { version = "0.11", default-features = false, features = ["ical"] }
 rrule = "0.14"
 sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
 
 [dev-dependencies]
 futures-util = { version = "0.3", default-features = false }
