@@ -45,11 +45,11 @@ pub enum Shown {
     Restore,
 }
 
-#[derive(Default)]
 /// A timed notification showing: its id, and what goes back when it's over (layout, how its
 /// flaps start, message id, link).
 type NoticeUp = (String, Grid, Transition, Option<String>, Option<String>);
 
+#[derive(Default)]
 struct Live {
     layout: Option<Grid>,
     id: Option<String>,
