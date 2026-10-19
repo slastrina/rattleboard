@@ -36,6 +36,7 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
 - **Works with AI agents.** Claude Code, opencode, Cursor, Codex, Gemini CLI, Claude Desktop and VS Code can post to the board as a tool call (MCP), for example when a long task finishes or they need your input. Set it up from Settings → Agents. See [Agents (MCP)](#agents-mcp).
 - **Sequences.** Play several messages in turn, each held for a while once its flaps settle, once or on a loop.
 - **Pair a phone.** Show a QR code that the Rattleboard phone app scans to add this board.
+- **Respects Focus and Do Not Disturb.** While a Focus (macOS) or Do Not Disturb (Windows, GNOME, KDE) is on, the board keeps updating but holds its pop-ups and sound, then tells you how many messages came. See [Focus and Do Not Disturb](#focus-and-do-not-disturb).
 - **Notification forwarding (Windows).** Put notifications from the apps you choose on a board. See [Notification forwarding](#notification-forwarding-windows).
 - **Demo mode.** No board yet? It flips through sample messages so you can try everything.
 - **Sources.** Left to itself, the board takes turns showing a clock, the weather, countdowns, news feeds, your calendar, a quote of the day or anything a plugin fetches, calmly, and it can drive your other boards too. See [Sources and plugins](#sources-and-plugins).
@@ -393,7 +394,7 @@ Rattleboards also answer a few requests of their own under `/rattleboard/`. They
 | Request | Body | Response |
 | --- | --- | --- |
 | `GET /rattleboard/info` | — | `{"app":"rattleboard","protocol":3,"version":"0.8.1","platform":"macos","name":"…","board":{"rows":6,"cols":22},"adaptive":true,"features":["sequence","strategy","notify","sources"]}` |
-| `POST /rattleboard/notify` | `{"text":"…" or "characters":[[…]],"seconds":15,"source":"Build bot","link":"https://…"}` | `201 {"status":"ok","id":"note-…","seconds":15}`; a [notification](#notifications), shown once |
+| `POST /rattleboard/notify` | `{"text":"…" or "characters":[[…]],"seconds":15,"source":"Build bot","link":"https://…","priority":"alert"}` | `201 {"status":"ok","id":"note-…","seconds":15}`; a [notification](#notifications), shown once |
 | `POST /rattleboard/sequence` | `{"name":"…","loop":true,"frames":[…]}` (up to 256 KB) | `201 {"status":"ok","id":"seq-…","frames":2}` |
 | `GET /rattleboard/sequence` | — | `{"running":true,"id":"seq-…","name":"Morning","frame":2,"frames":5,"loop":true}` or `{"running":false}` |
 | `DELETE /rattleboard/sequence` | — | `204`; the current frame stays on the board |
@@ -426,6 +427,7 @@ The tray menu shows a playing sequence ("Playing ‘Morning’ 2/5") with a **St
 - **With `seconds`** (3–3600, counted from when the flaps finish), it interrupts like a source's [alert](#priorities). When the time is up the board goes back to whatever it would otherwise show: the previous message, or the Sources rotation if it's running. It doesn't hold the rotation, and what comes back isn't a new message: no pop-up, no Message History entry, nothing that could show it again later. Another notification while one is up replaces it and still goes back to what was there before the first. Anything else posted meanwhile replaces it for good.
 - **Without `seconds`**, it stays like any posted message (and holds the rotation as one does).
 - It goes in **Message History** once, labelled with `source` (up to 40 characters; "API notification" if there's none). `link`, an http or https address, is kept with it, and History shows its host.
+- `priority` is `"normal"` (the default) or `"alert"`. An alert still pops up, with sound, while a [Focus or Do Not Disturb](#focus-and-do-not-disturb) holds other pop-ups, if **Let alerts through** is on. Keep it for things that need you now. A plain message post (`POST /local-api/message` or `/`) takes `priority` too.
 - The body is otherwise a normal post: `text` (with an optional size hint) or `characters`, and an optional transition. It stops a sequence that's playing.
 
 ```sh
@@ -593,8 +595,10 @@ Claude Desktop only adds remote servers through its Connectors settings, and tho
 
 | Tool | What it does |
 | --- | --- |
-| `send_message` | `{text, color?, size?, strategy?, link?, board?}`: text that stays until something replaces it, shown once and never repeated (it holds the rotation like any message). `link` (http or https) is opened by clicking the board. `color` adds a chip (red, orange, yellow, green, blue, violet, white or black), and `size` is standard, compact or large. `board` is "this" (the default), a saved board or group by name from **Settings → Boards**, or "all". |
-| `show_status` | `{text, seconds?, color?, link?}`: a temporary status (15 s by default), as a timed [notification](#notifications): afterwards the board goes back to the previous message or the Sources rotation, without holding the rotation and without showing anything again as new. Starting it stops any sequence that was playing. |
+| `send_message` | `{text, color?, size?, strategy?, link?, priority?, board?}`: text that stays until something replaces it, shown once and never repeated (it holds the rotation like any message). `link` (http or https) is opened by clicking the board. `color` adds a chip (red, orange, yellow, green, blue, violet, white or black), and `size` is standard, compact or large. `board` is "this" (the default), a saved board or group by name from **Settings → Boards**, or "all". |
+| `show_status` | `{text, seconds?, color?, link?, priority?}`: a temporary status (15 s by default), as a timed [notification](#notifications): afterwards the board goes back to the previous message or the Sources rotation, without holding the rotation and without showing anything again as new. Starting it stops any sequence that was playing. |
+
+`priority` is `normal` (the default) or `alert`: an alert gets through a [Focus or Do Not Disturb](#focus-and-do-not-disturb) that holds pop-ups (if the user lets alerts through). It applies on this computer's board; saved boards get the message alone.
 | `send_layout` | `{characters, board?}`: an exact grid of character codes 0–71, up to 12 × 40. |
 | `list_boards` | This board, your saved boards and groups, with their kinds and sizes. |
 | `play_sequence` | `{frames: [{text or characters, hold}], loop?}`: 1–100 frames, as in `POST /rattleboard/sequence`. |
@@ -866,6 +870,24 @@ Each board can be renamed or removed. Removing it deletes its key from the crede
 
 **Groups** are named sets of boards, such as "Downstairs", to send to at once. A board can be in any number of groups. They're kept in `groups.json` (just names and board ids).
 
+## Focus and Do Not Disturb
+
+**Settings → Behavior → While Focus is on** (Do Not Disturb on Windows and Linux) decides what a new message does while you don't want to be interrupted:
+
+- **Hold pop-ups** (the default): the board still changes, and a pinned widget shows each message as usual, but the pop-up stays hidden, the flaps make no sound, and the tray icon shows its dot. The tray menu says "Focus on — holding pop-ups". When the Focus ends, one pop-up shows the latest message with "3 messages while you were focused"; click that line for Message history.
+- **Mute sound only**: pops up as usual, without the flap sound.
+- **Ignore Focus**: nothing changes.
+
+**Let alerts through** (on by default) lets Sources [alerts](#priorities) and messages sent with `"priority": "alert"` ([API](#notifications), or an agent's `send_message` and `show_status`) pop up anyway. A **full-screen** board ignores Focus, as a kiosk should, unless **Full screen too** is on.
+
+How Rattleboard knows:
+
+- **macOS 12 and later:** the Focus status API. macOS asks once whether Rattleboard may see your Focus status, and only reports a Focus whose **Share Focus Status** is on (System Settings → Focus → Focus Status). Apple also requires the app to be signed with its Communication Notifications entitlement. Builds without it don't ask, and Settings says so. On macOS 11, pop-ups always show.
+- **Windows:** full-screen apps and games, presentation mode, quiet time, and Windows 11 Focus sessions, through documented APIs (`SHQueryUserNotificationState`, `FocusSessionManager`). Rattleboard's own full screen doesn't count. Windows may not report Do Not Disturb switched on by hand.
+- **Linux:** GNOME's Do Not Disturb (`org.gnome.desktop.notifications show-banners`) and KDE Plasma's (the notification server's `Inhibited` property). Other desktops don't report it.
+
+Rattleboard checks every 10 seconds, so a Focus can take that long to take effect.
+
 ## Notification forwarding (Windows)
 
 On Windows, **Settings → Notifications** puts notifications from the apps you choose on this board or a saved one.
@@ -897,7 +919,7 @@ docker run --rm -p 7070:7070 -v rattleboard:/data rattleboard-web
 RATTLEBOARD_DATA=./web-data cargo run -p rattleboard-web
 ```
 
-To try changes without touching your own settings and keys, run a debug build with `RATTLEBOARD_PROFILE=<name>`: it uses config and data folders of its own (`…rattleboard.<name>`) and keeps its keys in a `secrets.json` there instead of the credential store. Profiles can run side by side (give each its own API port), and `RATTLEBOARD_OPEN=settings/sources` opens a window at launch. Release builds ignore both.
+To try changes without touching your own settings and keys, run a debug build with `RATTLEBOARD_PROFILE=<name>`: it uses config and data folders of its own (`…rattleboard.<name>`) and keeps its keys in a `secrets.json` there instead of the credential store. Profiles can run side by side (give each its own API port), and `RATTLEBOARD_OPEN=settings/sources` opens a window at launch. `RATTLEBOARD_FAKE_FOCUS=on` (or `off`, or the path of a file holding `on` or `off`, read every second) stands in for the system's [Focus](#focus-and-do-not-disturb) state, to try holding pop-ups without touching yours. Release builds ignore all three. `cargo test -p rattleboard live_focus -- --ignored --nocapture` prints what this computer reports.
 
 The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The desktop's Rust side, in `src-tauri/src/`, handles polling, the tray icon and window placement; the engine in `crates/rattleboard-core/src/` does everything that doesn't touch a window.
 
