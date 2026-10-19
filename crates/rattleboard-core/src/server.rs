@@ -99,8 +99,13 @@ pub trait Board: Send + Sync + 'static {
     fn adaptive(&self) -> bool;
     fn name(&self) -> String;
     fn current(&self) -> (Grid, Option<String>);
-    /// A normal message. It also stops a running sequence.
-    fn post(&self, layout: Grid, tr: Transition) -> String;
+    /// A normal message, with the web address a click on the board opens, if any (already
+    /// checked by `plugins::safe_link`). It also stops a running sequence.
+    fn post(&self, layout: Grid, tr: Transition, link: Option<String>) -> String;
+    /// The link of what's on the board now, if it has one
+    fn link(&self) -> Option<String> {
+        None
+    }
     /// Starts a sequence in place of any running one; returns its id.
     fn play(&self, seq: Sequence) -> String;
     fn sequence(&self) -> Option<SequenceStatus>;
@@ -262,6 +267,7 @@ async fn cloud_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
         "currentMessage": {
             "layout": serde_json::to_string(&layout).unwrap_or_default(),
             "id": id,
+            "link": ctx.board.link(),
         }
     }))
     .into_response()
@@ -274,9 +280,9 @@ async fn post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
     let Ok(v) = serde_json::from_slice::<Value>(&body) else {
         return err(StatusCode::BAD_REQUEST, "Body must be JSON");
     };
-    match message(&v, ctx.board.dims(), ctx.board.adaptive()) {
-        Ok((g, tr)) => {
-            let id = ctx.board.post(g, tr);
+    match message(&v, ctx.board.dims(), ctx.board.adaptive()).and_then(|(g, tr)| Ok((g, tr, link_of(&v)?))) {
+        Ok((g, tr, link)) => {
+            let id = ctx.board.post(g, tr, link);
             (StatusCode::CREATED, Json(json!({ "status": "ok", "id": id, "created": crate::now_ms() }))).into_response()
         }
         Err(e) => err(StatusCode::BAD_REQUEST, &e),
@@ -304,6 +310,17 @@ pub fn message(v: &Value, (rows, cols): (usize, usize), adaptive: bool) -> Resul
             Ok((layout, Transition::parse(o)?))
         }
         _ => Err(HOW.into()),
+    }
+}
+
+/// A message's optional "link": the web address clicking the board opens. Only http:// and
+/// https:// addresses (see `plugins::safe_link`); anything else is refused.
+pub fn link_of(v: &Value) -> Result<Option<String>, String> {
+    match v.get("link") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+        Some(Value::String(s)) => crate::plugins::safe_link(s).map(Some).ok_or_else(|| "link must be an http:// or https:// address".to_string()),
+        Some(_) => Err("link must be a string".into()),
     }
 }
 
@@ -601,7 +618,7 @@ impl crate::mcp::Backend for Ctx {
     fn post(&self, body: Value) -> crate::mcp::Fut<'_, Result<(), String>> {
         Box::pin(async move {
             let (g, tr) = message(&body, self.board.dims(), self.board.adaptive())?;
-            self.board.post(g, tr);
+            self.board.post(g, tr, link_of(&body)?);
             Ok(())
         })
     }
@@ -653,8 +670,12 @@ mod tests {
         tr: Mutex<Transition>,
         seq: Mutex<Option<(Sequence, SequenceStatus)>>,
         engine: Option<Arc<sources::Engine>>,
+        link: Mutex<Option<String>>,
     }
     impl Board for Fake {
+        fn link(&self) -> Option<String> {
+            self.link.lock().unwrap().clone()
+        }
         fn api_key(&self) -> String {
             "k1".into()
         }
@@ -670,9 +691,10 @@ mod tests {
         fn current(&self) -> (Grid, Option<String>) {
             (self.grid.lock().unwrap().clone(), Some("m1".into()))
         }
-        fn post(&self, layout: Grid, tr: Transition) -> String {
+        fn post(&self, layout: Grid, tr: Transition, link: Option<String>) -> String {
             *self.grid.lock().unwrap() = layout;
             *self.tr.lock().unwrap() = tr;
+            *self.link.lock().unwrap() = link;
             self.stop();
             "m2".into()
         }
@@ -736,6 +758,21 @@ mod tests {
 
         let r = c.post(&base).bearer_auth("k1").body(r#"{"characters":[[1,2,3],[1]]}"#).send().await.unwrap();
         assert_eq!(r.status(), 400);
+
+        // A message's link: kept, normalised, reported by the Read/Write GET; anything but http(s) refused
+        let r = c.post(&msg).header("X-Vestaboard-Local-Api-Key", "k1").body(r#"{"text":"story","link":" https://News.example.com/a?b=1 "}"#).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        assert_eq!(board.link.lock().unwrap().as_deref(), Some("https://news.example.com/a?b=1"));
+        let v: Value = c.get(&base).header("X-Vestaboard-Token", "k1").send().await.unwrap().json().await.unwrap();
+        assert_eq!(v["currentMessage"]["link"], "https://news.example.com/a?b=1");
+        for bad in [r#"{"text":"x","link":"javascript:alert(1)"}"#, r#"{"text":"x","link":"file:///etc/passwd"}"#, r#"{"text":"x","link":"/relative"}"#, r#"{"text":"x","link":42}"#] {
+            let r = c.post(&msg).header("X-Vestaboard-Local-Api-Key", "k1").body(bad).send().await.unwrap();
+            assert_eq!(r.status(), 400, "{bad}");
+        }
+        assert_eq!(board.link.lock().unwrap().as_deref(), Some("https://news.example.com/a?b=1"), "a refused post changes nothing");
+        let r = c.post(&msg).header("X-Vestaboard-Local-Api-Key", "k1").body(r#"{"text":"no link"}"#).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        assert_eq!(*board.link.lock().unwrap(), None);
         let r = c.request(Method::OPTIONS, &base).send().await.unwrap();
         assert_eq!(r.headers()["access-control-allow-origin"], "*");
         assert!(r.headers()["access-control-allow-methods"].to_str().unwrap().contains("DELETE"));

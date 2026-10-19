@@ -322,6 +322,9 @@ pub struct Card {
     /// Remembered as seen once it has been shown
     #[serde(skip)]
     pub seen: Vec<String>,
+    /// Where clicking the board goes: the item's web address (see `plugins::safe_link`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -1323,7 +1326,7 @@ fn item_card_in(x: &Instance, p: &Manifest, it: &Item, list: &[Item], local: Nai
         }
         Face::Standard { chip, name: x.name.clone(), time: short_time(it.time.unwrap_or(now), clock24), body, pages: p.card.pages }
     });
-    Card { instance: x.id.clone(), name: label(x, p), face, live: false, reason: reason.into(), seen: vec![it.key.clone()] }
+    Card { instance: x.id.clone(), name: label(x, p), face, live: false, reason: reason.into(), seen: vec![it.key.clone()], link: it.link.clone() }
 }
 
 fn template_face(x: &Instance, p: &Manifest, it: Option<&Item>, list: &[Item], now: NaiveDateTime, now_ms: i64, clock24: bool) -> Option<Face> {
@@ -1370,7 +1373,7 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
     let chip = chip_of(x, p);
     let feed = i.feeds.get(&x.id);
     let data = feed.and_then(|f| f.data.as_ref());
-    let card = |face: Face, live: bool, reason: &str| Card { instance: x.id.clone(), name: label(x, p), face, live, reason: reason.into(), seen: vec![] };
+    let card = |face: Face, live: bool, reason: &str| Card { instance: x.id.clone(), name: label(x, p), face, live, reason: reason.into(), seen: vec![], link: None };
     match (p.kind.as_str(), p.id.as_str()) {
         ("native", builtins::CLOCK) => {
             let world = x.settings.get("style").and_then(|s| s.as_str()) == Some("world");
@@ -1408,7 +1411,7 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
                 body: [next.title.clone(), when(next, ctx.now, clock24), next.body.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n"),
                 pages: 1,
             });
-            Some(card(face, false, "ambient · next event"))
+            Some(Card { link: next.link.clone(), ..card(face, false, "ambient · next event") })
         }
         _ if is_feed(p, data) => {
             let f = feed?;
@@ -1570,21 +1573,21 @@ fn collect_due(i: &mut Inner, ctx: &Ctx) {
                         let mins = (start - ctx.now + 59_999) / 60_000;
                         let body = [it.title.clone(), it.body.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
                         let face = Face::Standard { chip: 63, name: format!("In {mins} min"), time: short_time(start, clock24), body, pages: 1 };
-                        alerts.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "alert · starts in 10 min".into(), seen: vec![key] });
+                        alerts.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "alert · starts in 10 min".into(), seen: vec![key], link: it.link.clone() });
                     }
                 }
             }
             ("native", builtins::COUNTDOWN) => {
                 if let Some((key, face)) = builtins::countdown(&x.settings, ctx.local, chip_of(x, p)).and_then(|c| c.celebrating) {
                     if !already(&key) {
-                        alerts.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "alert · celebration".into(), seen: vec![key] });
+                        alerts.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "alert · celebration".into(), seen: vec![key], link: None });
                     }
                 }
             }
             ("native", builtins::QUOTE) => {
                 if let (Some(key), Some(face)) = (builtins::quote_due(&x.settings, ctx.local), builtins::quote(&x.settings, ctx.local, chip_of(x, p))) {
                     if !already(&key) {
-                        messages.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "message · quote of the day".into(), seen: vec![key] });
+                        messages.push(Card { instance: x.id.clone(), name: x.name.clone(), face, live: false, reason: "message · quote of the day".into(), seen: vec![key], link: None });
                     }
                 }
             }
@@ -1978,6 +1981,26 @@ pub mod tests {
         e.put_rotation(&json!({"rotation": rot}), false).unwrap();
         let (g, _) = e.preview(&id, &at(&c, 10), false, true).await.unwrap();
         assert!(text(&g[0]).contains("NO TRAINS"), "{}", text(&g[0]));
+    }
+
+    /// A feed item's link goes with its card, and so does a digest's (its newest item's).
+    #[test]
+    fn cards_carry_links() {
+        let (e, _) = engine("links");
+        e.install(&feed_plugin("com.example.feed"), false).unwrap();
+        e.put_rotation(&json!([{"id": "f", "plugin": "com.example.feed"}]), false).unwrap();
+        let item = |k: &str, link: Option<&str>| Item { key: k.into(), title: format!("Story {k}"), time: Some(1), link: link.map(String::from), ..Default::default() };
+        e.store("f", Ok(Data { items: vec![item("a", Some("https://news.example.com/a"))], single: false }), 0);
+        let a = e.tick(&ctx(0));
+        let Some(Action::Show { card, .. }) = a.first() else { panic!("{a:?}") };
+        assert_eq!(card.link.as_deref(), Some("https://news.example.com/a"));
+        assert_eq!(serde_json::to_value(card.as_ref()).unwrap()["link"], "https://news.example.com/a");
+        // The clock has none
+        let (e, _) = engine("links2");
+        e.put_rotation(&json!([{"id": "c", "plugin": "rattleboard.clock"}]), false).unwrap();
+        let a = e.tick(&ctx(0));
+        let Some(Action::Show { card, .. }) = a.first() else { panic!() };
+        assert_eq!(card.link, None);
     }
 
     pub fn ctx(min: i64) -> Ctx {

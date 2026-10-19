@@ -12,6 +12,15 @@ let lastSize = '';
 let shownGeom = '', fitting = false;
 
 const floating = () => !!S && S.settings.mode === 'float';
+// The card on the board has a web address, and clicking the board opens it.
+const linkOn = () => !!S && !!S.link && S.settings.clickLinks !== false;
+let lastOpen = 0;
+function openLink() {
+  // One open per click, however the click arrives (pointerup and click can both fire).
+  if (!linkOn() || Date.now() - lastOpen < 1500) return;
+  lastOpen = Date.now();
+  RB.invoke('open_link', { url: S.link }).catch(() => {});
+}
 const full = () => !!S && S.settings.mode === 'fullscreen';
 // Pinned and full screen stay up; only the pop-up hides again.
 const stays = () => floating() || full();
@@ -113,6 +122,11 @@ function render() {
   const next = !!(S.sources && S.sources.active);
   $('nextBtn').style.display = next ? '' : 'none';
   $('ovNext').style.display = next ? '' : 'none';
+  const linked = linkOn();
+  stage.classList.toggle('linked', linked);
+  $('linkBtn').style.display = linked ? '' : 'none';
+  $('ovLink').style.display = linked ? '' : 'none';
+  $('linkMark').title = linked ? `Click to open ${S.link}` : '';
   $('bar').style.opacity = counting ? 1 : 0;
   $('fill').style.width = (ui.total ? (ui.remaining / ui.total) * 100 : 0) + '%';
   renderOverlay();
@@ -225,6 +239,7 @@ RB.delegate(document.body, 'click', {
   replay: () => RB.invoke('replay'),
   resume: () => RB.invoke('update_settings', { patch: { polling: true } }),
   next: () => RB.invoke('sources_next'),
+  openLink,
   hide,
   exitFull: () => RB.invoke('toggle_fullscreen'),
   site: () => { if (ov.shown) RB.invoke('open_site'); },
@@ -368,7 +383,15 @@ const endDrag = () => {
   if (!moved) return;
   setTimeout(() => RB.invoke('board_drag_end').then(() => { ui.dragging = false; render(); }), 30);
 };
-stage.addEventListener('pointerup', endDrag);
+// A click that isn't the end of a drag (or a resize, or on the buttons) opens the card's link.
+stage.addEventListener('pointerup', e => {
+  const tap = !!drag && !drag.moved && e.button === 0 && !e.target.closest('[data-nodrag]');
+  endDrag();
+  if (tap) openLink();
+});
+// Full screen has no dragging: a click on the board itself opens the link (unless the setting
+// is off, for kiosks).
+sfb.addEventListener('click', e => { if (full() && e.button === 0) openLink(); });
 stage.addEventListener('pointercancel', endDrag);
 
 // Resizing: drag the grip to scale the whole board; the window follows its size.

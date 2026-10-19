@@ -58,6 +58,11 @@
     font-size: var(--credit-fs); letter-spacing: .02em; color: var(--credit); pointer-events: none; text-decoration: none; }
   html.full #credit { display: block; }
   html.full #credit.live { pointer-events: auto; cursor: pointer; }
+  /* A card with a link: the board opens it when clicked (Settings → Behavior → Click to open links). */
+  #stage.linked #sfb { cursor: pointer; }
+  #linkMark { position: absolute; right: 9px; bottom: 5px; font-size: 11px; line-height: 1; color: var(--band); opacity: .5; pointer-events: none; display: none; }
+  #stage.linked #linkMark { display: block; }
+  html.full #linkMark { right: 12px; bottom: 9px; font-size: 13px; }
   #pair button { border: 1px solid rgba(0,0,0,.15); background: #fff; border-radius: 6px; font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; }
 </style>
 </head>
@@ -67,6 +72,7 @@
   <div id="chrome">
     <div id="status"><div id="dot"></div><span id="statusText"></span><a id="resume" data-act="resume" data-nodrag="1" style="display:none">Resume</a></div>
     <div id="btns" data-nodrag="1">
+      <button data-act="openLink" id="linkBtn" title="Open the page this card comes from">Open ↗</button>
       <button data-act="next" id="nextBtn" title="Show the next source">Next</button>
       <button data-act="pin" id="pinBtn">Pin</button>
       <button data-act="replay">Replay</button>
@@ -75,6 +81,7 @@
   </div>
   <div id="bar"><div id="fill"></div></div>
   <div id="grip" data-nodrag="1" title="Drag to resize"></div>
+  <div id="linkMark" title="Click the board to open its link">↗</div>
 </div>
 <div id="pair"></div>
 <a id="credit" data-act="site">iokig.com</a>
@@ -82,6 +89,7 @@
   <div id="ovStatus"><div id="ovDot"></div><span id="ovText"></span><a id="ovResume" data-act="resume" style="display:none">Resume</a></div>
   <div id="ovBtns">
     <button data-act="exitFull">Exit full screen</button>
+    <button data-act="openLink" id="ovLink">Open ↗</button>
     <button data-act="next" id="ovNext">Next</button>
     <button data-act="replay">Replay</button>
     <button data-act="pair">Pair a phone</button>

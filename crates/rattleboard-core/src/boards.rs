@@ -321,7 +321,7 @@ mod tests {
             fn current(&self) -> (Grid, Option<String>) {
                 (vec![vec![0; 15]; 3], None)
             }
-            fn post(&self, _: Grid, _: Transition) -> String {
+            fn post(&self, _: Grid, _: Transition, _: Option<String>) -> String {
                 "m".into()
             }
             fn play(&self, _: Sequence) -> String {

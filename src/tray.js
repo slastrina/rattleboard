@@ -26,7 +26,7 @@ function render() {
   const src = S.sources || {};
   const to = s.sendTarget !== 'this' && RB.targets(S).some(t => t[0] === s.sendTarget) && { name: RB.targetName(S, s.sendTarget) };
   const groups = [
-    [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ...(src.active ? [['next', src.showing ? `Next source <span style="color:#8a8c91">· now ${RB.esc(src.showing)}</span>` : 'Next source', kbd('⌘→', 'Ctrl+→')]] : []), ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
+    [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ...(S.link ? [['openLink', 'Open current link ↗', '']] : []), ...(src.active ? [['next', src.showing ? `Next source <span style="color:#8a8c91">· now ${RB.esc(src.showing)}</span>` : 'Next source', kbd('⌘→', 'Ctrl+→')]] : []), ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
     [['pin', 'Pin as widget', '', s.mode === 'float'], ['full', 'Full screen', kbd('⌃⌘F', 'F11'), s.mode === 'fullscreen'], ...(virt ? [] : [['pause', paused ? 'Resume checking' : 'Pause checking', '', false]])],
     [['compose', 'Compose…', kbd('⌘N', 'Ctrl+N')], ['history', 'Message history…', ''], ['settings', 'Settings…', kbd('⌘,', '')], ['setup', 'Run setup again…', '']],
     [['site', 'Rattleboard on iokig.com', ''], ['kofi', 'Support Rattleboard on Ko-fi', '']],
@@ -83,6 +83,7 @@ const act = {
   show: () => RB.invoke('show_board'),
   next: () => RB.invoke('sources_next'),
   replay: () => RB.invoke('replay'),
+  openLink: () => { RB.invoke('open_link', { url: S.link }).catch(() => {}); RB.invoke('close_window', { label: 'tray' }); },
   resend: () => { RB.invoke('send_message', { target: S.settings.sendTarget, message: { characters: S.display } }).catch(() => {}); RB.invoke('close_window', { label: 'tray' }); },
   pin: () => { RB.invoke('update_settings', { patch: { mode: S.settings.mode === 'float' ? 'toast' : 'float' } }); RB.invoke('show_board'); },
   full: () => RB.invoke('toggle_fullscreen'),

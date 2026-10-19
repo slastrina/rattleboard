@@ -152,6 +152,8 @@ function viewSettings() {
       <div style="display:flex; align-items:center; gap:10px">${range(3, 60, 1, s.hideSec, 'hideSec')}<span id="hideLabel" style="font-variant-numeric:tabular-nums; min-width:44px">${s.hideSec} s</span></div>
       <div class="lbl">Pause on hover</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.pauseOnHover, 'pauseOnHover')}<span class="hint">Countdown waits while the pointer is over the board</span></div>
+      <div class="lbl">Click to open links</div>
+      <div style="display:flex; align-items:center; gap:10px">${tog(s.clickLinks !== false, 'clickLinks')}<span class="hint">A card from a feed story or a page (marked ↗) opens it in your browser when you click the board, full screen too. Turn off for a kiosk.</span></div>
       <div class="lbl">Flip speed</div>
       <div style="display:flex; align-items:center; gap:10px">${range(0.5, 2, 0.1, s.speed, 'speed')}<span id="speedLabel" style="font-variant-numeric:tabular-nums">${speedLabel(s.speed)}</span></div>
       <div class="lbl">Flap sound</div>
@@ -482,7 +484,7 @@ function viewHistory() {
         <div class="flap-font" style="font-size:14px; letter-spacing:.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${esc(RB.decode(g) || '(blank)')}</div>
         <div style="font-size:11.5px; color:#6b6d72; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${day(h.at)} ${RB.fmtTime(h.at)} · ${esc(h.src)}${onNow ? ' · on board now' : ''}${centredNote(g)}</div>
       </div>
-      <div style="display:flex; gap:4px; align-items:center"><button class="btn" data-act="flip" data-v="${h.id}">Flip again</button>${sendActions('h' + h.id, g)}</div>
+      <div style="display:flex; gap:4px; align-items:center">${h.link ? `<button class="btn" data-act="openLink" data-v="${esc(h.link)}" title="Open ${esc(h.link)}" aria-label="Open its link">↗</button>` : ''}<button class="btn" data-act="flip" data-v="${h.id}">Flip again</button>${sendActions('h' + h.id, g)}</div>
     </div>`;
   }).join('');
   const n = S.history.length;
@@ -857,6 +859,8 @@ RB.delegate(root, 'click', {
   poll: el => save({ pollEvery: +el.dataset.v }),
   resume: () => save({ polling: true }),
   pauseOnHover: () => save({ pauseOnHover: !S.settings.pauseOnHover }),
+  clickLinks: () => save({ clickLinks: S.settings.clickLinks === false }),
+  openLink: el => RB.invoke('open_link', { url: el.dataset.v }).catch(e => flash(String(e))),
   serverEnabled: () => save({ serverEnabled: !S.settings.serverEnabled }),
   serverLan: () => save({ serverLan: !S.settings.serverLan }),
   showServerKey: () => { L.showServerKey = !L.showServerKey; render(true); },

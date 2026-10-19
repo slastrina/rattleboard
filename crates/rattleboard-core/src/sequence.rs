@@ -17,6 +17,8 @@ pub struct Frame {
     /// Seconds, counted from when the frame's flaps finish
     pub hold: f64,
     pub tr: Transition,
+    /// The web address a click opens while this frame shows
+    pub link: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,7 +65,7 @@ fn frame(v: &Value, dims: (usize, usize), adaptive: bool) -> Result<Frame, Strin
     if !(1.0..=MAX_HOLD).contains(&hold) {
         return Err(format!("hold must be from 1 to {MAX_HOLD} seconds"));
     }
-    Ok(Frame { layout, hold, tr })
+    Ok(Frame { layout, hold, tr, link: crate::server::link_of(v)? })
 }
 
 impl Sequence {
@@ -76,6 +78,9 @@ impl Sequence {
                 let mut o = Map::new();
                 o.insert("characters".into(), json!(f.layout));
                 o.insert("hold".into(), json!(f.hold));
+                if let Some(l) = &f.link {
+                    o.insert("link".into(), json!(l));
+                }
                 f.tr.add_to(&mut o);
                 Value::Object(o)
             })
@@ -94,13 +99,15 @@ mod tests {
         let grid = vec![vec![1u8; 15]; 3];
         let v = json!({"name": "Morning", "loop": true, "frames": [
             {"characters": grid, "hold": 8, "strategy": "column"},
-            {"text": "coffee", "hold": 2.5}
+            {"text": "coffee", "hold": 2.5, "link": "https://example.com/coffee"}
         ]});
         let s = parse(&v, (3, 15), false).unwrap();
         assert_eq!((s.name.as_str(), s.looping, s.frames.len()), ("Morning", true, 2));
         assert_eq!(s.frames[0].tr.strategy, "column");
         assert_eq!(s.frames[1].layout, vestaboard::text_layout("coffee", 3, 15));
         assert_eq!(parse(&s.to_json(), (3, 15), false).unwrap(), s);
+        assert_eq!((s.frames[0].link.as_deref(), s.frames[1].link.as_deref()), (None, Some("https://example.com/coffee")));
+        assert!(parse(&json!({"frames": [{"text": "a", "hold": 3, "link": "javascript:x"}]}), (3, 15), false).unwrap_err().contains("link"));
 
         let bad = |v: Value| parse(&v, (6, 22), false).unwrap_err();
         assert!(bad(json!([])).contains("frames"));

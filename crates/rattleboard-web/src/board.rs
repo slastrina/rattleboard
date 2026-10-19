@@ -51,6 +51,8 @@ struct Live {
     seq: u64,
     api_seq: u64,
     alert_return: Option<(Grid, Transition)>,
+    /// The web address of what's showing, if it has one
+    link: Option<String>,
 }
 
 struct Player {
@@ -156,7 +158,7 @@ impl Board {
     }
 
     /// Puts a layout on the board for every viewer.
-    pub fn put(&self, layout: Grid, id: Option<String>, tr: Transition, how: Shown) {
+    pub fn put(&self, layout: Grid, id: Option<String>, tr: Transition, how: Shown, link: Option<String>) {
         if how == Shown::Message {
             self.engine.note_message(now_ms());
         }
@@ -174,6 +176,7 @@ impl Board {
             }
             l.layout = Some(layout.clone());
             l.id = id;
+            l.link = link;
             l.transition = tr.clone();
             Saved { layout, transition: tr }
         };
@@ -240,12 +243,12 @@ impl Board {
                         sources::How::Message => Shown::Restore,
                         _ => Shown::Ambient,
                     };
-                    self.put(layout, Some(self.next_id("src")), Transition::default(), shown);
+                    self.put(layout, Some(self.next_id("src")), Transition::default(), shown, card.link.clone());
                 }
                 sources::Action::Return => {
                     let back = self.live.lock().unwrap().alert_return.take();
                     if let Some((layout, tr)) = back {
-                        self.put(layout, Some(self.next_id("src")), tr, Shown::Restore);
+                        self.put(layout, Some(self.next_id("src")), tr, Shown::Restore, None);
                     }
                 }
             }
@@ -294,7 +297,7 @@ async fn play(b: Arc<Board>, id: String, seq: Sequence) {
             }
         };
         let flip = vestaboard::flip_ms(&from, &f.layout, &f.tr, 1.0);
-        b.put(f.layout.clone(), Some(format!("{id}-{}", i + 1)), f.tr.clone(), Shown::Message);
+        b.put(f.layout.clone(), Some(format!("{id}-{}", i + 1)), f.tr.clone(), Shown::Message, f.link.clone());
         tokio::time::sleep(Duration::from_millis((flip as f64 + f.hold * 1000.0) as u64)).await;
         i += 1;
         if i == seq.frames.len() {
@@ -327,11 +330,14 @@ impl server::Board for Api {
         let l = self.0.live.lock().unwrap();
         (l.layout.clone().unwrap_or_else(|| self.0.blank()), l.id.clone())
     }
-    fn post(&self, layout: Grid, tr: Transition) -> String {
+    fn post(&self, layout: Grid, tr: Transition, link: Option<String>) -> String {
         let id = self.0.next_id("api");
         self.0.stop_player();
-        self.0.put(layout, Some(id.clone()), tr, Shown::Message);
+        self.0.put(layout, Some(id.clone()), tr, Shown::Message, link);
         id
+    }
+    fn link(&self) -> Option<String> {
+        self.0.live.lock().unwrap().link.clone()
     }
     fn play(&self, seq: Sequence) -> String {
         self.0.start_player(seq)
@@ -379,13 +385,13 @@ mod tests {
         assert_eq!(rx.borrow_and_update().display, vec![vec![0u8; 15]; 3]);
         let api = Api(b.clone());
         let g = vestaboard::text_layout("HELLO", 3, 15);
-        let id = api.post(g.clone(), Transition::default());
+        let id = api.post(g.clone(), Transition::default(), None);
         assert!(id.starts_with("api-"));
         assert!(rx.has_changed().unwrap());
         let v = rx.borrow_and_update().clone();
         assert_eq!((v.display.clone(), v.seq, v.rows, v.cols), (g.clone(), 0, 3, 15));
         // The same message again replays the flip.
-        api.post(g.clone(), Transition::default());
+        api.post(g.clone(), Transition::default(), None);
         assert_eq!(rx.borrow_and_update().seq, 1);
         assert_eq!(api.current().0, g);
         assert_eq!(api.platform(), "web");
@@ -398,8 +404,8 @@ mod tests {
     async fn alerts_put_back_what_was_there() {
         let b = board("alert", &[]);
         let before = vestaboard::text_layout("BEFORE", 6, 22);
-        b.put(before.clone(), None, Transition::default(), Shown::Message);
-        b.put(vestaboard::text_layout("ALERT", 6, 22), None, Transition::default(), Shown::Alert);
+        b.put(before.clone(), None, Transition::default(), Shown::Message, None);
+        b.put(vestaboard::text_layout("ALERT", 6, 22), None, Transition::default(), Shown::Alert, None);
         b.run_actions(vec![sources::Action::Return]);
         assert_eq!(b.view().display, before);
     }
@@ -422,7 +428,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert!(api.sequence().is_some());
         // A posted message stops it.
-        api.post(vestaboard::text_layout("STOP", 6, 22), Transition::default());
+        api.post(vestaboard::text_layout("STOP", 6, 22), Transition::default(), None);
         assert!(api.sequence().is_none());
     }
 }

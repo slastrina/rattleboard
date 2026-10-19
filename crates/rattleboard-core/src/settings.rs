@@ -40,6 +40,8 @@ pub struct Settings {
     pub speed: f64,
     pub hide_sec: u32,
     pub pause_on_hover: bool,
+    /// A click on the board opens the card's web address (a feed story's page), when it has one
+    pub click_links: bool,
     /// "toast": pops up in a corner when the message changes, then hides.
     /// "float": stays on screen wherever it was placed, like a desktop widget.
     /// "fullscreen": covers a whole display, for a spare computer used as a board.
@@ -120,6 +122,7 @@ impl Default for Settings {
             speed: 1.0,
             hide_sec: 10,
             pause_on_hover: true,
+            click_links: true,
             mode: "toast".into(),
             windowed_mode: "toast".into(),
             screen_name: String::new(),

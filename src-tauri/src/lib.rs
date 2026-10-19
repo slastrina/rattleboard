@@ -53,6 +53,9 @@ struct HistoryEntry {
     at: i64,
     src: String,
     layout: Grid,
+    /// The web address it came with, if any (a feed story's page)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    link: Option<String>,
 }
 
 /// A message sent from Compose, for its Recent list.
@@ -91,7 +94,10 @@ struct Runtime {
     /// The display full screen covers: its position and size
     covered: Option<(i32, i32, u32, u32)>,
     /// What was on the board when a source's alert interrupted it, to put back afterwards
-    alert_return: Option<(Grid, Transition)>,
+    alert_return: Option<(Grid, Transition, Option<String>)>,
+    /// The web address of the message on the board, and of a history entry shown instead
+    link: Option<String>,
+    display_link: Option<String>,
 }
 
 struct Secrets {
@@ -177,6 +183,8 @@ struct Snapshot {
     os: &'static str,
     version: &'static str,
     settings: Settings,
+    /// Where clicking the board goes, for what's on it now
+    link: Option<String>,
     /// The board's size, from its preset or custom size
     rows: usize,
     cols: usize,
@@ -266,6 +274,7 @@ fn snapshot(st: &AppState) -> Snapshot {
     Snapshot {
         os: OS,
         version: env!("CARGO_PKG_VERSION"),
+        link: if rt.display.is_some() { rt.display_link.clone() } else { rt.link.clone() },
         display,
         has_layout: rt.layout.is_some(),
         transition: rt.transition.clone(),
@@ -390,7 +399,7 @@ async fn check(app: &AppHandle) -> Result<Grid, String> {
         _ => "Local API",
     };
     if changed {
-        show_message(app, reading.layout.clone(), reading.id, src, Transition::default());
+        show_message(app, reading.layout.clone(), reading.id, src, Transition::default(), None);
     } else {
         broadcast(app);
     }
@@ -399,8 +408,8 @@ async fn check(app: &AppHandle) -> Result<Grid, String> {
 
 /// Puts a new message on the virtual board: history, unread dot, and the flip. It holds the
 /// sources rotation for a while (see `sources::Engine::note_message`).
-fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition) {
-    put_on_board(app, layout, id, src, tr, Shown::Message);
+fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition, link: Option<String>) {
+    put_on_board(app, layout, id, src, tr, Shown::Message, link);
 }
 
 /// How something gets onto this board.
@@ -416,7 +425,7 @@ enum Shown {
     Restore,
 }
 
-fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition, how: Shown) {
+fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition, how: Shown, link: Option<String>) {
     let st = app.state::<AppState>();
     let loud = matches!(how, Shown::Message | Shown::Alert);
     if how == Shown::Message {
@@ -447,6 +456,8 @@ fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
         rt.msg_id = id;
         rt.transition = tr;
         rt.display = None;
+        rt.display_link = None;
+        rt.link = link.clone();
         if !first || rt.last_change_at.is_none() {
             rt.last_change_at = Some(now_ms());
         }
@@ -457,7 +468,7 @@ fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
         let already = rt.history.first().map(|h| h.layout == layout).unwrap_or(false);
         if !already && loud {
             let at = now_ms();
-            rt.history.insert(0, HistoryEntry { id: at, at, src: src.into(), layout });
+            rt.history.insert(0, HistoryEntry { id: at, at, src: src.into(), layout, link });
             rt.history.truncate(HISTORY_MAX);
         }
         if loud {
@@ -585,16 +596,16 @@ fn run_actions(app: &AppHandle, actions: Vec<sources::Action>) {
                             sources::How::Alert | sources::How::Message => Shown::Alert,
                             _ => Shown::Ambient,
                         };
-                        let (a, src, id, alert) = (app.clone(), format!("{} · Sources", card.name), next_id(app, "src"), how == sources::How::Alert);
+                        let (a, src, id, alert, link) = (app.clone(), format!("{} · Sources", card.name), next_id(app, "src"), how == sources::How::Alert, card.link.clone());
                         let _ = app.run_on_main_thread(move || {
                             if alert {
                                 let st = a.state::<AppState>();
                                 let mut rt = st.rt.lock().unwrap();
                                 if rt.alert_return.is_none() {
-                                    rt.alert_return = rt.layout.clone().map(|l| (l, rt.transition.clone()));
+                                    rt.alert_return = rt.layout.clone().map(|l| (l, rt.transition.clone(), rt.link.clone()));
                                 }
                             }
-                            put_on_board(&a, layout, Some(id), &src, Transition::default(), shown);
+                            put_on_board(&a, layout, Some(id), &src, Transition::default(), shown, link);
                         });
                     } else {
                         hub_push(app, d, &card, page, how);
@@ -605,9 +616,9 @@ fn run_actions(app: &AppHandle, actions: Vec<sources::Action>) {
                 let a = app.clone();
                 let _ = app.run_on_main_thread(move || {
                     let back = a.state::<AppState>().rt.lock().unwrap().alert_return.take();
-                    if let Some((layout, tr)) = back {
+                    if let Some((layout, tr, link)) = back {
                         let id = next_id(&a, "src");
-                        put_on_board(&a, layout, Some(id), "Sources", tr, Shown::Restore);
+                        put_on_board(&a, layout, Some(id), "Sources", tr, Shown::Restore, link);
                     }
                 });
                 for d in dests.iter().filter(|d| *d != HERE) {
@@ -1315,13 +1326,18 @@ impl server::Board for ApiBoard {
         let rt = st.rt.lock().unwrap();
         (rt.layout.clone().unwrap_or_else(|| blank(&s)), rt.msg_id.clone())
     }
-    fn post(&self, layout: Grid, tr: Transition) -> String {
+    fn post(&self, layout: Grid, tr: Transition, link: Option<String>) -> String {
         let id = next_id(&self.0, "api");
         stop_player(&self.0, HERE);
         let (app, l, i) = (self.0.clone(), layout, id.clone());
         // Windows must be touched from the main thread.
-        let _ = self.0.run_on_main_thread(move || show_message(&app, l, Some(i), "API server", tr));
+        let _ = self.0.run_on_main_thread(move || show_message(&app, l, Some(i), "API server", tr, link));
         id
+    }
+    fn link(&self) -> Option<String> {
+        let st = self.0.state::<AppState>();
+        let rt = st.rt.lock().unwrap();
+        if rt.display.is_some() { rt.display_link.clone() } else { rt.link.clone() }
     }
     fn play(&self, seq: Sequence) -> String {
         start_player(&self.0, HERE, "This board", seq, None, (HERE, "This board"))
@@ -1517,8 +1533,8 @@ async fn play(app: AppHandle, target: String, id: String, seq: Sequence, to: Opt
                     (from, s.speed)
                 };
                 let flip = vestaboard::flip_ms(&from, &f.layout, &f.tr, speed);
-                let (a, l, tr, mid) = (app.clone(), f.layout.clone(), f.tr.clone(), format!("{id}-{}", i + 1));
-                let _ = app.run_on_main_thread(move || show_message(&a, l, Some(mid), "Sequence", tr));
+                let (a, l, tr, mid, link) = (app.clone(), f.layout.clone(), f.tr.clone(), format!("{id}-{}", i + 1), f.link.clone());
+                let _ = app.run_on_main_thread(move || show_message(&a, l, Some(mid), "Sequence", tr, link));
                 flip as f64 + f.hold * 1000.0
             }
             Some((b, key)) => {
@@ -1600,7 +1616,7 @@ async fn send_to_target(app: &AppHandle, target: &str, layout: Grid, tr: Transit
     if target == HERE {
         stop_player(app, HERE);
         let (a, src, id) = (app.clone(), src.to_string(), next_id(app, "msg"));
-        return app.run_on_main_thread(move || show_message(&a, layout, Some(id), &src, tr)).map_err(|e| e.to_string());
+        return app.run_on_main_thread(move || show_message(&a, layout, Some(id), &src, tr, None)).map_err(|e| e.to_string());
     }
     let b = find_board(app, target)?;
     stop_player(app, target);
@@ -2269,6 +2285,7 @@ fn show_history_entry(app: AppHandle, st: State<AppState>, id: i64) {
         if current.as_ref() == Some(&h.layout) {
             rt.seq += 1;
         }
+        rt.display_link = h.link.clone();
         rt.display = if rt.layout.as_ref() == Some(&h.layout) { None } else { Some(h.layout) };
     }
     broadcast(&app);
@@ -2288,6 +2305,35 @@ fn clear_history(app: AppHandle, st: State<AppState>) {
 fn open_site(app: AppHandle) {
     use tauri_plugin_opener::OpenerExt;
     let _ = app.opener().open_url(SITE, None::<&str>);
+}
+
+/// Opens the web address of a card: what's on the board now, or a Message history entry's.
+/// Only those addresses, and only http(s) (checked again here), so a page can't open anything
+/// else. Debug builds with RATTLEBOARD_OPEN_LINKS=log only log it, for testing without a
+/// browser.
+#[tauri::command]
+fn open_link(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let known = {
+        let st = app.state::<AppState>();
+        let rt = st.rt.lock().unwrap();
+        [rt.link.as_ref(), rt.display_link.as_ref()].into_iter().flatten().any(|l| *l == url) || rt.history.iter().any(|h| h.link.as_deref() == Some(url.as_str()))
+    };
+    let link = rattleboard_core::plugins::safe_link(&url).filter(|l| known && *l == url).ok_or("That link can't be opened")?;
+    // One click, one browser tab: the same link again within 2 s is taken as the same click.
+    static LAST: Mutex<Option<(String, i64)>> = Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap();
+        if last.as_ref().is_some_and(|(l, t)| *l == link && now_ms() - t < 2000) {
+            return Ok(());
+        }
+        *last = Some((link.clone(), now_ms()));
+    }
+    if cfg!(debug_assertions) && std::env::var("RATTLEBOARD_OPEN_LINKS").as_deref() == Ok("log") {
+        eprintln!("open_link: {link}");
+        return Ok(());
+    }
+    app.opener().open_url(link, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Opens the Ko-fi page for supporting Rattleboard. Like open_site, a single fixed address.
@@ -2561,6 +2607,7 @@ pub fn run() {
             set_source_secret,
             reveal_source_secret,
             source_preview,
+            open_link,
             sources_next,
             export_source,
             agents::agents_list,

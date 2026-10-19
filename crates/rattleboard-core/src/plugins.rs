@@ -99,6 +99,8 @@ pub struct Pick {
     pub title: Option<String>,
     pub body: Option<String>,
     pub time: Option<String>,
+    /// Format 1.1: the item's web address (http or https), for opening from the board
+    pub link: Option<String>,
     /// Format 1.1: extra values for templates ({{field.name}}), each the first of up to five
     /// paths that has something
     pub fields: Vec<(String, Vec<String>)>,
@@ -457,7 +459,7 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
                 }
                 Ok(s)
             };
-            pick = Pick { items: path("items")?, id: path("id")?, title: path("title")?, body: path("body")?, time: path("time")?, ..Default::default() };
+            pick = Pick { items: path("items")?, id: path("id")?, title: path("title")?, body: path("body")?, time: path("time")?, link: path("link")?, ..Default::default() };
             pick.fields = parse_fields(p.get("fields"))?;
             pick.conds = parse_where(p.get("where"))?;
             pick.sort = parse_sort(p.get("sort"))?;
@@ -466,9 +468,9 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
                 Some("status") => true,
                 Some(a) => return Err(format!("pick.as {a:?} must be feed or status")),
             };
-            let extra = !pick.fields.is_empty() || !pick.conds.is_empty() || pick.sort.is_some() || pick.status;
+            let extra = !pick.fields.is_empty() || !pick.conds.is_empty() || pick.sort.is_some() || pick.status || pick.link.is_some();
             if extra && kind != "json" {
-                return Err("pick.fields, pick.where, pick.sort and pick.as are for json plugins".into());
+                return Err("pick.fields, pick.where, pick.sort, pick.as and pick.link are for json plugins".into());
             }
             if (!pick.conds.is_empty() || pick.sort.is_some() || pick.status) && pick.items.is_none() {
                 return Err("pick.where, pick.sort and pick.as need pick.items (the list)".into());
@@ -833,6 +835,23 @@ pub struct Item {
     /// Format 1.1: pick.fields, by name ({{field.name}})
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub fields: std::collections::BTreeMap<String, String>,
+    /// Its web address, checked by `safe_link`: a feed entry's link, an event's URL, pick.link
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+}
+
+/// A card's link, if it's one the board may open: an absolute http:// or https:// address with
+/// a host, no user name or password, at most 2048 characters. Returned normalised (as the
+/// URL standard writes it); anything else (javascript:, file:, data:, mailto:, relative) is
+/// None.
+pub fn safe_link(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.is_empty() || s.len() > 2048 {
+        return None;
+    }
+    let u = url::Url::parse(s).ok()?;
+    let ok = matches!(u.scheme(), "http" | "https") && u.host_str().is_some_and(|h| !h.is_empty()) && u.username().is_empty() && u.password().is_none();
+    ok.then(|| u.to_string()).filter(|l| l.len() <= 2048)
 }
 
 /// What a fetch produced. A feed (`single` false) has new items to show once each; a status
@@ -1442,7 +1461,9 @@ pub fn parse_feed(bytes: &[u8], max: usize) -> Result<Data, String> {
             let body = e.summary.map(|s| clean(&s.content)).or_else(|| e.content.and_then(|c| c.body).map(|b| clean(&b))).unwrap_or_default();
             let time = e.published.or(e.updated).map(|d| d.timestamp_millis());
             let key = if e.id.is_empty() { hash(&[&title, &body]) } else { hash(&[&e.id]) };
-            Item { key, title, body: short(&body, 400), time, ..Default::default() }
+            // The entry's page: its first alternate link (or first link without a rel)
+            let link = e.links.iter().find(|l| l.rel.as_deref().is_none_or(|r| r == "alternate")).and_then(|l| safe_link(&l.href));
+            Item { key, title, body: short(&body, 400), time, link, ..Default::default() }
         })
         .filter(|i| !i.title.is_empty() || !i.body.is_empty())
         .collect();
@@ -1466,7 +1487,8 @@ pub fn parse_json(bytes: &[u8], pick: &Pick, max: usize) -> Result<Data, String>
         let id = first_text(x, &pick.id);
         let key = if id.is_empty() { hash(&[&title, &body]) } else { hash(&[&id]) };
         let fields = pick.fields.iter().map(|(k, paths)| (k.clone(), short(&field_text(x, paths), 400))).collect();
-        Item { key, title: short(&title, 400), body: short(&body, 400), time, fields, ..Default::default() }
+        let link = pick.link.as_ref().and_then(|p| parse_path(p).ok()).and_then(|p| select(x, &p).into_iter().next().and_then(|v| v.as_str()).and_then(safe_link));
+        Item { key, title: short(&title, 400), body: short(&body, 400), time, fields, link, ..Default::default() }
     };
     match &pick.items {
         Some(p) => {
@@ -1687,6 +1709,7 @@ impl Pick {
             title: path(&self.title),
             body: path(&self.body),
             time: path(&self.time),
+            link: path(&self.link),
             fields: self.fields.iter().map(|(k, ps)| (k.clone(), ps.iter().map(one).collect())).collect(),
             conds,
             sort: self.sort.as_ref().map(|s| SortSpec { path: one(&s.path), ..s.clone() }),
@@ -1713,6 +1736,7 @@ pub fn parse_ical(bytes: &[u8], now_ms: i64) -> Result<Data, String> {
             let end_ms = prop("DTEND").and_then(ical_time).map(|e| e.0).unwrap_or(if all_day { start_ms + 86_400_000 } else { start_ms });
             let length = (end_ms - start_ms).max(0);
             let (title, body, uid) = (text("SUMMARY"), text("LOCATION"), text("UID"));
+            let link = prop("URL").and_then(|p| p.value.as_deref()).and_then(safe_link);
             let mut starts = vec![start_ms];
             if let Some(rule) = prop("RRULE").and_then(|r| r.value.clone()) {
                 starts = expand(start, &rule, &ev.properties, from, until).unwrap_or(starts);
@@ -1722,7 +1746,7 @@ pub fn parse_ical(bytes: &[u8], now_ms: i64) -> Result<Data, String> {
                     continue;
                 }
                 let key = hash(&[&uid, &s.to_string()]);
-                items.push(Item { key, title: title.clone(), body: body.clone(), time: Some(s), end: Some(s + length), all_day, ..Default::default() });
+                items.push(Item { key, title: title.clone(), body: body.clone(), time: Some(s), end: Some(s + length), all_day, link: link.clone(), ..Default::default() });
             }
         }
     }
@@ -1797,7 +1821,8 @@ pub fn parse_output(out: &[u8]) -> Data {
             let id = o.get("id").map(value_text).unwrap_or_default();
             let key = if id.is_empty() { hash(&[&text, &format!("{characters:?}")]) } else { hash(&[&id]) };
             let alert = o.get("priority").and_then(|p| p.as_str()) == Some("alert");
-            let item = Item { key, title: text, alert, characters, ..Default::default() };
+            let link = o.get("link").and_then(|l| l.as_str()).and_then(safe_link);
+            let item = Item { key, title: text, alert, characters, link, ..Default::default() };
             return Data { items: vec![item], single: true };
         }
     }
@@ -2330,6 +2355,52 @@ mod tests {
         let line = |r: usize| g[r].iter().map(|&c| match c { 0 => ' ', 1..=26 => (b'A' + c - 1) as char, 27..=35 => (b'1' + c - 27) as char, 36 => '0', 44 => '-', 55 => ',', 41 => '(', 42 => ')', _ => '?' }).collect::<String>();
         assert_eq!(line(1), "  MEL DEPARTURES (3)  ");
         assert_eq!(line(2), "VH-ZNA  B789 1,100 FT ");
+    }
+
+    #[test]
+    fn links() {
+        for (s, want) in [
+            ("https://example.com/a", Some("https://example.com/a")),
+            ("  http://Example.COM  ", Some("http://example.com/")),
+            ("https://news.ycombinator.com/item?id=1&x=%20y", Some("https://news.ycombinator.com/item?id=1&x=%20y")),
+            ("javascript:alert(1)", None),
+            ("JavaScript:alert(1)", None),
+            ("file:///etc/passwd", None),
+            ("data:text/html,<b>x</b>", None),
+            ("mailto:sam@example.com", None),
+            ("ftp://example.com/x", None),
+            ("/relative/path", None),
+            ("//example.com/protocol-relative", None),
+            ("example.com", None),
+            ("https://user:pw@example.com/", None),
+            ("https://", None),
+            ("", None),
+        ] {
+            assert_eq!(safe_link(s).as_deref(), want, "{s}");
+        }
+        assert!(safe_link(&format!("https://example.com/{}", "a".repeat(2100))).is_none());
+        // Feeds: RSS <link>, Atom's alternate link; a bad one is dropped
+        let d = parse_feed(RSS.as_bytes(), 10).unwrap();
+        let show = d.items.iter().find(|i| i.title.starts_with("Show HN")).unwrap();
+        assert_eq!(show.link.as_deref(), Some("https://a/"));
+        assert_eq!(d.items.iter().find(|i| i.title.starts_with("Rust")).unwrap().link, None);
+        let atom = r#"<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>T</title><id>t</id><updated>2026-10-18T00:00:00Z</updated>
+            <entry><title>One</title><id>urn:1</id><updated>2026-10-18T08:00:00Z</updated><link rel="self" href="https://example.com/self"/><link rel="alternate" href="https://example.com/one"/></entry>
+            <entry><title>Two</title><id>urn:2</id><updated>2026-10-18T07:00:00Z</updated><link href="javascript:alert(1)"/></entry></feed>"#;
+        let d = parse_feed(atom.as_bytes(), 10).unwrap();
+        assert_eq!((d.items[0].link.as_deref(), d.items[1].link.as_deref()), (Some("https://example.com/one"), None));
+        // iCal URL
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-19T00:00:00Z").unwrap().timestamp_millis();
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:u1\r\nSUMMARY:Standup\r\nURL:https://meet.example.com/standup\r\nDTSTART:20261019T093000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(parse_ical(ics.as_bytes(), now).unwrap().items[0].link.as_deref(), Some("https://meet.example.com/standup"));
+        // pick.link: a string at the path, checked
+        let m = json_plugin(json!({"items": "$.hits[*]", "title": "$.title", "link": "$.url"}), json!({})).unwrap();
+        assert_eq!(m.pick.link.as_deref(), Some("$.url"));
+        let d = parse_json(br#"{"hits": [{"title": "A", "url": "https://a.example/1"}, {"title": "B", "url": "javascript:x"}, {"title": "C", "url": 5}]}"#, &m.pick, 10).unwrap();
+        assert_eq!(d.items.iter().map(|i| i.link.as_deref()).collect::<Vec<_>>(), [Some("https://a.example/1"), None, None]);
+        assert!(json_plugin(json!({"items": "$.hits[*]", "title": "$.title", "link": "$[bad"}), json!({})).unwrap_err().contains("pick.link"));
+        // A command's JSON output can carry one too
+        assert_eq!(parse_output(br#"{"text": "Build failed", "link": "https://ci.example.com/1"}"#).items[0].link.as_deref(), Some("https://ci.example.com/1"));
     }
 
     #[test]

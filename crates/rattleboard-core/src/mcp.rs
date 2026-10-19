@@ -76,6 +76,18 @@ Only A-Z, 0-9, space and ! @ # $ ( ) - + & = ; : ' \" % , . / ? ° can be shown;
 lower-case-only symbols) shows as a blank. {63}-{70} inside the text inserts a colour chip (63 red, 64 orange, \
 65 yellow, 66 green, 67 blue, 68 violet, 69 white, 70 black).";
 
+fn link_schema() -> Value {
+    json!({ "type": "string", "maxLength": 2048, "description": "Optional http:// or https:// address the user can open by clicking the board while the message shows, e.g. the failing build's page or the pull request." })
+}
+
+/// The call's optional "link", checked as the board checks it.
+fn link_arg(c: &Call<'_>) -> Result<Option<String>, String> {
+    match c.str("link")?.map(str::trim).filter(|l| !l.is_empty()) {
+        None => Ok(None),
+        Some(l) => crate::plugins::safe_link(l).map(Some).ok_or_else(|| "link must be an http:// or https:// address".to_string()),
+    }
+}
+
 fn strategy_schema() -> Value {
     json!({
         "type": "string",
@@ -105,6 +117,7 @@ pub fn tools() -> Value {
                     "color": color_schema("as an accent"),
                     "size": { "type": "string", "enum": ["standard", "compact", "large"], "description": "Lay the text out for a board size: standard 6x22 (default), compact 3x15, large 8x30. Boards set to match each message take this size; others use their own." },
                     "strategy": strategy_schema(),
+                    "link": link_schema(),
                     "board": { "type": "string", "description": "Which board: \"this\" (this board, the default unless the user set another), or the name of a saved board or group from list_boards, or \"all\"." }
                 },
                 "required": ["text"],
@@ -121,7 +134,8 @@ pub fn tools() -> Value {
                 "properties": {
                     "text": { "type": "string", "minLength": 1, "maxLength": 1000, "description": "The status, e.g. \"Deploying…\"." },
                     "seconds": { "type": "integer", "minimum": 3, "maximum": 3600, "default": 15, "description": "How long to show it after the flaps settle, 3-3600 (default 15)." },
-                    "color": color_schema("as an accent")
+                    "color": color_schema("as an accent"),
+                    "link": link_schema()
                 },
                 "required": ["text"],
                 "additionalProperties": false
@@ -316,6 +330,9 @@ async fn send_message(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
         body.insert("cols".into(), json!(cl));
     }
     c.strategy(&mut body)?;
+    if let Some(l) = link_arg(c)? {
+        body.insert("link".into(), json!(l));
+    }
     deliver(b, c, body, Some(&text), hint).await
 }
 
@@ -362,12 +379,13 @@ async fn show_status(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
             _ => return Err("seconds must be a whole number from 3 to 3600".into()),
         },
     };
+    let link = link_arg(c)?;
     let before = b.current().await?;
     let size = layout_size(b, None).await;
     let seq = json!({
         "name": "Status",
         "frames": [
-            { "text": text, "hold": secs },
+            { "text": text, "hold": secs, "link": link },
             // The last frame of a sequence that doesn't loop stays up.
             { "characters": before, "hold": 1 }
         ]
@@ -712,6 +730,7 @@ mod tests {
     struct Mock {
         shown: Mutex<Grid>,
         posts: Mutex<Vec<Grid>>,
+        links: Mutex<Vec<Option<String>>>,
         played: Mutex<Vec<Sequence>>,
         sent: Mutex<Vec<(String, Value)>>,
         saved: bool,
@@ -733,7 +752,8 @@ mod tests {
         fn current(&self) -> (Grid, Option<String>) {
             (self.shown.lock().unwrap().clone(), None)
         }
-        fn post(&self, g: Grid, _: Transition) -> String {
+        fn post(&self, g: Grid, _: Transition, link: Option<String>) -> String {
+            self.links.lock().unwrap().push(link);
             *self.shown.lock().unwrap() = g.clone();
             self.posts.lock().unwrap().push(g);
             "m1".into()
@@ -844,6 +864,23 @@ mod tests {
         assert_eq!(r["result"]["isError"], false, "{r}");
         // a fixed 6 x 22 board centres it
         assert!(m.posts.lock().unwrap().last().unwrap()[3].windows(3).any(|w| w == [63, 64, 65]));
+    }
+
+    #[tokio::test]
+    async fn links() {
+        let (m, _h, b) = start(false).await;
+        let r = handle(&b, call("send_message", json!({"text": "PR ready", "link": "https://github.com/slastrina/rattleboard/pull/1"}))).await.unwrap();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert_eq!(m.links.lock().unwrap().last().unwrap().as_deref(), Some("https://github.com/slastrina/rattleboard/pull/1"));
+        let r = handle(&b, call("send_message", json!({"text": "x", "link": "javascript:alert(1)"}))).await.unwrap();
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("http"));
+        let r = handle(&b, call("show_status", json!({"text": "Deploying", "link": "https://ci.example.com/run/42"}))).await.unwrap();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let seq = m.played.lock().unwrap().last().unwrap().clone();
+        assert_eq!((seq.frames[0].link.as_deref(), seq.frames[1].link.as_deref()), (Some("https://ci.example.com/run/42"), None));
+        let tools = tools();
+        assert!(tools.as_array().unwrap().iter().filter(|t| t["name"] == "send_message" || t["name"] == "show_status").all(|t| t["inputSchema"]["properties"]["link"].is_object()));
     }
 
     #[tokio::test]

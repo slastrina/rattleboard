@@ -362,12 +362,13 @@ Turn it on in **Settings → API server**. Rattleboard then listens on port `707
 | --- | --- | --- |
 | `GET /local-api/message` | — | The current layout: `[[0,8,5,…], …]` |
 | `POST /local-api/message` | A layout array, `{"characters": [[…]]}` or `{"text": "…"}` | `201 {"status":"ok","id":"…"}` |
-| `GET /` | — | `{"currentMessage": {"layout": "<JSON string>", "id": "…"}}` (Read/Write and Cloud API style) |
+| `GET /` | — | `{"currentMessage": {"layout": "<JSON string>", "id": "…", "link": "https://…"}}` (Read/Write and Cloud API style; `link` is `null` when the message has none) |
 | `POST /` | Same bodies as above | `201 {"status":"ok","id":"…"}` |
 
 - **Layouts** use Vestaboard character codes: 0 is blank, 1–26 are A–Z, 27–36 are 1–9 and 0, 37–62 are punctuation, 63–70 are the colour chips and 71 is a filled tile. A layout can be any rectangle from 1 × 1 to 12 rows × 40 columns. With **Match each message** it shows at its own size; a fixed-size board centres it.
 - **`text`** is upper-cased, word-wrapped and centred. Put `{63}` in the text to insert a raw character code. It may ask for a size with `"rows"` (2–12) and `"cols"` (8–40): `{"text": "Hi", "rows": 3, "cols": 15}`. Rattleboard follows that with **Match each message**, and otherwise uses its own size.
 - **Transitions:** the object forms also take `strategy`, `step_interval_ms` and `step_size`, as a Vestaboard's Local API does. See [Transitions](#transitions).
+- **Links:** the object forms also take `"link": "https://…"`, the page clicking the board opens while the message is up (see [Click to open links](#click-to-open-links)). Only `http://` and `https://` addresses; anything else is refused with `400`. `GET /` reports it; the plain-array `GET /local-api/message` can't carry it.
 - **Browsers:** CORS is open, so pages running in a browser can call the server too. They still need the key.
 
 ```sh
@@ -401,7 +402,7 @@ Rattleboards also answer a few requests of their own under `/rattleboard/`. They
 
 `platform` is `macos`, `windows`, `linux` or `web` ([Rattleboard Web](#rattleboard-web-docker)). A real Vestaboard answers `404` or `401` to these, which is how apps tell the two apart. The `/rattleboard/sources` endpoints are under [Sources and plugins](#sources-api).
 
-A sequence has 1–100 frames. Each frame is `characters` or `text` (with an optional size hint), as in a normal post, with `hold` (1–3600 seconds) and an optional transition. With **Match each message**, each frame can have its own size. A frame is held for `hold` seconds after its flaps finish, so it's never cut off mid-flip. Without `"loop": true`, the last frame stays up. Starting a sequence replaces the one playing; any normal message stops it.
+A sequence has 1–100 frames. Each frame is `characters` or `text` (with an optional size hint), as in a normal post, with `hold` (1–3600 seconds), an optional transition and an optional `link`. With **Match each message**, each frame can have its own size. A frame is held for `hold` seconds after its flaps finish, so it's never cut off mid-flip. Without `"loop": true`, the last frame stays up. Starting a sequence replaces the one playing; any normal message stops it.
 
 ```sh
 curl -X POST http://127.0.0.1:7070/rattleboard/sequence \
@@ -574,8 +575,8 @@ Claude Desktop only adds remote servers through its Connectors settings, and tho
 
 | Tool | What it does |
 | --- | --- |
-| `send_message` | `{text, color?, size?, strategy?, board?}`: text that stays until something replaces it. `color` adds a chip (red, orange, yellow, green, blue, violet, white or black), and `size` is standard, compact or large. `board` is "this" (the default), a saved board or group by name from **Settings → Boards**, or "all". |
-| `show_status` | `{text, seconds?, color?}`: a temporary status (15 s by default). It plays a two-frame [sequence](#rattleboard-endpoints), your text and then what was on the board before, so the previous message comes back. Starting it stops any sequence that was playing. |
+| `send_message` | `{text, color?, size?, strategy?, link?, board?}`: text that stays until something replaces it. `link` (http or https) is opened by clicking the board. `color` adds a chip (red, orange, yellow, green, blue, violet, white or black), and `size` is standard, compact or large. `board` is "this" (the default), a saved board or group by name from **Settings → Boards**, or "all". |
+| `show_status` | `{text, seconds?, color?, link?}`: a temporary status (15 s by default). It plays a two-frame [sequence](#rattleboard-endpoints), your text and then what was on the board before, so the previous message comes back. Starting it stops any sequence that was playing. |
 | `send_layout` | `{characters, board?}`: an exact grid of character codes 0–71, up to 12 × 40. |
 | `list_boards` | This board, your saved boards and groups, with their kinds and sizes. |
 | `play_sequence` | `{frames: [{text or characters, hold}], loop?}`: 1–100 frames, as in `POST /rattleboard/sequence`. |
@@ -623,6 +624,10 @@ When nothing else is going on, Rattleboard can run a **rotation** of sources: ea
 - **Quiet hours** stop anything new going up overnight. Feed alerts that come in then are let go; a celebration or the day's quote waits until morning.
 - Each feed source can keep only items **with** some words, **skip** items with others, and **alert** on others.
 - While this board **mirrors** another board (or the demo), sources are paused, unless **Show sources while mirroring** is on. A **Virtual board** with a source turned on runs its rotation by itself, forever.
+
+### Click to open links
+
+A card that comes from a page (an RSS or Atom story, a calendar event with a URL, a JSON item with `pick.link`, or a message sent with a `"link"`) carries its web address. While it's on the board, the board shows a small ↗ in its corner and the pointer becomes a hand: click the board (a click, not the end of a drag or a resize) and the page opens in your browser. The hover bar and full screen's controls get **Open ↗**, Message History shows ↗ beside entries that had a link, and the tray menu has **Open current link ↗**. Only `http://` and `https://` addresses are ever kept or opened. Turn it off in **Settings → Behavior → Click to open links** (for a kiosk, say).
 
 ### Built-in sources
 
@@ -685,7 +690,7 @@ A plugin is one JSON file, `*.rattleboard-plugin.json`:
 | `name`, `description` | Shown in Settings → Sources |
 | `kind` | `rss` (RSS and Atom), `json`, `ical`, `text`, or `command` (this computer only) |
 | `fetch` | `url`, optional `method` (`GET` or `POST`) and `headers`, `every` (at least `1m`, default `15m`), and since 0.7.0 `sign` (`{"type": "hmac-sha1", "key": "{{secret.key}}"}`: an HMAC of the path and query added as `&signature=`, as PTV's API wants). For `rss`, `json` and `ical`. The address must be `https://`, or `http://` to a host on your own network (a private IP address, `localhost`, `*.local`, `*.lan`, `*.home.arpa` or a single-word name). Each fetch has 10 s, and the answer may be up to 2 MB. |
-| `pick` | For `json`: JSONPath for `items` (optional: without it the whole document is one card), and for each item's `id`, `title`, `body` and `time`. The supported subset is `$`, `.key`, `['key']`, `[n]` and `[*]`. RSS, Atom and iCal need no `pick`. Since 0.7.0 also `fields` (more values, as `{{field.name}}`), `where` (conditions like `{"path": "$.alt", "op": ">", "value": 300}`), `sort` (`{"path": "$.alt", "order": "asc"}`) and `as: "status"` (the list as one card, with `card.row` for `{{rows}}` and `card.empty`). See the community repository's [contributor guide](https://github.com/slastrina/rattleboard-plugins/blob/main/CONTRIBUTING.md#lists-filter-sort-and-status-cards-070-and-later). |
+| `pick` | For `json`: JSONPath for `items` (optional: without it the whole document is one card), and for each item's `id`, `title`, `body`, `time` and (since 0.7.0) `link`, its web address. The supported subset is `$`, `.key`, `['key']`, `[n]` and `[*]`. RSS, Atom and iCal need no `pick`. Since 0.7.0 also `fields` (more values, as `{{field.name}}`), `where` (conditions like `{"path": "$.alt", "op": ">", "value": 300}`), `sort` (`{"path": "$.alt", "order": "asc"}`) and `as: "status"` (the list as one card, with `card.row` for `{{rows}}` and `card.empty`). See the community repository's [contributor guide](https://github.com/slastrina/rattleboard-plugins/blob/main/CONTRIBUTING.md#lists-filter-sort-and-status-cards-070-and-later). |
 | `card` | `template` (laid out over the whole board with the standard text layout; colour codes like `{r}` or `{63}` work), `chip` (a colour: red, orange, yellow, green, blue, violet, white or black), `align` (`center` or `left`) and `pages` (1–3: long text continues on more cards rather than being cut; words are never split). Without a template, the card has the source's name and the time across the top and the item below. |
 | `priority` | `ambient` (default) or `alert`: every new item interrupts |
 | `alertWhen` | `["keyword:launch"]`: new items mentioning one of these interrupt |

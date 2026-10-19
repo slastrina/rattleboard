@@ -262,7 +262,7 @@ mod tests {
             fn current(&self) -> (Grid, Option<String>) {
                 (vec![], None)
             }
-            fn post(&self, g: Grid, _: Transition) -> String {
+            fn post(&self, g: Grid, _: Transition, _: Option<String>) -> String {
                 *self.0.lock().unwrap() = Some(g);
                 "m".into()
             }
