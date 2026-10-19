@@ -3001,7 +3001,7 @@ pub fn run() {
                         &MenuItem::with_id(app, "compose", "Compose…", true, None::<&str>)?,
                         &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
-                        &MenuItem::with_id(app, "site", "Rattleboard on iokig.com", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "site", concat!("Rattleboard v", env!("CARGO_PKG_VERSION"), " on iokig.com"), true, None::<&str>)?,
                         &MenuItem::with_id(app, "kofi", "Support Rattleboard on Ko-fi", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
                         &MenuItem::with_id(app, "quit", "Quit Rattleboard", true, None::<&str>)?,

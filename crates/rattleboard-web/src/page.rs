@@ -30,6 +30,8 @@ use std::time::Duration;
 const INDEX: &str = include_str!("../web/index.html");
 const PAGE_JS: &str = include_str!("../web/board.js");
 const PAIR: &str = include_str!("../web/pair.html");
+/// The pairing page, with this build's version filled in.
+static PAIR_PAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| PAIR.replace("{{version}}", env!("CARGO_PKG_VERSION")));
 const PAIR_JS: &str = include_str!("../web/pair.js");
 // The same renderer and font the desktop app uses.
 const SPLIT_FLAP: &str = include_str!("../../../src/shared/split-flap.js");
@@ -70,7 +72,7 @@ pub fn routes(board: Arc<Board>) -> Router {
     Router::new()
         .route("/index.html", get(|| async { index() }))
         .route("/board.js", get(|| async { file("text/javascript; charset=utf-8", PAGE_JS.as_bytes(), SHORT) }))
-        .route("/pair", get(|| async { html(PAIR) }))
+        .route("/pair", get(|| async { html(PAIR_PAGE.as_str()) }))
         .route("/pair.js", get(|| async { file("text/javascript; charset=utf-8", PAIR_JS.as_bytes(), SHORT) }))
         .route("/shared/split-flap.js", get(|| async { file("text/javascript; charset=utf-8", SPLIT_FLAP.as_bytes(), SHORT) }))
         .route("/shared/base.css", get(|| async { file("text/css; charset=utf-8", BASE_CSS.as_bytes(), SHORT) }))
