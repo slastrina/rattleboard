@@ -20,6 +20,8 @@
 //!   POST   /rattleboard/sequence  {"name", "loop", "frames": [...]}  -> 201
 //!   GET    /rattleboard/sequence  -> {"running": true, "frame": 2, ...} or {"running": false}
 //!   DELETE /rattleboard/sequence  -> 204
+//!   POST   /rattleboard/notify    {"text" | "characters", "seconds", "source", "link"} -> 201
+//!          A notification, shown once (see `Notice`)
 //!
 //! Sources (protocol v3), on boards that run them:
 //!   GET    /rattleboard/sources                              plugins, rotation, settings
@@ -90,6 +92,71 @@ pub struct SequenceStatus {
     pub looping: bool,
 }
 
+/// The longest a timed notification stays up.
+pub const NOTICE_MAX_SECONDS: u64 = 3600;
+pub const NOTICE_MIN_SECONDS: u64 = 3;
+const SOURCE_MAX: usize = 40;
+const LINK_MAX: usize = 2048;
+
+/// A notification (`POST /rattleboard/notify`, an agent's send_message and show_status,
+/// `--notify`): shown once, never replayed. With `seconds` it interrupts like a source's
+/// alert and the board then goes back to whatever it would otherwise show (the previous
+/// message, or the Sources rotation) without that counting as a new message; without, it
+/// stays like any posted message. Either way it goes in the history once, labelled `source`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notice {
+    pub layout: Grid,
+    pub tr: Transition,
+    /// Counted from when the flaps finish
+    pub seconds: Option<u64>,
+    /// Who sent it, for the history ("Claude Code via MCP")
+    pub source: String,
+    /// Where it came from or leads, if anywhere (http or https)
+    pub link: Option<String>,
+}
+
+/// What a notification is labelled when it doesn't say who sent it.
+pub const NOTICE_SOURCE: &str = "API notification";
+
+impl Notice {
+    /// A posted notification: a message (as `message` takes it) plus "seconds", "source"
+    /// and "link".
+    pub fn parse(v: &Value, dims: (usize, usize), adaptive: bool) -> Result<Notice, String> {
+        let o = v.as_object().ok_or("Send {\"text\": \"...\"} or {\"characters\": [[...]]}, with \"seconds\" to go away again")?;
+        let (layout, tr) = message(v, dims, adaptive)?;
+        let seconds = match o.get("seconds") {
+            None | Some(Value::Null) => None,
+            Some(n) => Some(n.as_u64().filter(|n| (NOTICE_MIN_SECONDS..=NOTICE_MAX_SECONDS).contains(n)).ok_or_else(|| {
+                format!("seconds must be a whole number from {NOTICE_MIN_SECONDS} to {NOTICE_MAX_SECONDS}")
+            })?),
+        };
+        let source = match o.get("source") {
+            None | Some(Value::Null) => NOTICE_SOURCE.to_string(),
+            Some(Value::String(s)) => {
+                let s: String = s.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string();
+                if s.is_empty() {
+                    NOTICE_SOURCE.to_string()
+                } else if s.chars().count() > SOURCE_MAX {
+                    return Err(format!("source is up to {SOURCE_MAX} characters"));
+                } else {
+                    s
+                }
+            }
+            Some(_) => return Err("source must be a string".into()),
+        };
+        let link = match o.get("link") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if s.trim().is_empty() => None,
+            Some(Value::String(s)) => {
+                let u = url::Url::parse(s.trim()).ok().filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some() && s.len() <= LINK_MAX);
+                Some(u.ok_or("link must be an http or https address")?.to_string())
+            }
+            Some(_) => return Err("link must be a string".into()),
+        };
+        Ok(Notice { layout, tr, seconds, source, link })
+    }
+}
+
 /// What the server needs from the app; implemented in lib.rs.
 pub trait Board: Send + Sync + 'static {
     fn api_key(&self) -> String;
@@ -105,6 +172,12 @@ pub trait Board: Send + Sync + 'static {
     /// The link of what's on the board now, if it has one
     fn link(&self) -> Option<String> {
         None
+    }
+        /// A notification (see `Notice`): it also stops a running sequence. Returns its id. A
+    /// board that can't time one just shows it as a message (the desktop and Rattleboard Web
+    /// do it properly).
+    fn notify(&self, n: Notice) -> String {
+        self.post(n.layout, n.tr, n.link)
     }
     /// Starts a sequence in place of any running one; returns its id.
     fn play(&self, seq: Sequence) -> String;
@@ -166,6 +239,7 @@ pub fn router(board: std::sync::Arc<dyn Board>, extra: Router) -> Router {
                 .options(preflight)
                 .layer(DefaultBodyLimit::max(SEQUENCE_BODY_LIMIT)),
         )
+        .route("/rattleboard/notify", routing::post(notify_post).options(preflight))
         .route("/rattleboard/sources", get(sources_get).options(preflight))
         .route("/rattleboard/sources/rotation", routing::put(rotation_put).options(preflight))
         .route("/rattleboard/sources/plugins", routing::post(plugin_post).options(preflight))
@@ -289,6 +363,23 @@ async fn post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
     }
 }
 
+async fn notify_post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
+    if !authorized(&ctx, &h) {
+        return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
+    }
+    let Ok(v) = serde_json::from_slice::<Value>(&body) else {
+        return err(StatusCode::BAD_REQUEST, "Body must be JSON");
+    };
+    match Notice::parse(&v, ctx.board.dims(), ctx.board.adaptive()) {
+        Ok(n) => {
+            let seconds = n.seconds;
+            let id = ctx.board.notify(n);
+            (StatusCode::CREATED, Json(json!({ "status": "ok", "id": id, "seconds": seconds, "created": crate::now_ms() }))).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
 /// A posted message: a layout array, {"characters": ...} or {"text": ...}, with an optional
 /// transition, for a rows×cols board. A fixed board centres a layout of another size and lays
 /// text out at its own size; an adaptive one keeps the layout's size and follows the text's hint.
@@ -358,7 +449,7 @@ async fn info(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
 }
 
 fn features(ctx: &Ctx) -> Vec<&'static str> {
-    let mut f = vec!["sequence", "strategy"];
+    let mut f = vec!["sequence", "strategy", "notify"];
     if ctx.board.sources().is_some() {
         f.push("sources");
     }
@@ -622,6 +713,13 @@ impl crate::mcp::Backend for Ctx {
             Ok(())
         })
     }
+    fn notify(&self, body: Value) -> crate::mcp::Fut<'_, Result<(), String>> {
+        Box::pin(async move {
+            let n = Notice::parse(&body, self.board.dims(), self.board.adaptive())?;
+            self.board.notify(n);
+            Ok(())
+        })
+    }
     fn play(&self, seq: Value) -> crate::mcp::Fut<'_, Result<(), String>> {
         Box::pin(async move {
             let seq = sequence::parse(&seq, self.board.dims(), self.board.adaptive())?;
@@ -669,6 +767,7 @@ mod tests {
         grid: Mutex<Grid>,
         tr: Mutex<Transition>,
         seq: Mutex<Option<(Sequence, SequenceStatus)>>,
+        notices: Mutex<Vec<Notice>>,
         engine: Option<Arc<sources::Engine>>,
         link: Mutex<Option<String>>,
     }
@@ -697,6 +796,12 @@ mod tests {
             *self.link.lock().unwrap() = link;
             self.stop();
             "m2".into()
+        }
+        fn notify(&self, n: Notice) -> String {
+            *self.grid.lock().unwrap() = n.layout.clone();
+            self.notices.lock().unwrap().push(n);
+            self.stop();
+            "note-1".into()
         }
         fn play(&self, seq: Sequence) -> String {
             let st = SequenceStatus { id: "seq-1".into(), name: seq.name.clone(), frame: 1, frames: seq.frames.len(), looping: seq.looping };
@@ -920,6 +1025,51 @@ mod tests {
         drop(h);
     }
 
+    /// POST /rattleboard/notify: the key, then a notification as the board gets it.
+    #[tokio::test]
+    async fn notify_route() {
+        let board = fake();
+        let h = start(board.clone(), 0, false).await.unwrap();
+        let url = format!("http://{}/rattleboard/notify", h.addr);
+        let c = reqwest::Client::new();
+        let body = r#"{"text": "Tests passed", "seconds": 20, "source": "Claude Code via MCP"}"#;
+        assert_eq!(c.post(&url).body(body).send().await.unwrap().status(), 401);
+        assert_eq!(c.post(&url).bearer_auth("nope").body(body).send().await.unwrap().status(), 401);
+        assert!(board.notices.lock().unwrap().is_empty());
+
+        board.play(sequence::parse(&json!({"frames": [{"text": "a", "hold": 1}]}), (3, 15), false).unwrap());
+        let r = c.post(&url).bearer_auth("k1").body(body).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        let v: Value = r.json().await.unwrap();
+        assert_eq!((v["id"].as_str(), v["seconds"].as_u64()), (Some("note-1"), Some(20)));
+        let n = board.notices.lock().unwrap()[0].clone();
+        assert_eq!(n, Notice { layout: vestaboard::text_layout("Tests passed", 3, 15), tr: Transition::default(), seconds: Some(20), source: "Claude Code via MCP".into(), link: None });
+        assert!(board.sequence().is_none(), "a notification stops a sequence");
+
+        // no seconds: it stays; no source: a plain label; characters and a link
+        let r = c.post(&url).header("X-Vestaboard-Local-Api-Key", "k1").body(r#"{"characters": [[1, 2]], "link": "https://example.com/run/7"}"#).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        let n = board.notices.lock().unwrap()[1].clone();
+        assert_eq!((n.seconds, n.source.as_str(), n.link.as_deref()), (None, NOTICE_SOURCE, Some("https://example.com/run/7")));
+        assert_eq!(n.layout[1][6..8], [1, 2]);
+
+        for bad in [
+            r#"{"seconds": 10}"#,
+            r#"{"text": "x", "seconds": 2}"#,
+            r#"{"text": "x", "seconds": 3601}"#,
+            r#"{"text": "x", "seconds": "10"}"#,
+            r#"{"text": "x", "source": 5}"#,
+            r#"{"text": "x", "source": "a very long name that goes on and on and on"}"#,
+            r#"{"text": "x", "link": "javascript:alert(1)"}"#,
+            r#"[[1, 2]]"#,
+            "nope",
+        ] {
+            let r = c.post(&url).bearer_auth("k1").body(bad).send().await.unwrap();
+            assert_eq!(r.status(), 400, "{bad}");
+        }
+        assert_eq!(board.notices.lock().unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn rattleboard_routes() {
         let board = fake();
@@ -933,7 +1083,7 @@ mod tests {
         assert_eq!((v["app"].as_str(), v["protocol"].as_u64(), v["name"].as_str()), (Some("rattleboard"), Some(3), Some("Desk")));
         assert_eq!((v["board"]["rows"].as_u64(), v["board"]["cols"].as_u64()), (Some(3), Some(15)));
         assert_eq!(v["platform"], PLATFORM);
-        assert_eq!(v["features"], json!(["sequence", "strategy"]));
+        assert_eq!(v["features"], json!(["sequence", "strategy", "notify"]));
 
         let seq = format!("{base}/sequence");
         for r in [c.get(&seq), c.post(&seq).body("{}"), c.delete(&seq)] {
@@ -1029,7 +1179,7 @@ mod tests {
             assert_eq!(r.headers()["access-control-allow-origin"], "*");
         }
         let v: Value = key(c.get(format!("{base}/info"))).send().await.unwrap().json().await.unwrap();
-        assert_eq!(v["features"], json!(["sequence", "strategy", "sources"]));
+        assert_eq!(v["features"], json!(["sequence", "strategy", "notify", "sources"]));
 
         let v: Value = key(c.get(url(""))).send().await.unwrap().json().await.unwrap();
         let ids: Vec<&str> = v["plugins"].as_array().unwrap().iter().filter_map(|p| p["id"].as_str()).collect();

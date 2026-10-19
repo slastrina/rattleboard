@@ -39,11 +39,17 @@ pub enum Shown {
     Ambient,
     /// A source's alert: what was there is put back afterwards
     Alert,
+    /// A timed notification: like an alert, it never holds the rotation
+    Notice,
     /// What was there before an alert, or before a restart
     Restore,
 }
 
 #[derive(Default)]
+/// A timed notification showing: its id, and what goes back when it's over (layout, how its
+/// flaps start, message id, link).
+type NoticeUp = (String, Grid, Transition, Option<String>, Option<String>);
+
 struct Live {
     layout: Option<Grid>,
     id: Option<String>,
@@ -53,6 +59,8 @@ struct Live {
     alert_return: Option<(Grid, Transition)>,
     /// The web address of what's showing, if it has one
     link: Option<String>,
+    /// A timed notification showing: its id, and what goes back when it's over
+    notice: Option<NoticeUp>,
 }
 
 struct Player {
@@ -169,8 +177,11 @@ impl Board {
                 l.seq += 1;
             }
             match how {
-                // Nothing to go back to: the message replaced the alert.
-                Shown::Message => l.alert_return = None,
+                // Nothing to go back to: the message replaced the alert, or the notification.
+                Shown::Message => {
+                    l.alert_return = None;
+                    l.notice = None;
+                }
                 Shown::Alert if l.alert_return.is_none() => l.alert_return = l.layout.clone().map(|g| (g, l.transition.clone())),
                 _ => {}
             }
@@ -184,6 +195,56 @@ impl Board {
             let _ = std::fs::write(&self.saved_path, s);
         }
         self.publish();
+    }
+
+    // ------------------------------------------------------------ notifications
+
+    /// A notification (see `server::Notice`), as on the desktop: one that stays is a
+    /// message; a timed one interrupts like an alert, then what it covered goes back quietly,
+    /// never as a new message.
+    fn notify(self: &Arc<Self>, n: server::Notice) -> String {
+        let id = self.next_id("note");
+        self.stop_player();
+        let Some(secs) = n.seconds else {
+            self.put(n.layout, Some(id.clone()), n.tr, Shown::Message, n.link);
+            return id;
+        };
+        let flip = {
+            let mut l = self.live.lock().unwrap();
+            let from = l.layout.clone().unwrap_or_else(|| self.blank());
+            let back = match l.notice.take() {
+                Some((_, g, tr, mid, link)) => (g, tr, mid, link),
+                None => (from.clone(), l.transition.clone(), l.id.clone(), l.link.clone()),
+            };
+            l.notice = Some((id.clone(), back.0, back.1, back.2, back.3));
+            vestaboard::flip_ms(&from, &n.layout, &n.tr, 1.0)
+        };
+        let ms = flip + secs * 1000;
+        self.engine.begin_notice(now_ms(), ms as i64);
+        self.put(n.layout, Some(id.clone()), n.tr, Shown::Notice, n.link);
+        let (b, nid) = (self.clone(), id.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            b.end_notice(&nid);
+        });
+        id
+    }
+
+    fn end_notice(&self, id: &str) {
+        let back = {
+            let mut l = self.live.lock().unwrap();
+            match &l.notice {
+                Some((nid, ..)) if nid == id => l.notice.take(),
+                _ => None,
+            }
+        };
+        let Some((_, layout, tr, mid, link)) = back else { return };
+        // The very picture that was up: nothing to put back (that would replay its flaps).
+        if self.live.lock().unwrap().layout.as_ref() != Some(&layout) {
+            let mid = mid.or_else(|| Some(self.next_id("msg")));
+            self.put(layout, mid, tr, Shown::Restore, link);
+        }
+        self.engine.end_notice(now_ms());
     }
 
     // ------------------------------------------------------------ sequences
@@ -339,6 +400,9 @@ impl server::Board for Api {
     fn link(&self) -> Option<String> {
         self.0.live.lock().unwrap().link.clone()
     }
+    fn notify(&self, n: server::Notice) -> String {
+        self.0.notify(n)
+    }
     fn play(&self, seq: Sequence) -> String {
         self.0.start_player(seq)
     }
@@ -408,6 +472,45 @@ mod tests {
         b.put(vestaboard::text_layout("ALERT", 6, 22), None, Transition::default(), Shown::Alert, None);
         b.run_actions(vec![sources::Action::Return]);
         assert_eq!(b.view().display, before);
+    }
+
+    /// A timed notification (an agent's show_status) goes back to what was there, once; a
+    /// second one while it's up still goes back to the first thing; a message replaces it.
+    #[tokio::test(start_paused = true)]
+    async fn notifications_go_back_once() {
+        use rattleboard_core::server::Notice;
+        let b = board("notice", &[]);
+        let api = Api(b.clone());
+        let g = |t: &str| vestaboard::text_layout(t, 6, 22);
+        let note = |t: &str, seconds: Option<u64>| Notice { layout: g(t), tr: Transition::default(), seconds, source: "Claude Code via MCP".into(), link: None };
+        api.post(g("BEFORE"), Transition::default(), None);
+        assert!(api.notify(note("RUNNING TESTS", Some(5))).starts_with("note-"));
+        assert_eq!(b.view().display, g("RUNNING TESTS"));
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        api.notify(note("DEPLOYING", Some(5)));
+        assert_eq!(b.view().display, g("DEPLOYING"));
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert_eq!(b.view().display, g("DEPLOYING"), "the second one has its own time");
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert_eq!(b.view().display, g("BEFORE"));
+        // and nothing more, however long it's left
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        assert_eq!(b.view().display, g("BEFORE"));
+
+        // A message while one is up replaces it: nothing comes back over the message.
+        api.notify(note("STATUS", Some(5)));
+        api.post(g("NEW MESSAGE"), Transition::default(), None);
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(b.view().display, g("NEW MESSAGE"));
+        // The same picture as was up: no second flip when it "goes back".
+        let seq = b.view().seq;
+        api.notify(note("NEW MESSAGE", Some(5)));
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!((b.view().display.clone(), b.view().seq), (g("NEW MESSAGE"), seq + 1));
+        // One that stays (send_message) just stays.
+        api.notify(note("BUILD PASSED", None));
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        assert_eq!(b.view().display, g("BUILD PASSED"));
     }
 
     #[tokio::test(start_paused = true)]

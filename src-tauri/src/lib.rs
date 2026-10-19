@@ -51,9 +51,10 @@ const OS: &str = "linux";
 struct HistoryEntry {
     id: i64,
     at: i64,
+    /// Where it came from: "Claude Code via MCP", "API server", "Compose", "Sequence", a source
     src: String,
     layout: Grid,
-    /// The web address it came with, if any (a feed story's page)
+    /// The web address it came with, if any (a feed story's page, a notification's link)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     link: Option<String>,
 }
@@ -98,6 +99,15 @@ struct Runtime {
     /// The web address of the message on the board, and of a history entry shown instead
     link: Option<String>,
     display_link: Option<String>,
+    /// A timed notification on the board, and what goes back when it's over
+    notice: Option<NoticeUp>,
+}
+
+/// A timed notification showing (see `show_notice`).
+struct NoticeUp {
+    id: String,
+    /// What it covered: the layout, how its flaps start, its message id and its link
+    back: (Grid, Transition, Option<String>, Option<String>),
 }
 
 struct Secrets {
@@ -412,6 +422,72 @@ fn show_message(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
     put_on_board(app, layout, id, src, tr, Shown::Message, link);
 }
 
+/// A notification for this board (`POST /rattleboard/notify`, agents, forwarded system
+/// notifications): it ends a running sequence and is shown once. Returns its id.
+fn notify_here(app: &AppHandle, n: server::Notice) -> String {
+    let id = next_id(app, "note");
+    stop_player(app, HERE);
+    let (a, i) = (app.clone(), id.clone());
+    // Windows must be touched from the main thread.
+    let _ = app.run_on_main_thread(move || show_notice(&a, i, n));
+    id
+}
+
+/// Shows a notification. One that stays is a message like any other, labelled with who sent
+/// it. A timed one interrupts like a source's alert: it goes in the history once, doesn't
+/// hold the Sources rotation, and when its time is up whatever it covered goes back quietly
+/// (no history entry, no pop-up), so nothing about it is ever shown again as a new message.
+/// A second one while the first is up replaces it, still going back to what was there first.
+fn show_notice(app: &AppHandle, id: String, n: server::Notice) {
+    let Some(secs) = n.seconds else {
+        put_on_board(app, n.layout, Some(id), &n.source, n.tr, Shown::Message, n.link);
+        return;
+    };
+    let st = app.state::<AppState>();
+    let s = st.settings.lock().unwrap().clone();
+    let flip = {
+        let mut rt = st.rt.lock().unwrap();
+        let from = rt.display.clone().or_else(|| rt.layout.clone()).unwrap_or_else(|| blank(&s));
+        let back = match rt.notice.take() {
+            Some(up) => up.back,
+            None => (rt.layout.clone().unwrap_or_else(|| blank(&s)), rt.transition.clone(), rt.msg_id.clone(), rt.link.clone()),
+        };
+        rt.notice = Some(NoticeUp { id: id.clone(), back });
+        vestaboard::flip_ms(&from, &n.layout, &n.tr, s.speed)
+    };
+    // Counted, like a sequence frame's hold, from when the flaps finish.
+    let ms = flip + secs * 1000;
+    st.sources.begin_notice(now_ms(), ms as i64);
+    put_on_board(app, n.layout, Some(id.clone()), &n.source, n.tr, Shown::Notice, n.link);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        let a = app.clone();
+        let _ = app.run_on_main_thread(move || end_notice(&a, &id));
+    });
+}
+
+/// A notification's time is up: what it covered goes back, if nothing has replaced it since.
+fn end_notice(app: &AppHandle, id: &str) {
+    let st = app.state::<AppState>();
+    let back = {
+        let mut rt = st.rt.lock().unwrap();
+        match &rt.notice {
+            Some(up) if up.id == id => rt.notice.take().map(|up| up.back),
+            _ => None,
+        }
+    };
+    let Some((layout, tr, msg_id, link)) = back else { return };
+    // A notification of the very picture that was up leaves nothing to put back (putting
+    // it back would replay its flaps).
+    let same = st.rt.lock().unwrap().layout.as_ref() == Some(&layout);
+    if !same {
+        let msg_id = msg_id.or_else(|| Some(next_id(app, "msg")));
+        put_on_board(app, layout, msg_id, "Notification", tr, Shown::Restore, link);
+    }
+    st.sources.end_notice(now_ms());
+}
+
 /// How something gets onto this board.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Shown {
@@ -421,13 +497,16 @@ enum Shown {
     Ambient,
     /// A source's alert, or its once-a-day message: pops up and goes in the history
     Alert,
-    /// What was there before an alert
+    /// A timed notification (see `show_notice`): pops up and goes in the history like an
+    /// alert, and like one never holds the rotation
+    Notice,
+    /// What was there before an alert or a notification: no pop-up, no history
     Restore,
 }
 
 fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr: Transition, how: Shown, link: Option<String>) {
     let st = app.state::<AppState>();
-    let loud = matches!(how, Shown::Message | Shown::Alert);
+    let loud = matches!(how, Shown::Message | Shown::Alert | Shown::Notice);
     if how == Shown::Message {
         st.sources.note_message(now_ms());
     }
@@ -462,15 +541,11 @@ fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
             rt.last_change_at = Some(now_ms());
         }
         if how == Shown::Message {
-            // Nothing to go back to: the message replaced the alert.
+            // Nothing to go back to: the message replaced the alert, or the notification.
             rt.alert_return = None;
+            rt.notice = None;
         }
-        let already = rt.history.first().map(|h| h.layout == layout).unwrap_or(false);
-        if !already && loud {
-            let at = now_ms();
-            rt.history.insert(0, HistoryEntry { id: at, at, src: src.into(), layout, link });
-            rt.history.truncate(HISTORY_MAX);
-        }
+        record(&mut rt.history, layout, src, link, how, now_ms());
         if loud {
             rt.unread = !tray_open;
         }
@@ -483,6 +558,18 @@ fn put_on_board(app: &AppHandle, layout: Grid, id: Option<String>, src: &str, tr
     // screen anyway, so it's made sure of.
     if setup_done && (loud || stays) {
         present_board(app, false);
+    }
+}
+
+/// The history's part in putting something on the board: a message, an alert or a
+/// notification goes in once, labelled with where it came from; a rotation card, or what
+/// goes back after an alert or a notification, never does.
+fn record(history: &mut Vec<HistoryEntry>, layout: Grid, src: &str, link: Option<String>, how: Shown, at: i64) {
+    let loud = matches!(how, Shown::Message | Shown::Alert | Shown::Notice);
+    let already = history.first().is_some_and(|h| h.layout == layout);
+    if loud && !already {
+        history.insert(0, HistoryEntry { id: at, at, src: src.into(), layout, link });
+        history.truncate(HISTORY_MAX);
     }
 }
 
@@ -1339,6 +1426,9 @@ impl server::Board for ApiBoard {
         let rt = st.rt.lock().unwrap();
         if rt.display.is_some() { rt.display_link.clone() } else { rt.link.clone() }
     }
+    fn notify(&self, n: server::Notice) -> String {
+        notify_here(&self.0, n)
+    }
     fn play(&self, seq: Sequence) -> String {
         start_player(&self.0, HERE, "This board", seq, None, (HERE, "This board"))
     }
@@ -1514,6 +1604,8 @@ async fn play(app: AppHandle, target: String, id: String, seq: Sequence, to: Opt
     let st = app.state::<AppState>();
     let mut prev: Option<Grid> = None;
     let mut i = 0;
+    // The history says which sequence each frame was.
+    let src = if seq.name.is_empty() { "Sequence".to_string() } else { format!("Sequence · {}", seq.name) };
     loop {
         let f = &seq.frames[i];
         if !on_frame(&app, &target, &id, i + 1) {
@@ -1533,8 +1625,8 @@ async fn play(app: AppHandle, target: String, id: String, seq: Sequence, to: Opt
                     (from, s.speed)
                 };
                 let flip = vestaboard::flip_ms(&from, &f.layout, &f.tr, speed);
-                let (a, l, tr, mid, link) = (app.clone(), f.layout.clone(), f.tr.clone(), format!("{id}-{}", i + 1), f.link.clone());
-                let _ = app.run_on_main_thread(move || show_message(&a, l, Some(mid), "Sequence", tr, link));
+                let (a, l, tr, mid, src, link) = (app.clone(), f.layout.clone(), f.tr.clone(), format!("{id}-{}", i + 1), src.clone(), f.link.clone());
+                let _ = app.run_on_main_thread(move || show_message(&a, l, Some(mid), &src, tr, link));
                 flip as f64 + f.hold * 1000.0
             }
             Some((b, key)) => {
@@ -2837,4 +2929,31 @@ pub fn run() {
             api.prevent_exit();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What an agent sends shows in the history once, labelled with the agent app; the
+    /// message a timed notification covered comes back without a new entry ("Sequence" or
+    /// otherwise), so nothing looks like it was sent again.
+    #[test]
+    fn history_says_who_sent_it_once() {
+        let g = |t: &str| vestaboard::text_layout(t, 6, 22);
+        let mut h = vec![];
+        record(&mut h, g("HELLO FROM MCP"), "Claude Code via MCP", None, Shown::Message, 1);
+        record(&mut h, g("RUNNING TESTS"), "Claude Code via MCP", Some("https://example.com/ci".into()), Shown::Notice, 2);
+        record(&mut h, g("HELLO FROM MCP"), "Notification", None, Shown::Restore, 3);
+        record(&mut h, g("10:42"), "Clock · Sources", None, Shown::Ambient, 4);
+        let got: Vec<(&str, Grid)> = h.iter().map(|e| (e.src.as_str(), e.layout.clone())).collect();
+        assert_eq!(got, [("Claude Code via MCP", g("RUNNING TESTS")), ("Claude Code via MCP", g("HELLO FROM MCP"))]);
+        assert_eq!(h[0].link.as_deref(), Some("https://example.com/ci"));
+        // the same message twice running is one entry
+        record(&mut h, g("RUNNING TESTS"), "Claude Code via MCP", None, Shown::Notice, 5);
+        assert_eq!(h.len(), 2);
+        // an older history.json, without links, still loads
+        let old: Vec<HistoryEntry> = serde_json::from_str(r#"[{"id": 1, "at": 1, "src": "API server", "layout": [[1]]}]"#).unwrap();
+        assert!(old[0].link.is_none());
+    }
 }

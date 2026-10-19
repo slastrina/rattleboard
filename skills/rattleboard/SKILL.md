@@ -26,7 +26,7 @@ Don't post routine progress, every step of a plan, or anything the user is clear
 
 ## Which tool
 
-- `show_status`: a **temporary** state, such as `DEPLOYING…` or `RUNNING TESTS`. It goes away after `seconds` (15 by default) and the previous message comes back. Prefer it for anything that won't matter in a minute.
+- `show_status`: a **temporary** state, such as `DEPLOYING…` or `RUNNING TESTS`. It shows once and goes away after `seconds` (15 by default); the board then goes back to what it would otherwise show (the previous message, or the user's Sources rotation). Prefer it for anything that won't matter in a minute.
 - `send_message`: a result that should **stay up** until something replaces it, like done, failed or needs you. It takes `board` to send to one of the user's other boards or groups by name. Call `list_boards` first if you don't know the names.
 - `play_sequence`: a few frames in a row, such as a countdown. Use it rarely.
 - `send_layout`: an exact grid of character codes (0–71), for pictures or precise placement.

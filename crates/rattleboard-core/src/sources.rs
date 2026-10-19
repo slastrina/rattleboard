@@ -6,7 +6,10 @@
 //!   Message  anything else put on the board (Compose, the API, a sequence) holds the rotation
 //!            for `holdMinutes` (30 by default)
 //!   Alert    a keyword match, an event starting in 10 minutes, a celebration: interrupts for
-//!            `alertSeconds`, then the board goes back to what it showed before
+//!            `alertSeconds`, then the board goes back to what it showed before. A timed
+//!            notification (POST /rattleboard/notify with "seconds", an agent's show_status)
+//!            interrupts the same way (`begin_notice`/`end_notice`): it never holds the
+//!            rotation, and the board it put back is never re-shown as a message
 //! Calm by default: feed items are shown once (remembered in seen.json), a burst of new ones
 //! becomes one digest card, at most `flipsPerHour` card changes an hour, nothing at all in
 //! quiet hours, and each instance can have a schedule.
@@ -510,6 +513,9 @@ struct Inner {
     /// The ambient card an alert interrupted
     resume: Option<Showing>,
     hold_until: Option<i64>,
+    /// A timed notification is up (see `begin_notice`): when it began, and the latest it
+    /// can last should `end_notice` never come
+    notice: Option<(i64, i64)>,
     flips: VecDeque<i64>,
     /// Smooth weighted round robin: each instance's current weight
     wrr: HashMap<String, i64>,
@@ -575,6 +581,7 @@ impl Engine {
                 showing: None,
                 resume: None,
                 hold_until: None,
+                notice: None,
                 flips: VecDeque::new(),
                 wrr: HashMap::new(),
                 rng: u64::from_le_bytes(seed) | 1,
@@ -985,10 +992,38 @@ impl Engine {
             i.showing = None;
             i.resume = None;
         }
+        // A notification showing is over too: the message replaced it.
+        i.notice = None;
         if hold > 0 {
             i.hold_until = Some(now + hold);
             i.showing = None;
         }
+    }
+
+    /// A timed notification went up for about `ms`: like an alert it interrupts, so the
+    /// rotation waits (no card replaces it) without being held afterwards. The board puts
+    /// back what was there and then calls `end_notice`; if it never does, the rotation goes
+    /// on by itself a minute after the notification should have ended.
+    pub fn begin_notice(&self, now: i64, ms: i64) {
+        let mut i = self.inner.lock().unwrap();
+        let start = i.notice.map(|n| n.0).unwrap_or(now);
+        i.notice = Some((start, now + ms.max(0) + 60_000));
+    }
+
+    /// The notification is over and what it covered is back: the rotation carries on where
+    /// it was, the card it interrupted getting the time it lost.
+    pub fn end_notice(&self, now: i64) {
+        let mut guard = self.inner.lock().unwrap();
+        let i = &mut *guard;
+        let Some((start, _)) = i.notice.take() else { return };
+        let lost = (now - start).max(0);
+        for s in [i.showing.as_mut(), i.resume.as_mut()].into_iter().flatten() {
+            s.since += lost;
+            s.page_at += lost;
+            s.until += lost;
+        }
+        drop(guard);
+        self.wake.notify_one();
     }
 
     // ------------------------------------------------------------ fetching
@@ -1622,6 +1657,13 @@ fn tick(i: &mut Inner, ctx: &Ctx) -> Vec<Action> {
     if i.showing.as_ref().is_some_and(|s| !i.config.rotation.iter().any(|x| x.id == s.card.instance && x.enabled)) && i.showing.as_ref().is_some_and(|s| s.how == How::Ambient) {
         i.showing = None;
     }
+    // A timed notification is up: nothing replaces it, not even a manual Next (which waits).
+    if let Some((_, latest)) = i.notice {
+        if now < latest {
+            return out;
+        }
+        i.notice = None;
+    }
     let quiet = i.config.quiet.active(ctx.local);
     collect_due(i, ctx);
     let force = std::mem::take(&mut i.next_requested);
@@ -2098,6 +2140,65 @@ pub mod tests {
         e.request_next();
         assert_eq!(shows(&e.tick(&at(&q0, 60))).len(), 1);
         assert!(e.up_next(&at(&q0, 61)).iter().filter(|x| !x.now).all(|x| x.reason.contains("quiet hours") || x.at >= ctx(19 * 60).now));
+    }
+
+    /// An agent's timed notification (show_status) interrupts like an alert: nothing replaces
+    /// it, it never holds the rotation, and once it's over the rotation carries on, the
+    /// interrupted card getting the time it lost. A message that stays (send_message) holds
+    /// as any message does, and after the hold the rotation comes back: nothing re-shows the
+    /// message or anything from before it.
+    #[test]
+    fn notices_interrupt_without_holding() {
+        let (e, _) = engine("notice");
+        e.install(&text_plugin("com.t.a"), false).unwrap();
+        e.install(&text_plugin("com.t.b"), false).unwrap();
+        e.put_rotation(&json!({"rotation": [
+            {"id": "a", "plugin": "com.t.a", "dwell": "60s"},
+            {"id": "b", "plugin": "com.t.b", "dwell": "60s"},
+        ], "holdMinutes": 30}), false).unwrap();
+        let c0 = ctx(0);
+        assert_eq!(shows(&e.tick(&c0)), [("a".to_string(), How::Ambient)]);
+        // show_status at 30 s for 15 s (and its flaps): no card goes up over it, not even when
+        // a's time would be up.
+        e.begin_notice(at(&c0, 30).now, 17_000);
+        for t in [31, 40, 46, 61, 70] {
+            assert!(e.tick(&at(&c0, t)).is_empty(), "{t}");
+        }
+        assert_eq!(e.status().hold_until, None, "a notification never holds the rotation");
+        // It ended at 75 s (late, as a slow board might): a gets back the 45 s it lost, so
+        // it's up until 105 s, then the rotation goes on.
+        e.end_notice(at(&c0, 75).now);
+        assert_eq!(e.inner.lock().unwrap().showing.as_ref().map(|s| s.until), Some(at(&c0, 105).now));
+        assert!(e.tick(&at(&c0, 76)).is_empty());
+        assert_eq!(shows(&e.tick(&at(&c0, 106))), [("b".to_string(), How::Ambient)]);
+        assert_eq!(e.status().hold_until, None);
+        assert_eq!(shows(&e.tick(&at(&c0, 167))), [("a".to_string(), How::Ambient)]);
+
+        // A notification that's never ended lets go by itself a minute after it should have.
+        e.begin_notice(at(&c0, 140).now, 10_000);
+        assert!(e.tick(&at(&c0, 205)).is_empty());
+        assert!(e.inner.lock().unwrap().notice.is_some());
+        e.tick(&at(&c0, 211));
+        assert!(e.inner.lock().unwrap().notice.is_none());
+        assert_eq!(shows(&e.tick(&at(&c0, 228))), [("b".to_string(), How::Ambient)]);
+
+        // send_message: a message, held for 30 minutes, then the rotation, and nothing else:
+        // simulated minute by minute for an hour, the only things shown are rotation cards.
+        let t0 = 300;
+        e.note_message(at(&c0, t0).now);
+        let mut shown = vec![];
+        for m in 0..60 {
+            for (id, how) in shows(&e.tick(&at(&c0, t0 + m * 60 + 1))) {
+                shown.push((m, id, how));
+            }
+        }
+        assert!(shown.iter().all(|(m, _, how)| *m >= 30 && *how == How::Ambient), "{shown:?}");
+        assert_eq!(shown.first().map(|s| s.0), Some(30));
+        // A message during a notification ends it: the hold applies, nothing returns.
+        e.begin_notice(at(&c0, 4000).now, 15_000);
+        e.note_message(at(&c0, 4005).now);
+        assert!(e.inner.lock().unwrap().notice.is_none());
+        assert!(e.tick(&at(&c0, 4100)).is_empty(), "held");
     }
 
     #[test]
