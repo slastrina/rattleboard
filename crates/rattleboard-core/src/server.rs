@@ -343,7 +343,21 @@ async fn local_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
     if !authorized(&ctx, &h) {
         return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
     }
-    Json(ctx.board.current().0).into_response()
+    let layout = ctx.board.current().0;
+    mirrored_mark(&ctx, &layout, Json(&layout).into_response())
+}
+
+/// Marks the current message as a mirror of another board's, or as the rotation's own card
+/// (see `builtins::MIRRORED_HEADER` and `ROTATION_HEADER`).
+fn mirrored_mark(ctx: &Ctx, layout: &Grid, mut res: Response) -> Response {
+    if let Some(e) = ctx.board.sources() {
+        for (on, name) in [(e.mirrored(layout), crate::builtins::MIRRORED_HEADER), (e.rotation_card(layout), crate::builtins::ROTATION_HEADER)] {
+            if on {
+                res.headers_mut().insert(name, HeaderValue::from_static("1"));
+            }
+        }
+    }
+    res
 }
 
 async fn cloud_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
@@ -357,14 +371,15 @@ async fn cloud_get(State(ctx): State<Ctx>, h: HeaderMap) -> Response {
         return err(StatusCode::UNAUTHORIZED, "Missing or wrong API key");
     }
     let (layout, id) = ctx.board.current();
-    Json(json!({
+    let res = Json(json!({
         "currentMessage": {
             "layout": serde_json::to_string(&layout).unwrap_or_default(),
             "id": id,
             "link": ctx.board.link(),
         }
     }))
-    .into_response()
+    .into_response();
+    mirrored_mark(&ctx, &layout, res)
 }
 
 async fn post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
@@ -1219,7 +1234,7 @@ mod tests {
 
         let v: Value = key(c.get(url(""))).send().await.unwrap().json().await.unwrap();
         let ids: Vec<&str> = v["plugins"].as_array().unwrap().iter().filter_map(|p| p["id"].as_str()).collect();
-        for b in ["rattleboard.clock", "rattleboard.countdown", "rattleboard.weather", "rattleboard.rss", "rattleboard.ical", "rattleboard.json", "rattleboard.motd", "rattleboard.quote"] {
+        for b in ["rattleboard.clock", "rattleboard.countdown", "rattleboard.weather", "rattleboard.rss", "rattleboard.ical", "rattleboard.json", "rattleboard.motd", "rattleboard.quote", "rattleboard.mirror"] {
             assert!(ids.contains(&b), "{b}");
         }
         assert_eq!((v["rotation"].clone(), v["quietHours"]["from"].clone(), v["holdMinutes"].clone()), (json!([]), json!("22:00"), json!(30)));

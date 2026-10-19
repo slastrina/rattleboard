@@ -229,7 +229,8 @@ function viewSources() {
 
 function summary(x, p) {
   const bits = [p ? p.name : x.plugin];
-  bits.push(x.dwell ? 'shows ' + fmtDur(x.dwell) : p && p.dwell ? 'shows ' + fmtDur(dur(p.dwell)) : 'shows 5 min');
+  if (x.plugin === 'rattleboard.mirror' && (x.settings || {}).show !== 'rotation') bits.push('pops up when it changes');
+  else bits.push(x.dwell ? 'shows ' + fmtDur(x.dwell) : p && p.dwell ? 'shows ' + fmtDur(dur(p.dwell)) : 'shows 5 min');
   if (x.weight > 1) bits.push('weight ' + x.weight);
   if (x.schedule && (x.schedule.days.length || x.schedule.from)) bits.push(scheduleText(x.schedule));
   return bits.join(' · ');
@@ -296,7 +297,8 @@ function secretRow(x, s) {
 function editor(x, p) {
   if (!p) return `<div style="padding:0 14px 12px" class="hint">Its plugin (${esc(x.plugin)}) was removed.</div>`;
   const countdown = p.id === 'rattleboard.countdown', feed = p.kind === 'rss' || p.kind === 'json' || p.kind === 'script';
-  const specs = (p.settings || []).filter(s => !countdown || !['preset', 'title', 'date', 'time', 'yearly'].includes(s.key));
+  const mirror = p.id === 'rattleboard.mirror';
+  const specs = (p.settings || []).filter(s => (!countdown || !['preset', 'title', 'date', 'time', 'yearly'].includes(s.key)) && !(mirror && s.key === 'address' && (x.settings || {}).board === 'cloud'));
   const sch = x.schedule || { days: [], from: null, to: null }, timed = !!(x.schedule && (x.schedule.days.length || x.schedule.from));
   const dwells = DWELLS.some(dw => dw[0] === x.dwell) ? DWELLS : [...DWELLS, [x.dwell, fmtDur(x.dwell)]];
   return `<div class="grid" style="grid-template-columns:130px minmax(0,1fr); gap:10px 14px; padding:4px 16px 16px 68px">
@@ -305,6 +307,7 @@ function editor(x, p) {
     ${countdown ? countdownFields(x) : ''}
     ${specs.map(s => `<div class="lbl" ${s.type === 'lines' ? 'style="align-self:start; padding-top:4px"' : ''}>${esc(s.label)}</div>${field(x, s)}`).join('')}
     ${(p.secrets || []).map(s => secretRow(x, s)).join('')}
+    ${mirror ? `<div></div><div class="hint">Another Rattleboard: its address (e.g. 192.168.1.20 or https://board.example.com) and the API key from its Settings → API server, with Other devices on. A Vestaboard: its Local API address and key, or its Cloud API token. A board never passes on what it’s following, so two boards can follow each other.</div>` : ''}
     <div class="lbl">Show for</div>
     <div style="display:flex; align-items:center; gap:10px"><select class="field" style="width:140px" data-src-dwell="${esc(x.id)}">${dwells.map(([v, l]) => `<option value="${v}" ${v === x.dwell ? 'selected' : ''}>${esc(v === 0 && p.dwell ? `Default (${fmtDur(dur(p.dwell))})` : l)}</option>`).join('')}</select>
       <span class="hint">then the next source</span></div>

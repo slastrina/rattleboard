@@ -2056,7 +2056,20 @@ pub fn builtins() -> Vec<Manifest> {
             {"key": "source", "label": "Use", "type": "select", "default": "both", "options": [
                 {"value": "both", "label": "Built-in and mine"}, {"value": "bundled", "label": "Built-in only"}, {"value": "mine", "label": "Only mine"}]},
             {"key": "colour", "label": "Colour", "type": "select", "default": "playful", "options": [
-                {"value": "playful", "label": "Playful"}, {"value": "accent", "label": "Accent"}, {"value": "off", "label": "Off"}]}]}
+                {"value": "playful", "label": "Playful"}, {"value": "accent", "label": "Accent"}, {"value": "off", "label": "Off"}]}]},
+        {"format": 1, "id": "rattleboard.mirror", "name": "Follow a board", "kind": "native", "description": "Another Rattleboard or a Vestaboard: shows what it shows, when it changes, alongside your own sources",
+         "every": "30s", "dwell": "1m", "card": {"chip": "white"},
+         "settings": [
+            {"key": "board", "label": "Board", "type": "select", "default": "rattleboard", "options": [
+                {"value": "rattleboard", "label": "Another Rattleboard"}, {"value": "local", "label": "Vestaboard (Local API)"}, {"value": "cloud", "label": "Vestaboard (Cloud API)"}]},
+            {"key": "address", "label": "Address (not needed for the Cloud API)", "type": "text", "default": ""},
+            {"key": "show", "label": "Show", "type": "select", "default": "alert", "options": [
+                {"value": "alert", "label": "Pop up when it changes"}, {"value": "rotation", "label": "In the rotation"}]},
+            {"key": "follow", "label": "Follow (another Rattleboard)", "type": "select", "default": "messages", "options": [
+                {"value": "messages", "label": "Messages sent to it"}, {"value": "all", "label": "Everything, its own sources too"}]},
+            {"key": "every", "label": "Check every", "type": "select", "default": "30", "options": [
+                {"value": "15", "label": "15 seconds"}, {"value": "30", "label": "30 seconds"}, {"value": "60", "label": "Minute"}, {"value": "300", "label": "5 minutes"}]}],
+         "secrets": [{"key": "key", "label": "API key (another Rattleboard), Local API key or Cloud API token"}]}
     ]);
     list.as_array().unwrap().iter().map(|v| parse(v, true).expect("built-in manifest")).collect()
 }

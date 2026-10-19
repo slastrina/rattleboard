@@ -12,6 +12,7 @@ pub const COUNTDOWN: &str = "rattleboard.countdown";
 pub const WEATHER: &str = "rattleboard.weather";
 pub const MOTD: &str = "rattleboard.motd";
 pub const QUOTE: &str = "rattleboard.quote";
+pub const MIRROR: &str = "rattleboard.mirror";
 
 fn text<'a>(s: &'a Map<String, Value>, k: &str) -> &'a str {
     s.get(k).and_then(|v| v.as_str()).unwrap_or("")
@@ -253,6 +254,10 @@ pub fn label(plugin: &str, settings: &Map<String, Value>) -> Option<String> {
             _ => None,
         }),
         WEATHER => t("city").map(|c| format!("Weather · {c}")),
+        MIRROR => match text(settings, "board") {
+            "cloud" => Some("Following · Vestaboard".into()),
+            _ => t("address").map(|a| format!("Following · {a}")),
+        },
         _ => None,
     }
 }
@@ -260,6 +265,95 @@ pub fn label(plugin: &str, settings: &Map<String, Value>) -> Option<String> {
 /// When the countdown next changes what it says, for Up next's celebration entry.
 pub fn countdown_target(settings: &Map<String, Value>, now: NaiveDateTime) -> Option<NaiveDateTime> {
     target(settings, now).map(|t| t.0)
+}
+
+// ---------------------------------------------------------------- mirror a board
+
+/// Sent with a Rattleboard's current message (GET /local-api/message and GET /) when what's
+/// up is itself mirrored from another board: a mirror never mirrors a mirror, so two boards
+/// following each other can't pass a message back and forth.
+pub const MIRRORED_HEADER: &str = "X-Rattleboard-Mirrored";
+
+/// Sent with a Rattleboard's current message when it's the rotation's own card (a clock, a
+/// feed's story) rather than a message sent to the board: a mirror follows messages only,
+/// unless it's set to follow everything.
+pub const ROTATION_HEADER: &str = "X-Rattleboard-Rotation";
+
+/// Follows everything the other board shows, its rotation too.
+pub fn mirror_everything(settings: &Map<String, Value>) -> bool {
+    text(settings, "follow") == "all"
+}
+
+/// How often a mirror checks, in seconds: its "every" setting, never under 15 s (a
+/// Vestaboard's rate limit).
+pub fn mirror_every(settings: &Map<String, Value>) -> u64 {
+    text(settings, "every").parse::<u64>().unwrap_or(30).clamp(15, 3600)
+}
+
+/// Pops up when the board it follows changes (the default), rather than taking a turn in the
+/// rotation.
+pub fn mirror_alerts(settings: &Map<String, Value>) -> bool {
+    text(settings, "show") != "rotation"
+}
+
+/// "http://host:7070" for an address typed with or without a scheme; an https:// address
+/// (a Rattleboard Web behind a proxy) is kept as it is, without its path.
+fn rattleboard_base(address: &str) -> Result<String, String> {
+    let a = address.trim();
+    if a.is_empty() {
+        return Err("Set the board's address in this source's settings".into());
+    }
+    if a.starts_with("https://") || a.starts_with("http://") {
+        let u = url::Url::parse(a).map_err(|_| "That address isn't valid".to_string())?;
+        let host = u.host_str().ok_or("That address isn't valid")?;
+        return Ok(match u.port() {
+            Some(p) => format!("{}://{host}:{p}", u.scheme()),
+            None => format!("{}://{host}", u.scheme()),
+        });
+    }
+    Ok(crate::vestaboard::base_url(a, crate::boards::RATTLEBOARD_PORT))
+}
+
+/// What the followed board shows now: one item with its characters, keyed by them, and the
+/// fields "mirrored" and "rotation" when a Rattleboard says it's showing a mirror itself, or
+/// its own rotation.
+pub async fn mirror(c: &reqwest::Client, settings: &Map<String, Value>, key: &str) -> Result<Data, String> {
+    use crate::vestaboard;
+    let (layout, marks) = match text(settings, "board") {
+        "cloud" => (vestaboard::read_cloud(c, key.trim()).await?.layout, (false, false)),
+        "local" => {
+            if text(settings, "address").trim().is_empty() {
+                return Err("Set the board's address in this source's settings".into());
+            }
+            if key.trim().is_empty() {
+                return Err("Set the board's Local API key in this source's settings".into());
+            }
+            (vestaboard::read_local(c, text(settings, "address"), key.trim()).await?.layout, (false, false))
+        }
+        _ => {
+            let base = rattleboard_base(text(settings, "address"))?;
+            if key.trim().is_empty() {
+                return Err("Set the other board's API key in this source's settings".into());
+            }
+            let res = c
+                .get(format!("{base}/local-api/message"))
+                .header("X-Vestaboard-Local-Api-Key", key.trim())
+                .send()
+                .await
+                .map_err(vestaboard::describe)?;
+            let marks = (res.headers().contains_key(MIRRORED_HEADER), res.headers().contains_key(ROTATION_HEADER));
+            let v = vestaboard::json_or_status(res).await?;
+            (vestaboard::grid(&v)?, marks)
+        }
+    };
+    let mut fields = std::collections::BTreeMap::new();
+    for (on, name) in [(marks.0, "mirrored"), (marks.1, "rotation")] {
+        if on {
+            fields.insert(name.to_string(), "1".to_string());
+        }
+    }
+    let key = plugins::hash(&[&serde_json::to_string(&layout).unwrap_or_default()]);
+    Ok(Data { items: vec![Item { key, characters: Some(layout), fields, ..Default::default() }], single: true })
 }
 
 // ---------------------------------------------------------------- weather (Open-Meteo)

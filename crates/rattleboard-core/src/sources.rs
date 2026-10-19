@@ -416,6 +416,8 @@ pub enum Job {
     Command(plugins::Run),
     Weather(Map<String, Value>),
     Zones(Vec<String>),
+    /// Another board's current message: the mirror's settings and its instance (for the key)
+    Mirror(Map<String, Value>, String),
 }
 
 #[derive(Default, Clone)]
@@ -558,6 +560,12 @@ struct Inner {
     stores: HashMap<String, Map<String, Value>>,
     /// This board's size, as the rotation last saw it (a script's ctx.board)
     dims: (usize, usize),
+    /// What this board's own sources put up in the last hour (hashes of each page, when, and
+    /// whether it was the rotation's): a mirror ignores a board that's only showing it what
+    /// it showed itself.
+    echo: VecDeque<(String, i64, bool)>,
+    /// What mirrors put up in the last hour, for `mirrored`
+    mirrored: VecDeque<(String, i64)>,
 }
 
 pub struct Paths {
@@ -629,6 +637,8 @@ impl Engine {
                 commands: true,
                 stores: store_path(&paths).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
                 dims: (6, 22),
+                echo: VecDeque::new(),
+                mirrored: VecDeque::new(),
             }),
             wake: Notify::new(),
             paths,
@@ -1148,6 +1158,7 @@ impl Engine {
             Job::Command(run) => plugins::run_command(&run).await.map(|out| plugins::parse_output(&out)),
             Job::Weather(settings) => builtins::weather(&self.http, &settings).await,
             Job::Zones(cities) => builtins::zones(&self.http, &cities).await,
+            Job::Mirror(settings, instance) => builtins::mirror(&self.http, &settings, &self.secret(&instance, "key")).await,
         }
     }
 
@@ -1201,8 +1212,21 @@ impl Engine {
             let i = &mut *guard;
             let Some(x) = i.config.rotation.iter().find(|x| x.id == instance).cloned() else { return };
             let Some(p) = i.plugins.iter().find(|p| p.id == x.plugin).cloned() else { return };
-            let every = (p.every as i64) * 1000;
+            let mirror = p.id == builtins::MIRROR;
+            let every = if mirror { builtins::mirror_every(&x.settings) as i64 } else { p.every as i64 } * 1000;
             let mut alerts = vec![];
+            let res = match res {
+                Ok(data) if mirror => {
+                    let (res, alert) = mirror_result(i, &x, &p, data, now);
+                    if let Some(c) = alert {
+                        // Only its latest change waits to pop up.
+                        i.alerts.retain(|a| a.instance != x.id);
+                        i.alerts.push_back(c);
+                    }
+                    Ok(res)
+                }
+                r => r,
+            };
             {
                 let f = i.feeds.entry(instance.to_string()).or_default();
                 f.busy = false;
@@ -1371,6 +1395,19 @@ impl Engine {
         out
     }
 
+    /// Whether `grid`, on this board now, came from a mirror (see `builtins::MIRRORED_HEADER`).
+    pub fn mirrored(&self, grid: &Grid) -> bool {
+        let h = grid_hash(grid);
+        self.inner.lock().unwrap().mirrored.iter().any(|(m, _)| *m == h)
+    }
+
+    /// Whether `grid`, on this board now, is the rotation's own card (see
+    /// `builtins::ROTATION_HEADER`).
+    pub fn rotation_card(&self, grid: &Grid) -> bool {
+        let h = grid_hash(grid);
+        self.inner.lock().unwrap().echo.iter().rev().find(|(e, _, _)| *e == h).is_some_and(|e| e.2)
+    }
+
     /// The next hour: what comes on when, and why.
     pub fn up_next(&self, ctx: &Ctx) -> Vec<Entry> {
         let i = self.inner.lock().unwrap();
@@ -1421,6 +1458,7 @@ fn job_for(x: &Instance, p: &Manifest, dims: (usize, usize)) -> Option<Job> {
             }))
         }),
         ("native", builtins::WEATHER) => Some(Job::Weather(x.settings.clone())),
+        ("native", builtins::MIRROR) => Some(Job::Mirror(x.settings.clone(), x.id.clone())),
         ("native", builtins::CLOCK) if x.settings.get("style").and_then(|s| s.as_str()) == Some("world") => Some(Job::Zones(builtins::cities(&x.settings))),
         ("rss" | "json" | "ical", _) => {
             let f = p.fetch.as_ref()?;
@@ -1554,6 +1592,15 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
                 return None;
             }
             builtins::quote(&x.settings, ctx.local, chip).map(|f| card(f, false, if daily { "message · once a day" } else { "ambient" }))
+        }
+        ("native", builtins::MIRROR) => {
+            // Popping up when it changes, it takes no turn in the rotation (a preview still
+            // shows what the other board has up).
+            if builtins::mirror_alerts(&x.settings) && !any {
+                return None;
+            }
+            let grid = data?.items.first()?.characters.clone().filter(|g| g.iter().flatten().any(|&c| c != 0))?;
+            Some(card(Face::Grid { grid }, true, "ambient · mirror"))
         }
         ("native", builtins::WEATHER) => {
             let it = data?.items.first()?;
@@ -1717,8 +1764,68 @@ fn show(i: &mut Inner, card: Card, how: How, ctx: &Ctx, page_ms: i64, total_ms: 
     }
     let total = total_ms.unwrap_or(page_ms * pages as i64);
     let page_ms = total / pages as i64;
+    note_shown(i, &card, ctx, matches!(how, How::Ambient | How::Update));
     i.showing = Some(Showing { card: card.clone(), how, page: 0, pages, since: ctx.now, page_at: ctx.now, page_ms, until: ctx.now + total, drawn_at: ctx.now });
     Action::Show { card: Box::new(card), page: 0, how }
+}
+
+fn grid_hash(g: &Grid) -> String {
+    plugins::hash(&[&serde_json::to_string(g).unwrap_or_default()])
+}
+
+const ECHO_MAX: usize = 300;
+
+/// Remembers what a card puts on this board, page by page, for an hour: a mirror's in
+/// `mirrored`, anything else in `echo` (`ambient`: as the rotation's card).
+fn note_shown(i: &mut Inner, card: &Card, ctx: &Ctx, ambient: bool) {
+    let mirror = i.config.rotation.iter().any(|x| x.id == card.instance && x.plugin == builtins::MIRROR);
+    for g in card.face.render(ctx.dims.0, ctx.dims.1) {
+        if mirror {
+            i.mirrored.push_back((grid_hash(&g), ctx.now));
+        } else {
+            i.echo.push_back((grid_hash(&g), ctx.now, ambient));
+        }
+    }
+    while i.echo.front().is_some_and(|e| e.1 <= ctx.now - HOUR_MS) || i.echo.len() > ECHO_MAX {
+        i.echo.pop_front();
+    }
+    while i.mirrored.front().is_some_and(|e| e.1 <= ctx.now - HOUR_MS) || i.mirrored.len() > ECHO_MAX {
+        i.mirrored.pop_front();
+    }
+}
+
+/// A mirror's fetch: what to keep, and the pop-up if the other board changed. Ignored (the
+/// last message kept): a mirror of another board, or something this board showed itself in
+/// the last hour, so boards that follow each other never pass one back and forth; and
+/// unless it follows everything, another Rattleboard's own rotation (its clock would pop up
+/// every minute). The first look at a board only notes what's there, and a blank board
+/// never pops up.
+fn mirror_result(i: &Inner, x: &Instance, p: &Manifest, data: Data, now: i64) -> (Data, Option<Card>) {
+    let prev = i.feeds.get(&x.id).and_then(|f| f.data.clone());
+    let Some(it) = data.items.first() else { return (data, None) };
+    let ignore = it.fields.contains_key("mirrored")
+        || (it.fields.contains_key("rotation") && !builtins::mirror_everything(&x.settings))
+        || it.characters.as_ref().is_some_and(|g| {
+            let h = grid_hash(&crate::vestaboard::fit_center(g, i.dims.0, i.dims.1));
+            i.echo.iter().any(|(e, t, _)| *e == h && *t > now - HOUR_MS)
+        });
+    if ignore {
+        return (prev.unwrap_or(Data { items: vec![], single: true }), None);
+    }
+    let blank = it.characters.as_ref().is_none_or(|g| g.iter().flatten().all(|&c| c == 0));
+    // Looked at before (even if all it showed then was ignored), and it's different now.
+    let changed = prev.as_ref().is_some_and(|d| d.items.first().is_none_or(|old| old.key != it.key));
+    let alert = (changed && !blank && builtins::mirror_alerts(&x.settings)).then(|| it.characters.clone()).flatten().map(|grid| Card {
+        instance: x.id.clone(),
+        name: label(x, p),
+        face: Face::Grid { grid },
+        live: false,
+        reason: "alert · mirror".into(),
+        seen: vec![],
+        link: None,
+        dwell: None,
+    });
+    (data, alert)
 }
 
 /// Time-based alerts and once-a-day messages that are due: a calendar event 10 minutes out,
@@ -1874,6 +1981,8 @@ fn tick(i: &mut Inner, ctx: &Ctx) -> Vec<Action> {
                 let page = s.page;
                 if c.face.render(ctx.dims.0, ctx.dims.1) != s.card.face.render(ctx.dims.0, ctx.dims.1) {
                     s.card = c.clone();
+                    let ambient = s.how != How::Alert;
+                    note_shown(i, &c, ctx, ambient);
                     out.push(Action::Show { card: Box::new(c), page, how: How::Update });
                 }
             }
@@ -1902,6 +2011,7 @@ fn tick(i: &mut Inner, ctx: &Ctx) -> Vec<Action> {
                 s.card = card.clone();
                 s.drawn_at = now;
                 let page = s.page;
+                note_shown(i, &card, ctx, true);
                 out.push(Action::Show { card: Box::new(card), page, how: How::Update });
             }
             return out;
@@ -2174,6 +2284,150 @@ pub mod tests {
         let a = e.tick(&ctx(0));
         let Some(Action::Show { card, .. }) = a.first() else { panic!() };
         assert_eq!(card.link, None);
+    }
+
+    /// Follow a board: a fake Rattleboard's current message is fetched with its key; the first
+    /// look only notes it, a change pops up (just the latest change waits), the same message
+    /// again does nothing, a message marked as a mirror or one this board showed itself is
+    /// ignored, and "In the rotation" makes it a card instead.
+    #[tokio::test]
+    async fn mirror_a_board() {
+        use std::sync::Mutex as M;
+        static NOW: M<(String, bool, bool)> = M::new((String::new(), false, false));
+        let app = axum::Router::new().route("/local-api/message", axum::routing::get(|h: axum::http::HeaderMap| async move {
+            use axum::response::IntoResponse;
+            if h.get("X-Vestaboard-Local-Api-Key").and_then(|v| v.to_str().ok()) != Some("k1") {
+                return axum::http::StatusCode::UNAUTHORIZED.into_response();
+            }
+            let (text, marked, rotation) = NOW.lock().unwrap().clone();
+            let g = crate::vestaboard::text_layout(&text, 6, 22);
+            let mut r = axum::Json(g).into_response();
+            if marked {
+                r.headers_mut().insert(builtins::MIRRORED_HEADER, axum::http::HeaderValue::from_static("1"));
+            }
+            if rotation {
+                r.headers_mut().insert(builtins::ROTATION_HEADER, axum::http::HeaderValue::from_static("1"));
+            }
+            r
+        }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move { axum::serve(l, app).await });
+        let set = |t: &str, m: bool| *NOW.lock().unwrap() = (t.to_string(), m, false);
+        let (e, _) = engine("mirror");
+        let id = e.add(builtins::MIRROR, Some(&json!({ "address": addr }))).unwrap();
+        e.put_rotation(&json!([{"id": id, "plugin": builtins::MIRROR, "settings": {"address": addr}}]), false).unwrap();
+        let fetch = |n: i64| {
+            let e = &e;
+            let id = id.clone();
+            async move {
+                let (_, job) = e.inner.lock().unwrap().config.rotation.iter().find(|x| x.id == id).map(|x| {
+                    let p = plugins::builtins().into_iter().find(|p| p.id == x.plugin).unwrap();
+                    (x.id.clone(), job_for(x, &p, (6, 22)).unwrap())
+                }).unwrap();
+                let c = ctx(n);
+                let r = e.run_job(job, c.local, c.now).await;
+                e.store(&id, r, c.now);
+            }
+        };
+        let queued = || e.inner.lock().unwrap().alerts.iter().map(|c| c.face.render(6, 22)[0].clone()).collect::<Vec<_>>();
+        let says = |t: &str| crate::vestaboard::text_layout(t, 6, 22);
+
+        // The first look only sees its rotation: the next message still pops up.
+        let (e2, _) = engine("mirror-first");
+        let id2 = e2.add(builtins::MIRROR, Some(&json!({ "address": addr }))).unwrap();
+        e2.set_secrets(&id2, &json!({"key": "k1"})).unwrap();
+        let job2 = || { let i = e2.inner.lock().unwrap(); let x = i.config.rotation.iter().find(|x| x.id == id2).unwrap().clone(); let p = i.plugins.iter().find(|p| p.id == x.plugin).unwrap().clone(); job_for(&x, &p, (6, 22)).unwrap() };
+        *NOW.lock().unwrap() = ("12:00".into(), false, true);
+        let c = ctx(0);
+        let r = e2.run_job(job2(), c.local, c.now).await;
+        e2.store(&id2, r, c.now);
+        set("PACKAGE", false);
+        let r = e2.run_job(job2(), c.local, c.now).await;
+        e2.store(&id2, r, c.now);
+        assert_eq!(e2.inner.lock().unwrap().alerts.len(), 1);
+
+        set("HELLO", false);
+        fetch(0).await;
+        assert!(e.inner.lock().unwrap().feeds[&id].error.as_deref() == Some("Set the other board's API key in this source's settings"));
+        e.set_secrets(&id, &json!({"key": "k1"})).unwrap();
+        fetch(1).await;
+        assert!(queued().is_empty(), "the first look only notes what's there");
+        fetch(2).await;
+        assert!(queued().is_empty(), "nothing changed");
+        set("ONE", false);
+        fetch(3).await;
+        set("TWO", false);
+        fetch(4).await;
+        assert_eq!(queued(), vec![says("TWO")], "only the latest change waits");
+        let a = e.tick(&ctx(5));
+        assert!(matches!(a.as_slice(), [Action::Show { how: How::Alert, .. }]), "{a:?}");
+        assert!(e.mirrored(&says("TWO")), "what a mirror put up is marked");
+        assert!(!e.mirrored(&says("ONE")));
+
+        set("LOOP", true);
+        fetch(6).await;
+        assert!(queued().is_empty(), "a mirror of a mirror is ignored");
+
+        // Something this board showed itself, coming back from the other board.
+        let own = Card { instance: "x".into(), name: "x".into(), face: Face::Grid { grid: says("MINE") }, live: false, reason: String::new(), seen: vec![], link: None, dwell: None };
+        note_shown(&mut e.inner.lock().unwrap(), &own, &ctx(7), false);
+        set("MINE", false);
+        fetch(8).await;
+        assert!(queued().is_empty(), "an echo of this board is ignored");
+
+        // Its own rotation (a clock) is skipped, a blank board never pops up.
+        *NOW.lock().unwrap() = ("12:01".into(), false, true);
+        fetch(9).await;
+        set("", false);
+        fetch(10).await;
+        assert!(queued().is_empty(), "its rotation and a blank board are skipped");
+        set("NEWS", false);
+        fetch(11).await;
+        assert_eq!(queued(), vec![says("NEWS")]);
+        e.inner.lock().unwrap().alerts.clear();
+
+                // In the rotation: a card with what the other board shows, and no pop-ups.
+        e.put_rotation(&json!([{"id": id, "plugin": builtins::MIRROR, "settings": {"address": addr, "show": "rotation"}}]), false).unwrap();
+        set("THREE", false);
+        fetch(12).await;
+        assert!(queued().is_empty());
+        let card = {
+            let i = e.inner.lock().unwrap();
+            let x = i.config.rotation[0].clone();
+            let p = i.plugins.iter().find(|p| p.id == builtins::MIRROR).unwrap().clone();
+            card_for(&i, &x, &p, &ctx(13), 0, false).unwrap()
+        };
+        assert_eq!(card.face.render(6, 22)[0], says("THREE"));
+        // Following everything, its rotation shows too.
+        e.put_rotation(&json!([{"id": id, "plugin": builtins::MIRROR, "settings": {"address": addr, "follow": "all"}}]), false).unwrap();
+        *NOW.lock().unwrap() = ("12:02".into(), false, true);
+        fetch(14).await;
+        assert_eq!(queued(), vec![says("12:02")]);
+    }
+
+    /// A Rattleboard marks its rotation's own cards, and what mirrors put up.
+    #[test]
+    fn rotation_and_mirror_marks() {
+        let (e, _) = engine("marks");
+        e.put_rotation(&json!([{"id": "c", "plugin": "rattleboard.motd", "settings": {"lines": ["GOOD MORNING"]}}]), false).unwrap();
+        let a = e.tick(&ctx(0));
+        let Some(Action::Show { card, .. }) = a.first() else { panic!("{a:?}") };
+        let g = card.face.render(6, 22).remove(0);
+        assert!(e.rotation_card(&g));
+        assert!(!e.mirrored(&g));
+        assert!(!e.rotation_card(&crate::vestaboard::text_layout("SOMETHING ELSE", 6, 22)));
+    }
+
+    #[test]
+    fn mirror_settings() {
+        let s = |v: Value| v.as_object().unwrap().clone();
+        assert_eq!(builtins::mirror_every(&s(json!({}))), 30);
+        assert_eq!(builtins::mirror_every(&s(json!({"every": "5"}))), 15);
+        assert!(builtins::mirror_alerts(&s(json!({}))));
+        assert!(!builtins::mirror_alerts(&s(json!({"show": "rotation"}))));
+        assert_eq!(builtins::label(builtins::MIRROR, &s(json!({"address": "10.0.0.5"}))).as_deref(), Some("Following · 10.0.0.5"));
+        assert_eq!(builtins::label(builtins::MIRROR, &s(json!({"board": "cloud"}))).as_deref(), Some("Following · Vestaboard"));
     }
 
     pub fn ctx(min: i64) -> Ctx {

@@ -40,6 +40,7 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
 - **Notification forwarding (Windows).** Put notifications from the apps you choose on a board. See [Notification forwarding](#notification-forwarding-windows).
 - **Demo mode.** No board yet? It flips through sample messages so you can try everything.
 - **Sources.** Left to itself, the board takes turns showing a clock, the weather, countdowns, news feeds, your calendar, a quote of the day or anything a plugin fetches, calmly, and it can drive your other boards too. See [Sources and plugins](#sources-and-plugins).
+- **Follow other boards.** Keep your own rotation and still see what's sent to the kitchen Vestaboard or a friend's Rattleboard: it pops up here when it changes. Follow as many as you like. See [Following other boards](#following-other-boards).
 - **Message history.** Shows recent changes. **Flip again** replays any of them here, **Send to** sends that exact layout to a saved board, and **Edit** opens it in Compose.
 
 ## Install
@@ -621,7 +622,7 @@ The same tools are served over HTTP at `POST /mcp` on the API server and on [Rat
 
 When nothing else is going on, Rattleboard can run a **rotation** of sources: each takes its turn on the board, then the next comes round. Set it up in **Settings → Sources**.
 
-- **Built in:** a clock, countdowns, the weather, RSS and Atom feeds, a calendar (iCal address), any JSON API, a message of the day and a quote of the day. See [Built-in sources](#built-in-sources).
+- **Built in:** a clock, countdowns, the weather, RSS and Atom feeds, a calendar (iCal address), any JSON API, a message of the day, a quote of the day, and other boards to follow. See [Built-in sources](#built-in-sources).
 - **Plugins:** a `.rattleboard-plugin.json` file adds a source of your own: a feed, a JSON API, a text card, a sandboxed script, or (on this computer, once you allow it) a program's output. See [Plugin manifests](#plugin-manifests).
 - **Community plugins:** browse plugins other people made, from the [rattleboard-plugins](https://github.com/slastrina/rattleboard-plugins) repository, and install one in two clicks. See [Community plugins](#community-plugins).
 - Everything runs on this computer. There's no cloud service, and nothing is sent anywhere but the sources' own addresses.
@@ -638,7 +639,7 @@ When nothing else is going on, Rattleboard can run a **rotation** of sources: ea
 
 - **Ambient:** the rotation. Its cards never pop the board up or fill Message History; a pinned or full-screen board simply changes.
 - **Message:** anything else put on the board (Compose, the API, a sequence, a forwarded notification) holds the rotation for 30 minutes by default (**Hold messages for**), then it carries on.
-- **Alert:** a feed item mentioning one of your alert words, an event starting in 10 minutes, a countdown's day, or a command plugin asking for it. It interrupts for 15 seconds (**Alerts stay up**), then the board goes back to whatever it showed before, a held message included.
+- **Alert:** a feed item mentioning one of your alert words, an event starting in 10 minutes, a countdown's day, a board you follow changing, or a command plugin asking for it. It interrupts for 15 seconds (**Alerts stay up**), then the board goes back to whatever it showed before, a held message included.
 - A timed [notification](#notifications) (an agent's `show_status`, `--notify --seconds`, a forwarded notification that goes back) works like an alert: nothing replaces it while it's up, it doesn't hold the rotation, and the card it covered gets the time it lost.
 
 ### Calm by default
@@ -665,9 +666,24 @@ A card that comes from a page (an RSS or Atom story, a calendar event with a URL
 | **Calendar (iCal)** | Your next event (recurring events included), and an alert 10 minutes before it starts. Use the "secret address in iCal format" from Google Calendar, iCloud or Outlook; it's kept in the credential store like a password. |
 | **JSON URL** | Any JSON API, no code: the address, an optional path to a list of items, paths to the title and body, and an optional card template. |
 | **Message of the day** | Your own list of messages, a different one each day, with two corner tiles in the day's colour. |
+| **Follow a board** | What another Rattleboard or a Vestaboard shows, when it changes. See [Following other boards](#following-other-boards). |
 | **Quote of the day** | One of 600+ public-domain quotes (authors who died before 1955), the same on every board each day, picked from those that fit the board with their "- AUTHOR" line. Choose any, work, calm, funny or wisdom; in the rotation, or once a day at a set time as a message; and add your own ("text - author", one per line), mixed in or on their own. The list is `data/quotes.json`. Two corner tiles in the quote's colour: work blue, calm green, funny orange, wisdom violet (your own quotes take the day's colour). |
 
-Each of these has a **Colour** setting: **Playful** (the default, as described above), **Accent** (every colour tile in the source's one chip colour, as earlier versions looked) or **Off** (no colour tiles at all: bars and digits in plain filled tiles, the rest left out).
+Each of these, except Follow a board, has a **Colour** setting: **Playful** (the default, as described above), **Accent** (every colour tile in the source's one chip colour, as earlier versions looked) or **Off** (no colour tiles at all: bars and digits in plain filled tiles, the rest left out).
+
+### Following other boards
+
+**Follow a board** keeps an eye on another board and shows what it shows, alongside your own sources. Add it once for each board you want to follow: the kitchen Vestaboard, the TV in the lounge, a friend's Rattleboard Web.
+
+- **Board:** another Rattleboard (desktop, TV, phone, Rattleboard Web or a Pi), with its address and API key from its **Settings → API server** (with **Other devices** on); a Vestaboard on its Local API, with its address and Local API key; or a Vestaboard on the Cloud API, with its token. Keys go in the credential store like any other.
+- **Show:** **Pop up when it changes** (the default): a change interrupts as an alert for 15 seconds, then this board goes back to what it was showing. Or **In the rotation**: the other board's message is a card that takes its turn like the rest.
+- **Follow** (another Rattleboard): **Messages sent to it** (the default) leaves out its own rotation, so its clock doesn't pop up here every minute. **Everything** follows that too.
+- **Check every** 15 s, 30 s (the default), a minute or 5 minutes. A Vestaboard can't tell anyone when it changes, so following it is never quite instant; the Cloud API allows a check every 15 s at most.
+- The first look at a board only notes what's there, and a blank board never pops up.
+- **Two boards can follow each other.** A Rattleboard marks what it's showing from a board it follows, and a follower ignores that, as well as anything that's just what it showed itself in the last hour. A message posted to one shows on the other once, and never comes back.
+- To make another board show this one's sources instead, use [Show sources on](#showing-sources-on-other-boards): that pushes, and is instant.
+
+A Rattleboard's `GET /local-api/message` (and `GET /`) adds `X-Rattleboard-Mirrored: 1` when what's up comes from a board it follows, and `X-Rattleboard-Rotation: 1` when it's its own rotation's card.
 
 ### Showing sources on other boards
 

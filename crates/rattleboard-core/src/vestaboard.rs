@@ -160,7 +160,7 @@ pub async fn ok_or_status(res: reqwest::Response) -> Result<(), String> {
     }
 }
 
-async fn json_or_status(res: reqwest::Response) -> Result<Value, String> {
+pub async fn json_or_status(res: reqwest::Response) -> Result<Value, String> {
     let status = res.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return Err("Key was rejected".into());
@@ -172,7 +172,7 @@ async fn json_or_status(res: reqwest::Response) -> Result<Value, String> {
 }
 
 /// A layout may arrive as a nested array or as a JSON string holding one.
-fn grid(v: &Value) -> Result<Grid, String> {
+pub fn grid(v: &Value) -> Result<Grid, String> {
     let parsed;
     let v = match v {
         Value::String(s) => {
