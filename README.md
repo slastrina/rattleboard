@@ -391,7 +391,8 @@ Rattleboards also answer a few requests of their own under `/rattleboard/`. They
 
 | Request | Body | Response |
 | --- | --- | --- |
-| `GET /rattleboard/info` | — | `{"app":"rattleboard","protocol":3,"version":"0.6.1","platform":"macos","name":"…","board":{"rows":6,"cols":22},"adaptive":true,"features":["sequence","strategy","sources"]}` |
+| `GET /rattleboard/info` | — | `{"app":"rattleboard","protocol":3,"version":"0.6.1","platform":"macos","name":"…","board":{"rows":6,"cols":22},"adaptive":true,"features":["sequence","strategy","notify","sources"]}` |
+| `POST /rattleboard/notify` | `{"text":"…" or "characters":[[…]],"seconds":15,"source":"Build bot","link":"https://…"}` | `201 {"status":"ok","id":"note-…","seconds":15}`; a [notification](#notifications), shown once |
 | `POST /rattleboard/sequence` | `{"name":"…","loop":true,"frames":[…]}` (up to 256 KB) | `201 {"status":"ok","id":"seq-…","frames":2}` |
 | `GET /rattleboard/sequence` | — | `{"running":true,"id":"seq-…","name":"Morning","frame":2,"frames":5,"loop":true}` or `{"running":false}` |
 | `DELETE /rattleboard/sequence` | — | `204`; the current frame stays on the board |
@@ -416,6 +417,23 @@ curl -X DELETE http://127.0.0.1:7070/rattleboard/sequence -H "X-Vestaboard-Local
 ```
 
 The tray menu shows a playing sequence ("Playing ‘Morning’ 2/5") with a **Stop** button.
+
+### Notifications
+
+`POST /rattleboard/notify` shows something once. It's what [agents](#agents-mcp) and `--notify` use, and it suits anything else that wants to tell you something without taking the board over.
+
+- **With `seconds`** (3–3600, counted from when the flaps finish), it interrupts like a source's [alert](#priorities). When the time is up the board goes back to whatever it would otherwise show: the previous message, or the Sources rotation if it's running. It doesn't hold the rotation, and what comes back isn't a new message: no pop-up, no Message History entry, nothing that could show it again later. Another notification while one is up replaces it and still goes back to what was there before the first. Anything else posted meanwhile replaces it for good.
+- **Without `seconds`**, it stays like any posted message (and holds the rotation as one does).
+- It goes in **Message History** once, labelled with `source` (up to 40 characters; "API notification" if there's none). `link`, an http or https address, is kept with it, and History shows its host.
+- The body is otherwise a normal post: `text` (with an optional size hint) or `characters`, and an optional transition. It stops a sequence that's playing.
+
+```sh
+curl -X POST http://127.0.0.1:7070/rattleboard/notify \
+  -H "X-Vestaboard-Local-Api-Key: $RATTLEBOARD_KEY" \
+  -d '{"text": "Backup done {66}", "seconds": 20, "source": "Backup"}'
+```
+
+Rattleboard 0.6.1 and earlier answer `404` here, so check `features` in `/rattleboard/info` for `"notify"`.
 
 ### Pairing a phone
 
@@ -515,7 +533,7 @@ command = "RATTLEBOARD"
 args = ["--mcp"]
 ```
 
-For alerts by hand, have a hook run `RATTLEBOARD --notify "Claude Code is done" --color green --hook`. `--notify` posts one message using the key from your keychain, so the key never goes into a hook file. `--seconds 20` makes it a status that goes away again. `--hook` reads the hook's JSON from stdin to add the project name, and never fails the hook. Codex's `notify = ["RATTLEBOARD", "--notify", "Codex is done", "--color", "green"]` works as is, because the JSON that Codex appends is understood.
+For alerts by hand, have a hook run `RATTLEBOARD --notify "Claude Code is done" --color green --source "Claude Code" --hook`. `--notify` posts one [notification](#notifications) using the key from your keychain, so the key never goes into a hook file. It stays until something replaces it; `--seconds 20` makes it a status that goes away again. `--source` names the agent app in Message History ("Claude Code via hook"). `--hook` reads the hook's JSON from stdin to add the project name, and never fails the hook. Codex's `notify = ["RATTLEBOARD", "--notify", "Codex is done", "--color", "green"]` works as is, because the JSON that Codex appends is understood.
 
 ### Remote boards
 
@@ -574,12 +592,14 @@ Claude Desktop only adds remote servers through its Connectors settings, and tho
 
 | Tool | What it does |
 | --- | --- |
-| `send_message` | `{text, color?, size?, strategy?, board?}`: text that stays until something replaces it. `color` adds a chip (red, orange, yellow, green, blue, violet, white or black), and `size` is standard, compact or large. `board` is "this" (the default), a saved board or group by name from **Settings → Boards**, or "all". |
-| `show_status` | `{text, seconds?, color?}`: a temporary status (15 s by default). It plays a two-frame [sequence](#rattleboard-endpoints), your text and then what was on the board before, so the previous message comes back. Starting it stops any sequence that was playing. |
+| `send_message` | `{text, color?, size?, strategy?, board?}`: text that stays until something replaces it, shown once and never repeated (it holds the rotation like any message). `color` adds a chip (red, orange, yellow, green, blue, violet, white or black), and `size` is standard, compact or large. `board` is "this" (the default), a saved board or group by name from **Settings → Boards**, or "all". |
+| `show_status` | `{text, seconds?, color?}`: a temporary status (15 s by default), as a timed [notification](#notifications): afterwards the board goes back to the previous message or the Sources rotation, without holding the rotation and without showing anything again as new. Starting it stops any sequence that was playing. |
 | `send_layout` | `{characters, board?}`: an exact grid of character codes 0–71, up to 12 × 40. |
 | `list_boards` | This board, your saved boards and groups, with their kinds and sizes. |
 | `play_sequence` | `{frames: [{text or characters, hold}], loop?}`: 1–100 frames, as in `POST /rattleboard/sequence`. |
 | `get_board` | What the board shows now, as text and as codes. |
+
+What agents send to this board goes in **Message History** once, labelled with the agent app: "Claude Code via MCP" (from the name the app gives when it connects over `--mcp`; "Agent via MCP" when it doesn't say, as over `POST /mcp`), "Claude Code via hook" for `--notify`, and "Sequence · …" for each frame of `play_sequence`. In 0.6.1 and earlier, `show_status` was a two-frame sequence: the message it covered came back as a new message labelled "Sequence", popping the board up as if it had been sent again, and holding the Sources rotation for another 30 minutes.
 
 The tool descriptions tell the model the board's limits: 6 rows of 22 characters unless it's set otherwise, the characters it can show, and the character codes. A message that doesn't fit is still sent, and the tool's answer says it was cut off.
 
@@ -614,6 +634,7 @@ When nothing else is going on, Rattleboard can run a **rotation** of sources: ea
 - **Ambient:** the rotation. Its cards never pop the board up or fill Message History; a pinned or full-screen board simply changes.
 - **Message:** anything else put on the board (Compose, the API, a sequence, a forwarded notification) holds the rotation for 30 minutes by default (**Hold messages for**), then it carries on.
 - **Alert:** a feed item mentioning one of your alert words, an event starting in 10 minutes, a countdown's day, or a command plugin asking for it. It interrupts for 15 seconds (**Alerts stay up**), then the board goes back to whatever it showed before, a held message included.
+- A timed [notification](#notifications) (an agent's `show_status`, `--notify --seconds`, a forwarded notification that goes back) works like an alert: nothing replaces it while it's up, it doesn't hold the rotation, and the card it covered gets the time it lost.
 
 ### Calm by default
 
@@ -817,7 +838,7 @@ On Windows, **Settings → Notifications** puts notifications from the apps you 
 - **Allow access…** asks Windows for permission to read notifications. You can change this later in Windows Settings → Privacy & security → Notifications.
 - Apps show up in the list once they've sent a notification; tick the ones to forward. **Show on** can be this board, a saved board, a group or all boards.
 - **Hide content** shows only which app it's from. **Quiet hours** pauses forwarding, for example overnight.
-- **Go back after** puts the previous message back after a while, but only if the board still shows the notification.
+- **Go back after** puts the previous message back after a while, but only if the board still shows the notification. On this board it's a timed [notification](#notifications), so what comes back isn't counted as a new message.
 
 macOS has no supported way for apps to read other apps' notifications, so this setting doesn't appear there.
 

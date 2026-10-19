@@ -3,8 +3,9 @@
 //!
 //!   rattleboard --mcp [--target <board>] [--url <http://host:port>]
 //!       an MCP server on stdio, for agent apps
-//!   rattleboard --notify "<text>" [--color green] [--seconds 20] [--hook] [--target …] [--url …]
-//!       one message, for agent apps' hooks
+//!   rattleboard --notify "<text>" [--color green] [--seconds 20] [--source "Claude Code"] [--hook] [--target …] [--url …]
+//!       one notification, for agent apps' hooks: shown once (POST /rattleboard/notify), with
+//!       --seconds going away again, and labelled in the board's history "<source> via hook"
 //!
 //! By default both talk to the running app's API server on this computer, with the key from
 //! the OS credential store, so the key never has to be written into an agent's config.
@@ -187,14 +188,16 @@ pub struct Notify {
     pub hook: bool,
     /// A JSON payload as the last argument (Codex's notify)
     pub payload: Option<Value>,
+    /// The agent app, for the board's history
+    pub source: Option<String>,
     pub route: Route,
 }
 
-pub const NOTIFY_USAGE: &str = "Usage: rattleboard --notify \"<text>\" [--color red|orange|yellow|green|blue|violet|white|black] [--seconds 3-3600] [--hook] [--target <saved board or group>] [--url http://host:7070]";
+pub const NOTIFY_USAGE: &str = "Usage: rattleboard --notify \"<text>\" [--color red|orange|yellow|green|blue|violet|white|black] [--seconds 3-3600] [--source <agent app>] [--hook] [--target <saved board or group>] [--url http://host:7070]";
 
 /// `--notify`'s arguments (after `--notify`).
 pub fn parse_notify(args: &[String]) -> Result<Notify, String> {
-    let mut n = Notify { text: String::new(), color: None, seconds: None, hook: false, payload: None, route: Route::default() };
+    let mut n = Notify { text: String::new(), color: None, seconds: None, hook: false, payload: None, source: None, route: Route::default() };
     let mut it = args.iter();
     let mut words: Vec<&str> = vec![];
     while let Some(a) = it.next() {
@@ -208,6 +211,7 @@ pub fn parse_notify(args: &[String]) -> Result<Notify, String> {
                 n.seconds = Some(s.parse().ok().filter(|v| (3..=3600).contains(v)).ok_or("--seconds must be a whole number from 3 to 3600")?);
             }
             "--hook" => n.hook = true,
+            "--source" => n.source = Some(it.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).ok_or("--source needs the agent app's name")?),
             s if s.starts_with('{') && serde_json::from_str::<Value>(s).is_ok_and(|v| v.is_object()) => n.payload = serde_json::from_str(s).ok(),
             s if s.starts_with("--") => return Err(format!("Unknown option {s}")),
             s => words.push(s),
@@ -253,6 +257,12 @@ pub fn notify_call(n: &Notify, stdin: Option<Value>) -> (&'static str, Map<Strin
     }
 }
 
+/// What the board's history calls a `--notify`: "Claude Code via hook".
+pub fn hook_source(n: &Notify) -> String {
+    let app: String = n.source.as_deref().unwrap_or(mcp::AGENT).chars().filter(|c| !c.is_control()).take(24).collect();
+    format!("{} via hook", app.trim())
+}
+
 fn run_notify(args: &[String]) -> i32 {
     let n = match parse_notify(args) {
         Ok(n) => n,
@@ -269,7 +279,7 @@ fn run_notify(args: &[String]) -> i32 {
     });
     let (tool, call) = notify_call(&n, stdin.flatten());
     let b = backend(&n.route);
-    match runtime().block_on(mcp::call_tool(&b, tool, &call)) {
+    match runtime().block_on(mcp::call_tool_as(&b, tool, &call, &hook_source(&n))) {
         Ok(_) => 0,
         Err(e) => {
             eprintln!("rattleboard --notify: {e}");
@@ -294,7 +304,8 @@ mod tests {
     #[test]
     fn notify_arguments() {
         let n = parse_notify(&args(&["Build passed", "--color", "green"])).unwrap();
-        assert_eq!(n, Notify { text: "Build passed".into(), color: Some("green".into()), seconds: None, hook: false, payload: None, route: Route::default() });
+        assert_eq!(n, Notify { text: "Build passed".into(), color: Some("green".into()), seconds: None, hook: false, payload: None, source: None, route: Route::default() });
+        assert_eq!(hook_source(&n), "Agent via hook");
         let (tool, a) = notify_call(&n, None);
         assert_eq!(tool, "send_message");
         assert_eq!(Value::Object(a), json!({"text": "Build passed", "color": "green"}));
@@ -302,6 +313,11 @@ mod tests {
         let n = parse_notify(&args(&["Deploying", "--seconds", "30"])).unwrap();
         let (tool, a) = notify_call(&n, None);
         assert_eq!((tool, a["seconds"].as_u64()), ("show_status", Some(30)));
+
+        // the agent app, for the board's history
+        let n = parse_notify(&args(&["Done", "--source", "Claude Code", "--hook"])).unwrap();
+        assert_eq!(hook_source(&n), "Claude Code via hook");
+        assert!(parse_notify(&args(&["x", "--source"])).is_err());
 
         // words join; a hook's stdin names the project
         let n = parse_notify(&args(&["Claude", "Code", "is", "done", "--hook"])).unwrap();

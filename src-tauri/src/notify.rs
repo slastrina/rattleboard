@@ -165,7 +165,7 @@ mod win {
                     let text = message_text(&name, &t.title, &t.body, s.notify_hide_content);
                     // A group or "all" gets it on every board, each going back on its own.
                     for id in crate::destinations(&app, &s.notify_target).unwrap_or_default() {
-                        tauri::async_runtime::spawn(forward(app.clone(), id, text.clone(), s.notify_return_sec));
+                        tauri::async_runtime::spawn(forward(app.clone(), id, text.clone(), name.clone(), s.notify_return_sec));
                     }
                 }
             }
@@ -177,10 +177,19 @@ mod win {
     }
 
     /// Shows the notification, then puts the previous message back after `back_after`
-    /// seconds, but only if the board still shows the notification.
-    async fn forward(app: AppHandle, target: String, text: String, back_after: u32) {
+    /// seconds, but only if the board still shows the notification. On this board that's a
+    /// notification of the board's own (`notify_here`); a saved board gets two messages.
+    async fn forward(app: AppHandle, target: String, text: String, from: String, back_after: u32) {
         let Ok((rows, cols)) = crate::target_dims(&app, &target) else { return };
         let layout = crate::vestaboard::text_layout(&text, rows, cols);
+        if target == crate::HERE {
+            // This board: a notification, shown once. It goes back by itself (to the previous
+            // message or the Sources rotation) without the old message counting as new.
+            let seconds = (back_after > 0).then_some(back_after.max(3) as u64);
+            let source = if from.trim().is_empty() { "Notification".to_string() } else { format!("{} notification", from.trim()) };
+            crate::notify_here(&app, crate::server::Notice { layout, tr: Transition::default(), seconds, source, link: None });
+            return;
+        }
         let before = if back_after > 0 { crate::read_target(&app, &target).await.ok() } else { None };
         if crate::send_to_target(&app, &target, layout.clone(), Transition::default(), "Notification").await.is_err() {
             return;

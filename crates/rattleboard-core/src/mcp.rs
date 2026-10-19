@@ -38,6 +38,60 @@ pub const NOT_RUNNING: &str = "Rattleboard isn't reachable. Open Rattleboard and
 
 pub type Fut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// What `Backend::notify` says for a Rattleboard from before notifications (0.6.1 and
+/// earlier), which then gets a plain message or a sequence as it used to.
+pub const NO_NOTIFY: &str = "This Rattleboard has no notifications";
+
+/// Who the board's history says sent something when the agent app didn't say who it is.
+pub const AGENT: &str = "Agent";
+
+/// The agent app's name as people know it, from MCP's `clientInfo.name` ("claude-code").
+pub fn app_name(client: &str) -> String {
+    let c = client.trim();
+    let l = c.to_ascii_lowercase();
+    let known = [
+        ("claude-code", "Claude Code"),
+        ("claude-ai", "Claude"),
+        ("claude", "Claude"),
+        ("cursor", "Cursor"),
+        ("codex", "Codex"),
+        ("gemini", "Gemini CLI"),
+        ("visual studio code", "VS Code"),
+        ("vscode", "VS Code"),
+        ("copilot", "Copilot"),
+        ("opencode", "opencode"),
+        ("windsurf", "Windsurf"),
+        ("zed", "Zed"),
+    ];
+    if let Some((_, n)) = known.iter().find(|(k, _)| l == *k || l.starts_with(&format!("{k}-")) || l.starts_with(&format!("{k} "))) {
+        return n.to_string();
+    }
+    let clean: String = c.chars().filter(|ch| !ch.is_control()).take(24).collect();
+    let clean = clean.trim();
+    if clean.is_empty() { AGENT.into() } else { clean.to_string() }
+}
+
+/// What the history calls a message from an agent app over MCP: "Claude Code via MCP".
+pub fn mcp_source(client: Option<&str>) -> String {
+    format!("{} via MCP", client.map(app_name).unwrap_or_else(|| AGENT.into()))
+}
+
+/// One MCP connection's state: only who the client is (from `initialize`), so the board's
+/// history can say which app a message came from.
+#[derive(Default)]
+pub struct Session {
+    client: std::sync::Mutex<Option<String>>,
+}
+
+impl Session {
+    fn source(&self, params: &Value) -> String {
+        // A stateless request may say who it is on each call.
+        let per_call = params.get("_meta").and_then(|m| m.get("io.modelcontextprotocol/clientInfo")).and_then(|c| c.get("name")).and_then(|n| n.as_str());
+        let known = self.client.lock().unwrap().clone();
+        mcp_source(per_call.or(known.as_deref()))
+    }
+}
+
 /// Where the board is. Errors are sentences for the model (and the person) to read.
 pub trait Backend: Send + Sync {
     /// `/rattleboard/info`: name, board size, adaptive
@@ -46,6 +100,9 @@ pub trait Backend: Send + Sync {
     fn current(&self) -> Fut<'_, Result<Grid, String>>;
     /// A message for this board, as `POST /local-api/message` takes it
     fn post(&self, body: Value) -> Fut<'_, Result<(), String>>;
+    /// A notification for this board, as `POST /rattleboard/notify` takes it: shown once,
+    /// with "seconds" going away again. Err(NO_NOTIFY) from a board too old to have it.
+    fn notify(&self, body: Value) -> Fut<'_, Result<(), String>>;
     /// A sequence, as `POST /rattleboard/sequence` takes it
     fn play(&self, seq: Value) -> Fut<'_, Result<(), String>>;
     /// `/rattleboard/boards` (this board, saved boards and groups), or None where the board
@@ -97,7 +154,7 @@ pub fn tools() -> Value {
         {
             "name": "send_message",
             "title": "Send a message to the board",
-            "description": format!("Puts a short message on the user's Rattleboard split-flap board, where it stays until something else replaces it. Use it to tell the user something worth a glance from across the room: a long task finished, it failed, or you need their input. Don't send routine progress; for a temporary status that should go away by itself, use show_status. {TEXT_RULES}"),
+            "description": format!("Puts a short message on the user's Rattleboard split-flap board, once, where it stays until something else replaces it (it's never repeated or shown again later). Use it to tell the user something worth a glance from across the room: a long task finished, it failed, or you need their input. Don't send routine progress; for a temporary status that should go away by itself, use show_status. {TEXT_RULES}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -115,7 +172,7 @@ pub fn tools() -> Value {
         {
             "name": "show_status",
             "title": "Show a temporary status",
-            "description": format!("Shows a short status on this computer's board for a few seconds, then puts back whatever was there before (it plays a two-frame sequence: your text, then the previous message). Prefer this over send_message for transient states like \"Running tests\" or \"Deploying\". Starting it stops any sequence that was playing. {TEXT_RULES}"),
+            "description": format!("Shows a short status on this computer's board once, for a few seconds, then the board goes back to what it would otherwise show (the previous message, or the user's Sources rotation). It's a one-off notification: it isn't repeated or shown again later, and it doesn't hold up the rotation. Prefer this over send_message for transient states like \"Running tests\" or \"Deploying\". Starting it stops any sequence that was playing. {TEXT_RULES}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -216,6 +273,8 @@ pub fn grid_text(g: &Grid) -> Vec<String> {
 
 struct Call<'a> {
     args: &'a Map<String, Value>,
+    /// Who sent it, for the board's history
+    source: &'a str,
 }
 
 impl<'a> Call<'a> {
@@ -326,7 +385,13 @@ async fn deliver(b: &dyn Backend, c: &Call<'_>, body: Map<String, Value>, text: 
     let board = named.or_else(|| b.default_target()).filter(|s| !here(s));
     let Some(want) = board else {
         let size = layout_size(b, hint).await;
-        b.post(Value::Object(body)).await?;
+        // A notification that stays, so the history says who sent it; it's never re-shown.
+        let mut n = body.clone();
+        n.insert("source".into(), json!(c.source));
+        match b.notify(Value::Object(n)).await {
+            Err(e) if e == NO_NOTIFY => b.post(Value::Object(body)).await?,
+            r => r?,
+        }
         let note = text.map(|t| fit_note(t, size)).unwrap_or_default();
         return Ok(json!({ "text": format!("Sent to this board.{note}"), "structured": { "sent": ["This board"] } }));
     };
@@ -362,18 +427,20 @@ async fn show_status(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
             _ => return Err("seconds must be a whole number from 3 to 3600".into()),
         },
     };
-    let before = b.current().await?;
     let size = layout_size(b, None).await;
-    let seq = json!({
-        "name": "Status",
-        "frames": [
-            { "text": text, "hold": secs },
-            // The last frame of a sequence that doesn't loop stays up.
-            { "characters": before, "hold": 1 }
-        ]
-    });
-    b.play(seq).await?;
-    Ok(json!({ "text": format!("Showing it for {secs} s, then the previous message comes back.{}", fit_note(&text, size)) }))
+    // A notification: shown once, then the board goes back to what it would otherwise show
+    // (the previous message, or the Sources rotation). Not a sequence, so nothing about it
+    // is ever re-shown as a new message.
+    match b.notify(json!({ "text": text, "seconds": secs, "source": c.source })).await {
+        Ok(()) => {}
+        Err(e) if e == NO_NOTIFY => {
+            // An older Rattleboard: the two-frame sequence it understands.
+            let before = b.current().await?;
+            b.play(json!({ "name": "Status", "frames": [{ "text": text, "hold": secs }, { "characters": before, "hold": 1 }] })).await?;
+        }
+        Err(e) => return Err(e),
+    }
+    Ok(json!({ "text": format!("Showing it for {secs} s, then the board goes back to what it showed.{}", fit_note(&text, size)) }))
 }
 
 async fn send_layout(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
@@ -424,7 +491,8 @@ async fn play_sequence(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
     if let Some(l) = c.args.get("loop") {
         seq.insert("loop".into(), l.clone());
     }
-    seq.insert("name".into(), json!(c.str("name")?.unwrap_or("From an agent")));
+    // The history labels each frame with the sequence's name: by default, who sent it.
+    seq.insert("name".into(), json!(c.str("name")?.unwrap_or(c.source)));
     b.play(Value::Object(seq)).await?;
     let looping = c.args.get("loop").and_then(|v| v.as_bool()).unwrap_or(false);
     Ok(json!({ "text": format!("Playing {} frame{}{}.", frames.len(), if frames.len() == 1 { "" } else { "s" }, if looping { " on a loop" } else { "" }) }))
@@ -442,9 +510,15 @@ async fn get_board(b: &dyn Backend) -> Result<Value, String> {
     }))
 }
 
-/// Runs one tool; also used by the desktop's `--notify`.
+/// Runs one tool for an agent that didn't say who it is.
 pub async fn call_tool(b: &dyn Backend, name: &str, args: &Map<String, Value>) -> Result<Value, String> {
-    let c = Call { args };
+    call_tool_as(b, name, args, &mcp_source(None)).await
+}
+
+/// Runs one tool, with what the board's history should say sent it ("Claude Code via MCP");
+/// also used by the desktop's `--notify`.
+pub async fn call_tool_as(b: &dyn Backend, name: &str, args: &Map<String, Value>, source: &str) -> Result<Value, String> {
+    let c = Call { args, source };
     match name {
         "send_message" => send_message(b, &c).await,
         "show_status" => show_status(b, &c).await,
@@ -476,16 +550,21 @@ Use it sparingly, for things worth interrupting them for: a long task finished, 
 their input. Keep messages to a few words (6 rows x 22 characters at most). Prefer show_status for temporary \
 states. Don't send more than a few messages per session.";
 
-/// Answers one JSON-RPC message (or a batch); None for notifications and responses, which
-/// get no answer.
+/// Answers one JSON-RPC message (or a batch) with no connection to remember anything for
+/// (the API server's `/mcp`); None for notifications and responses, which get no answer.
 pub async fn handle(b: &dyn Backend, msg: Value) -> Option<Value> {
+    handle_in(b, &Session::default(), msg).await
+}
+
+/// Answers one message in a connection (`serve`'s stdio), which remembers who the client is.
+pub async fn handle_in(b: &dyn Backend, session: &Session, msg: Value) -> Option<Value> {
     if let Value::Array(items) = msg {
         if items.is_empty() {
             return Some(rpc_error(Value::Null, -32600, "Empty batch"));
         }
         let mut out = vec![];
         for m in items {
-            if let Some(r) = Box::pin(handle(b, m)).await {
+            if let Some(r) = Box::pin(handle_in(b, session, m)).await {
                 out.push(r);
             }
         }
@@ -512,7 +591,7 @@ pub async fn handle(b: &dyn Backend, msg: Value) -> Option<Value> {
         Some(v) => STATELESS_VERSIONS.contains(&v),
         None => false,
     };
-    let mut answer = handle_method(b, method, id, &params).await;
+    let mut answer = handle_method(b, session, method, id, &params).await;
     if stateless && answer.get("result").is_some_and(|r| r.is_object()) {
         answer["result"]["resultType"] = json!("complete");
         // Lists say how long a client may cache them; ours never change while running.
@@ -524,9 +603,12 @@ pub async fn handle(b: &dyn Backend, msg: Value) -> Option<Value> {
     Some(answer)
 }
 
-async fn handle_method(b: &dyn Backend, method: &str, id: Value, params: &Value) -> Value {
+async fn handle_method(b: &dyn Backend, session: &Session, method: &str, id: Value, params: &Value) -> Value {
     match method {
         "initialize" => {
+            if let Some(n) = params.get("clientInfo").and_then(|c| c.get("name")).and_then(|n| n.as_str()) {
+                *session.client.lock().unwrap() = Some(n.to_string());
+            }
             let version = negotiate(params.get("protocolVersion").and_then(|v| v.as_str()));
             rpc_result(
                 id,
@@ -563,7 +645,7 @@ async fn handle_method(b: &dyn Backend, method: &str, id: Value, params: &Value)
                 Some(_) => return rpc_error(id, -32602, "arguments must be an object"),
             };
             // Tool failures are results with isError, so the model can read and fix them.
-            let result = match call_tool(b, name, args).await {
+            let result = match call_tool_as(b, name, args, &session.source(params)).await {
                 Ok(v) => {
                     let mut r = json!({ "content": [{ "type": "text", "text": v["text"] }], "isError": false });
                     if let Some(s) = v.get("structured").filter(|s| s.is_object()) {
@@ -584,8 +666,12 @@ async fn handle_method(b: &dyn Backend, method: &str, id: Value, params: &Value)
 
 /// Parses one incoming line or body and answers it; a parse error gets a JSON-RPC error.
 pub async fn handle_text(b: &dyn Backend, text: &str) -> Option<Value> {
+    handle_text_in(b, &Session::default(), text).await
+}
+
+pub async fn handle_text_in(b: &dyn Backend, session: &Session, text: &str) -> Option<Value> {
     match serde_json::from_str::<Value>(text) {
-        Ok(v) => handle(b, v).await,
+        Ok(v) => handle_in(b, session, v).await,
         Err(_) => Some(rpc_error(Value::Null, -32700, "Parse error")),
     }
 }
@@ -599,11 +685,12 @@ where
 {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let mut lines = input.lines();
+    let session = Session::default();
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(answer) = handle_text(b, &line).await {
+        if let Some(answer) = handle_text_in(b, &session, &line).await {
             let mut s = answer.to_string();
             s.push('\n');
             output.write_all(s.as_bytes()).await?;
@@ -679,6 +766,16 @@ impl Backend for Http {
     fn post(&self, body: Value) -> Fut<'_, Result<(), String>> {
         Box::pin(async move { self.req(reqwest::Method::POST, "/local-api/message", Some(body)).await.map(|_| ()) })
     }
+    fn notify(&self, body: Value) -> Fut<'_, Result<(), String>> {
+        Box::pin(async move {
+            match self.req(reqwest::Method::POST, "/rattleboard/notify", Some(body)).await {
+                Ok(_) => Ok(()),
+                // A Rattleboard from before notifications
+                Err(e) if e == "Not found" => Err(NO_NOTIFY.into()),
+                Err(e) => Err(e),
+            }
+        })
+    }
     fn play(&self, seq: Value) -> Fut<'_, Result<(), String>> {
         Box::pin(async move { self.req(reqwest::Method::POST, "/rattleboard/sequence", Some(seq)).await.map(|_| ()) })
     }
@@ -713,8 +810,11 @@ mod tests {
         shown: Mutex<Grid>,
         posts: Mutex<Vec<Grid>>,
         played: Mutex<Vec<Sequence>>,
+        notices: Mutex<Vec<server::Notice>>,
         sent: Mutex<Vec<(String, Value)>>,
         saved: bool,
+        /// Answers 404 to notifications, like a Rattleboard from before them
+        old: bool,
     }
 
     impl server::Board for Mock {
@@ -737,6 +837,11 @@ mod tests {
             *self.shown.lock().unwrap() = g.clone();
             self.posts.lock().unwrap().push(g);
             "m1".into()
+        }
+        fn notify(&self, n: server::Notice) -> String {
+            *self.shown.lock().unwrap() = n.layout.clone();
+            self.notices.lock().unwrap().push(n);
+            "note-1".into()
         }
         fn play(&self, s: Sequence) -> String {
             self.played.lock().unwrap().push(s);
@@ -766,8 +871,20 @@ mod tests {
     }
 
     async fn start(saved: bool) -> (Arc<Mock>, server::Handle, Http) {
-        let m = Arc::new(Mock { shown: Mutex::new(vec![vec![0; 22]; 6]), saved, ..Default::default() });
-        let h = server::start(m.clone(), 0, false).await.unwrap();
+        start_with(Mock { saved, ..Default::default() }).await
+    }
+
+    async fn start_with(m: Mock) -> (Arc<Mock>, server::Handle, Http) {
+        let m = Arc::new(Mock { shown: Mutex::new(vec![vec![0; 22]; 6]), ..m });
+        let old = m.old;
+        let router = server::router(m.clone(), axum::Router::new());
+        // An old Rattleboard: no /rattleboard/notify.
+        let router = if old {
+            axum::Router::new().route("/rattleboard/notify", axum::routing::post(|| async { (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({"error": "Not found"}))) })).fallback_service(router)
+        } else {
+            router
+        };
+        let h = server::serve(router, 0, false).await.unwrap();
         let http = Http::new(&format!("http://{}", h.addr), "secret-key-123");
         (m, h, http)
     }
@@ -843,23 +960,65 @@ mod tests {
         let r = handle(&b, call("send_layout", json!({"characters": [[1, 2, 3], [63, 64, 65]]}))).await.unwrap();
         assert_eq!(r["result"]["isError"], false, "{r}");
         // a fixed 6 x 22 board centres it
-        assert!(m.posts.lock().unwrap().last().unwrap()[3].windows(3).any(|w| w == [63, 64, 65]));
+        assert!(m.notices.lock().unwrap().last().unwrap().layout[3].windows(3).any(|w| w == [63, 64, 65]));
     }
 
+    /// show_status and send_message are notifications, never sequences: shown once, labelled
+    /// with the agent app from `initialize`.
     #[tokio::test]
     async fn status_and_sequences() {
         let (m, _h, b) = start(false).await;
         *m.shown.lock().unwrap() = vestaboard::text_layout("Before", 6, 22);
+        let s = Session::default();
+        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "claude-code", "version": "2.1"}}});
+        handle_in(&b, &s, init).await.unwrap();
+        let r = handle_in(&b, &s, call("show_status", json!({"text": "Deploying", "seconds": 5}))).await.unwrap();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert!(m.played.lock().unwrap().is_empty(), "no sequence");
+        let n = m.notices.lock().unwrap()[0].clone();
+        assert_eq!((n.seconds, n.source.as_str()), (Some(5), "Claude Code via MCP"));
+        assert_eq!(n.layout, vestaboard::text_layout("Deploying", 6, 22));
+        // the default is 15 seconds
+        handle_in(&b, &s, call("show_status", json!({"text": "Testing"}))).await.unwrap();
+        assert_eq!(m.notices.lock().unwrap()[1].seconds, Some(15));
+        // send_message stays (no seconds), still labelled
+        handle_in(&b, &s, call("send_message", json!({"text": "Done"}))).await.unwrap();
+        let n = m.notices.lock().unwrap()[2].clone();
+        assert_eq!((n.seconds, n.source.as_str()), (None, "Claude Code via MCP"));
+        assert!(m.posts.lock().unwrap().is_empty() && m.played.lock().unwrap().is_empty());
+        // a client that didn't say who it is
+        handle(&b, call("send_message", json!({"text": "Hi"}))).await.unwrap();
+        assert_eq!(m.notices.lock().unwrap()[3].source, "Agent via MCP");
+
+        let r = handle(&b, call("play_sequence", json!({"frames": [{"text": "3", "hold": 1}, {"text": "2", "hold": 1}], "loop": true}))).await.unwrap();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let seq = m.played.lock().unwrap()[0].clone();
+        assert!(seq.looping);
+        assert_eq!(seq.name, "Agent via MCP");
+    }
+
+    /// A Rattleboard from before notifications still gets a message, or the old sequence.
+    #[tokio::test]
+    async fn older_boards() {
+        let (m, _h, b) = start_with(Mock { old: true, ..Default::default() }).await;
+        *m.shown.lock().unwrap() = vestaboard::text_layout("Before", 6, 22);
+        let r = handle(&b, call("send_message", json!({"text": "Hello"}))).await.unwrap();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert_eq!(m.posts.lock().unwrap().len(), 1);
         let r = handle(&b, call("show_status", json!({"text": "Deploying", "seconds": 5}))).await.unwrap();
         assert_eq!(r["result"]["isError"], false, "{r}");
         let seq = m.played.lock().unwrap()[0].clone();
         assert_eq!(seq.frames.len(), 2);
-        assert_eq!(seq.frames[1].layout, vestaboard::text_layout("Before", 6, 22));
-        assert!(!seq.looping);
+        assert!(m.notices.lock().unwrap().is_empty());
+    }
 
-        let r = handle(&b, call("play_sequence", json!({"frames": [{"text": "3", "hold": 1}, {"text": "2", "hold": 1}], "loop": true}))).await.unwrap();
-        assert_eq!(r["result"]["isError"], false, "{r}");
-        assert!(m.played.lock().unwrap()[1].looping);
+    #[test]
+    fn app_names() {
+        for (client, want) in [("claude-code", "Claude Code"), ("cursor-vscode", "Cursor"), ("codex-mcp-client", "Codex"), ("Visual Studio Code", "VS Code"), ("gemini-cli-mcp-client", "Gemini CLI"), ("my-tool", "my-tool"), ("  ", "Agent")] {
+            assert_eq!(app_name(client), want, "{client}");
+        }
+        assert_eq!(mcp_source(None), "Agent via MCP");
+        assert_eq!(mcp_source(Some("claude-ai")), "Claude via MCP");
     }
 
     #[tokio::test]
@@ -913,7 +1072,7 @@ mod tests {
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("\"Kitchen TV\""));
         // "this" goes straight to this board
         handle(&b, call("send_message", json!({"text": "Here", "board": "this"}))).await.unwrap();
-        assert_eq!(m.posts.lock().unwrap().len(), 1);
+        assert_eq!(m.notices.lock().unwrap().len(), 1);
 
         // A default target (--target): calls without a board go there, "this" still here
         let mut t = Http::new(&format!("http://{}", _h.addr), "secret-key-123");
@@ -924,7 +1083,7 @@ mod tests {
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("1 x 2 layout. Sent to Kitchen TV"), "{r}");
         assert_eq!(m.sent.lock().unwrap().last().unwrap().1, json!({"characters": [[1, 2]]}));
         handle(&t, call("send_message", json!({"text": "Here", "board": "this"}))).await.unwrap();
-        assert_eq!(m.posts.lock().unwrap().len(), 2);
+        assert_eq!(m.notices.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]

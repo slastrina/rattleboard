@@ -468,6 +468,12 @@ function viewNotify() {
 
 // ---------------------------------------------------------------- history
 
+// A notification's link, as its address's host (not something to click).
+function linkNote(link) {
+  if (!link) return '';
+  try { const u = new URL(link); return ` · <span title="${esc(u.href)}">${esc(u.host)}</span>`; } catch { return ''; }
+}
+
 function viewHistory() {
   const s = S.settings, d = RB.dims(S), fin = RB.fin(s.finish);
   const cw = Math.max(3, Math.min(7, Math.floor(112 / d.cols))), chh = Math.round(cw * 1.4), now = new Date();
@@ -480,7 +486,7 @@ function viewHistory() {
       ${thumb(g, cw)}
       <div style="display:flex; flex-direction:column; gap:4px; min-width:0">
         <div class="flap-font" style="font-size:14px; letter-spacing:.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${esc(RB.decode(g) || '(blank)')}</div>
-        <div style="font-size:11.5px; color:#6b6d72; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${day(h.at)} ${RB.fmtTime(h.at)} · ${esc(h.src)}${onNow ? ' · on board now' : ''}${centredNote(g)}</div>
+        <div style="font-size:11.5px; color:#6b6d72; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${day(h.at)} ${RB.fmtTime(h.at)} · ${esc(h.src)}${linkNote(h.link)}${onNow ? ' · on board now' : ''}${centredNote(g)}</div>
       </div>
       <div style="display:flex; gap:4px; align-items:center"><button class="btn" data-act="flip" data-v="${h.id}">Flip again</button>${sendActions('h' + h.id, g)}</div>
     </div>`;

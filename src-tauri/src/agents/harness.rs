@@ -124,8 +124,9 @@ impl Launch {
         self.profile.as_ref().map(|p| J::o(vec![("RATTLEBOARD_PROFILE", J::s(p.clone()))]))
     }
 
-    /// A shell command that runs `--notify`, for hooks run through a shell.
-    fn notify_cmd(&self, os: Os, text: &str, color: &str) -> String {
+    /// A shell command that runs `--notify`, for hooks run through a shell. `source` is the
+    /// agent app, for the board's history ("Claude Code via hook").
+    fn notify_cmd(&self, os: Os, source: &str, text: &str, color: &str) -> String {
         let q = |s: &str| {
             if os == Os::Windows {
                 format!("\"{}\"", s.replace('"', ""))
@@ -138,7 +139,7 @@ impl Launch {
             _ => String::new(),
         };
         let target = self.target.as_ref().map(|t| format!(" --target {}", q(t))).unwrap_or_default();
-        format!("{env}{} --notify {} --color {color} --hook{target}", q(&self.exe), q(text))
+        format!("{env}{} --notify {} --color {color} --source {} --hook{target}", q(&self.exe), q(text), q(source))
     }
 }
 
@@ -236,7 +237,7 @@ const MORE = {more};
 
 function tell(text, color) {{
   try {{
-    spawn(EXE, ["--notify", text, "--color", color, ...MORE], {{ stdio: "ignore", detached: true, env: {{ ...process.env, ...ENV }} }}).unref();
+    spawn(EXE, ["--notify", text, "--color", color, "--source", "opencode", ...MORE], {{ stdio: "ignore", detached: true, env: {{ ...process.env, ...ENV }} }}).unref();
   }} catch {{}}
 }}
 
@@ -278,7 +279,7 @@ pub fn all(env: &Env, l: &Launch) -> Vec<Harness> {
     let cursor = h.join(".cursor");
     let copilot = h.join(".copilot");
     let mcp = |at: &str, value: J| Piece::Member { at: path(&[at]), key: SERVER.into(), value };
-    let mut codex_argv = vec![l.exe.clone(), "--notify".into(), "Codex is done".into(), "--color".into(), "green".into()];
+    let mut codex_argv = vec![l.exe.clone(), "--notify".into(), "Codex is done".into(), "--color".into(), "green".into(), "--source".into(), "Codex".into()];
     if let Some(t) = &l.target {
         codex_argv.extend(["--target".to_string(), t.clone()]);
     }
@@ -293,7 +294,7 @@ pub fn all(env: &Env, l: &Launch) -> Vec<Harness> {
             mcp_file: claude_json.clone(),
             pieces: vec![
                 (Part::Mcp, claude_json, mcp("mcpServers", stdio_server(l, true))),
-                (Part::Alerts, claude_settings.clone(), Piece::Item { at: path(&["hooks", "Stop"]), value: hook(l.notify_cmd(os, "Claude Code is done", "green")) }),
+                (Part::Alerts, claude_settings.clone(), Piece::Item { at: path(&["hooks", "Stop"]), value: hook(l.notify_cmd(os, "Claude Code", "Claude Code is done", "green")) }),
                 (
                     Part::Alerts,
                     claude_settings,
@@ -301,7 +302,7 @@ pub fn all(env: &Env, l: &Launch) -> Vec<Harness> {
                         at: path(&["hooks", "Notification"]),
                         value: J::o(vec![
                             ("matcher", J::s("permission_prompt|idle_prompt|elicitation_dialog")),
-                            ("hooks", J::A(vec![J::o(vec![("type", J::s("command")), ("command", J::s(l.notify_cmd(os, "Claude Code needs you", "yellow")))])])),
+                            ("hooks", J::A(vec![J::o(vec![("type", J::s("command")), ("command", J::s(l.notify_cmd(os, "Claude Code", "Claude Code needs you", "yellow")))])])),
                         ]),
                     },
                 ),
@@ -346,7 +347,7 @@ pub fn all(env: &Env, l: &Launch) -> Vec<Harness> {
                 (
                     Part::Alerts,
                     cursor.join("hooks.json"),
-                    Piece::Item { at: path(&["hooks", "stop"]), value: J::o(vec![("command", J::s(l.notify_cmd(os, "Cursor is done", "green")))]) },
+                    Piece::Item { at: path(&["hooks", "stop"]), value: J::o(vec![("command", J::s(l.notify_cmd(os, "Cursor", "Cursor is done", "green")))]) },
                 ),
                 skill(cursor.join("skills")),
             ],
@@ -374,8 +375,8 @@ pub fn all(env: &Env, l: &Launch) -> Vec<Harness> {
             mcp_file: gemini.join("settings.json"),
             pieces: vec![
                 (Part::Mcp, gemini.join("settings.json"), mcp("mcpServers", stdio_server(l, false))),
-                (Part::Alerts, gemini.join("settings.json"), Piece::Item { at: path(&["hooks", "AfterAgent"]), value: gemini_hook(l.notify_cmd(os, "Gemini is done", "green")) }),
-                (Part::Alerts, gemini.join("settings.json"), Piece::Item { at: path(&["hooks", "Notification"]), value: gemini_hook(l.notify_cmd(os, "Gemini needs you", "yellow")) }),
+                (Part::Alerts, gemini.join("settings.json"), Piece::Item { at: path(&["hooks", "AfterAgent"]), value: gemini_hook(l.notify_cmd(os, "Gemini CLI", "Gemini is done", "green")) }),
+                (Part::Alerts, gemini.join("settings.json"), Piece::Item { at: path(&["hooks", "Notification"]), value: gemini_hook(l.notify_cmd(os, "Gemini CLI", "Gemini needs you", "yellow")) }),
                 skill(gemini.join("skills")),
             ],
             note: "Restart Gemini CLI to pick it up.",
@@ -391,7 +392,7 @@ pub fn all(env: &Env, l: &Launch) -> Vec<Harness> {
                     contents: format!(
                         "{}\n",
                         serde_json::to_string_pretty(&serde_json::json!({
-                            "hooks": { "Stop": [{ "type": "command", "command": l.notify_cmd(os, "Copilot is done", "green"), "timeout": 15 }] }
+                            "hooks": { "Stop": [{ "type": "command", "command": l.notify_cmd(os, "Copilot", "Copilot is done", "green"), "timeout": 15 }] }
                         }))
                         .unwrap()
                     ),
@@ -812,7 +813,7 @@ mod tests {
         let s: Value = serde_json::from_str(&get("settings.json")).unwrap();
         assert_eq!(s["hooks"]["Stop"].as_array().unwrap().len(), 2);
         let cmd = s["hooks"]["Stop"][1]["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(cmd, "\"/Applications/Rattleboard.app/Contents/MacOS/rattleboard\" --notify \"Claude Code is done\" --color green --hook");
+        assert_eq!(cmd, "\"/Applications/Rattleboard.app/Contents/MacOS/rattleboard\" --notify \"Claude Code is done\" --color green --source \"Claude Code\" --hook");
         assert_eq!(s["hooks"]["Notification"][0]["matcher"], "permission_prompt|idle_prompt|elicitation_dialog");
         assert!(get("SKILL.md").starts_with("---\nname: rattleboard\n"));
         // the key never goes in a config file
@@ -873,7 +874,7 @@ mod tests {
         assert_eq!(doc["mcp_servers"]["rattleboard"]["command"].as_str(), Some(launch().exe.as_str()));
         assert_eq!(doc["mcp_servers"]["docs"]["command"].as_str(), Some("docs-mcp"));
         let notify: Vec<&str> = doc["notify"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(notify[1..], ["--notify", "Codex is done", "--color", "green"]);
+        assert_eq!(notify[1..], ["--notify", "Codex is done", "--color", "green", "--source", "Codex"]);
         // notify is a top-level key, before the first table
         assert!(t.find("notify").unwrap() < t.find("[mcp_servers.docs]").unwrap(), "{t}");
         assert!(t.starts_with("# my settings\nmodel = \"gpt-5\"  # the best\n"));
@@ -922,9 +923,9 @@ mod tests {
         assert_eq!(f("vscode"), PathBuf::from("C:/Users/Sam/AppData/Roaming/Code/User/mcp.json"));
         assert_eq!(f("claude-code"), PathBuf::from("C:/Users/Sam/.claude.json"));
         assert_eq!(f("opencode"), PathBuf::from("C:/Users/Sam/.config/opencode/opencode.json"));
-        assert_eq!(l.notify_cmd(Os::Windows, "Done", "green"), "\"C:\\Users\\Sam\\AppData\\Local\\Rattleboard\\rattleboard.exe\" --notify \"Done\" --color green --hook");
+        assert_eq!(l.notify_cmd(Os::Windows, "Cursor", "Done", "green"), "\"C:\\Users\\Sam\\AppData\\Local\\Rattleboard\\rattleboard.exe\" --notify \"Done\" --color green --source \"Cursor\" --hook");
         let p = Launch { exe: "/tmp/rb $x".into(), profile: Some("agentstest".into()), target: None };
-        assert_eq!(p.notify_cmd(Os::Mac, "Done", "green"), "RATTLEBOARD_PROFILE=\"agentstest\" \"/tmp/rb \\$x\" --notify \"Done\" --color green --hook");
+        assert_eq!(p.notify_cmd(Os::Mac, "Cursor", "Done", "green"), "RATTLEBOARD_PROFILE=\"agentstest\" \"/tmp/rb \\$x\" --notify \"Done\" --color green --source \"Cursor\" --hook");
     }
 
     /// Connects every harness found under $RB_AGENTS_HOME (a throwaway home folder) to
