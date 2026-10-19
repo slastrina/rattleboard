@@ -482,7 +482,7 @@ mod tests {
         let b = board("notice", &[]);
         let api = Api(b.clone());
         let g = |t: &str| vestaboard::text_layout(t, 6, 22);
-        let note = |t: &str, seconds: Option<u64>| Notice { layout: g(t), tr: Transition::default(), seconds, source: "Claude Code via MCP".into(), link: None };
+        let note = |t: &str, seconds: Option<u64>| Notice { layout: g(t), tr: Transition::default(), seconds, source: "Claude Code via MCP".into(), link: None, alert: false };
         api.post(g("BEFORE"), Transition::default(), None);
         assert!(api.notify(note("RUNNING TESTS", Some(5))).starts_with("note-"));
         assert_eq!(b.view().display, g("RUNNING TESTS"));

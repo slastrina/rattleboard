@@ -20,8 +20,10 @@
 //!   POST   /rattleboard/sequence  {"name", "loop", "frames": [...]}  -> 201
 //!   GET    /rattleboard/sequence  -> {"running": true, "frame": 2, ...} or {"running": false}
 //!   DELETE /rattleboard/sequence  -> 204
-//!   POST   /rattleboard/notify    {"text" | "characters", "seconds", "source", "link"} -> 201
+//!   POST   /rattleboard/notify    {"text" | "characters", "seconds", "source", "link", "priority"} -> 201
 //!          A notification, shown once (see `Notice`)
+//! Both message POSTs and notify take an optional "priority": "normal" (the default) or
+//! "alert", which still pops up while the desktop holds pop-ups for a Focus (see `priority_of`).
 //!
 //! Sources (protocol v3), on boards that run them:
 //!   GET    /rattleboard/sources                              plugins, rotation, settings
@@ -113,14 +115,26 @@ pub struct Notice {
     pub source: String,
     /// Where it came from or leads, if anywhere (http or https)
     pub link: Option<String>,
+    /// Sent with priority "alert": it gets through a Focus when the user lets alerts through
+    pub alert: bool,
+}
+
+/// A message's optional "priority": "normal" (or none) or "alert". True for an alert.
+pub fn priority_of(v: &Value) -> Result<bool, String> {
+    match v.get("priority") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::String(p)) if p.eq_ignore_ascii_case("normal") || p.trim().is_empty() => Ok(false),
+        Some(Value::String(p)) if p.eq_ignore_ascii_case("alert") => Ok(true),
+        Some(_) => Err("priority must be \"normal\" or \"alert\"".into()),
+    }
 }
 
 /// What a notification is labelled when it doesn't say who sent it.
 pub const NOTICE_SOURCE: &str = "API notification";
 
 impl Notice {
-    /// A posted notification: a message (as `message` takes it) plus "seconds", "source"
-    /// and "link".
+    /// A posted notification: a message (as `message` takes it) plus "seconds", "source",
+    /// "link" and "priority".
     pub fn parse(v: &Value, dims: (usize, usize), adaptive: bool) -> Result<Notice, String> {
         let o = v.as_object().ok_or("Send {\"text\": \"...\"} or {\"characters\": [[...]]}, with \"seconds\" to go away again")?;
         let (layout, tr) = message(v, dims, adaptive)?;
@@ -153,7 +167,8 @@ impl Notice {
             }
             Some(_) => return Err("link must be a string".into()),
         };
-        Ok(Notice { layout, tr, seconds, source, link })
+        let alert = priority_of(v)?;
+        Ok(Notice { layout, tr, seconds, source, link, alert })
     }
 }
 
@@ -169,6 +184,11 @@ pub trait Board: Send + Sync + 'static {
     /// A normal message, with the web address a click on the board opens, if any (already
     /// checked by `plugins::safe_link`). It also stops a running sequence.
     fn post(&self, layout: Grid, tr: Transition, link: Option<String>) -> String;
+    /// A message sent with priority "alert" (see `priority_of`); a board without Focus
+    /// awareness just posts it.
+    fn post_alert(&self, layout: Grid, tr: Transition, link: Option<String>) -> String {
+        self.post(layout, tr, link)
+    }
     /// The link of what's on the board now, if it has one
     fn link(&self) -> Option<String> {
         None
@@ -354,9 +374,9 @@ async fn post(State(ctx): State<Ctx>, h: HeaderMap, body: Bytes) -> Response {
     let Ok(v) = serde_json::from_slice::<Value>(&body) else {
         return err(StatusCode::BAD_REQUEST, "Body must be JSON");
     };
-    match message(&v, ctx.board.dims(), ctx.board.adaptive()).and_then(|(g, tr)| Ok((g, tr, link_of(&v)?))) {
-        Ok((g, tr, link)) => {
-            let id = ctx.board.post(g, tr, link);
+    match message(&v, ctx.board.dims(), ctx.board.adaptive()).and_then(|(g, tr)| Ok((g, tr, link_of(&v)?, priority_of(&v)?))) {
+        Ok((g, tr, link, alert)) => {
+            let id = if alert { ctx.board.post_alert(g, tr, link) } else { ctx.board.post(g, tr, link) };
             (StatusCode::CREATED, Json(json!({ "status": "ok", "id": id, "created": crate::now_ms() }))).into_response()
         }
         Err(e) => err(StatusCode::BAD_REQUEST, &e),
@@ -713,7 +733,12 @@ impl crate::mcp::Backend for Ctx {
     fn post(&self, body: Value) -> crate::mcp::Fut<'_, Result<(), String>> {
         Box::pin(async move {
             let (g, tr) = message(&body, self.board.dims(), self.board.adaptive())?;
-            self.board.post(g, tr, link_of(&body)?);
+            let (link, alert) = (link_of(&body)?, priority_of(&body)?);
+            if alert {
+                self.board.post_alert(g, tr, link);
+            } else {
+                self.board.post(g, tr, link);
+            }
             Ok(())
         })
     }
@@ -1047,7 +1072,7 @@ mod tests {
         let v: Value = r.json().await.unwrap();
         assert_eq!((v["id"].as_str(), v["seconds"].as_u64()), (Some("note-1"), Some(20)));
         let n = board.notices.lock().unwrap()[0].clone();
-        assert_eq!(n, Notice { layout: vestaboard::text_layout("Tests passed", 3, 15), tr: Transition::default(), seconds: Some(20), source: "Claude Code via MCP".into(), link: None });
+        assert_eq!(n, Notice { layout: vestaboard::text_layout("Tests passed", 3, 15), tr: Transition::default(), seconds: Some(20), source: "Claude Code via MCP".into(), link: None, alert: false });
         assert!(board.sequence().is_none(), "a notification stops a sequence");
 
         // no seconds: it stays; no source: a plain label; characters and a link
@@ -1056,8 +1081,15 @@ mod tests {
         let n = board.notices.lock().unwrap()[1].clone();
         assert_eq!((n.seconds, n.source.as_str(), n.link.as_deref()), (None, NOTICE_SOURCE, Some("https://example.com/run/7")));
         assert_eq!(n.layout[1][6..8], [1, 2]);
+        assert!(!n.alert);
+        // priority "alert" gets through a Focus (when the user lets alerts through)
+        let r = c.post(&url).bearer_auth("k1").body(r#"{"text": "Prod down", "priority": "alert"}"#).send().await.unwrap();
+        assert_eq!(r.status(), 201);
+        assert!(board.notices.lock().unwrap()[2].alert);
 
         for bad in [
+            r#"{"text": "x", "priority": "urgent"}"#,
+            r#"{"text": "x", "priority": 1}"#,
             r#"{"seconds": 10}"#,
             r#"{"text": "x", "seconds": 2}"#,
             r#"{"text": "x", "seconds": 3601}"#,
@@ -1071,7 +1103,7 @@ mod tests {
             let r = c.post(&url).bearer_auth("k1").body(bad).send().await.unwrap();
             assert_eq!(r.status(), 400, "{bad}");
         }
-        assert_eq!(board.notices.lock().unwrap().len(), 2);
+        assert_eq!(board.notices.lock().unwrap().len(), 3);
     }
 
     #[tokio::test]

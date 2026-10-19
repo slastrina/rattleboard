@@ -145,6 +145,20 @@ fn link_arg(c: &Call<'_>) -> Result<Option<String>, String> {
     }
 }
 
+fn priority_schema() -> Value {
+    json!({ "type": "string", "enum": ["normal", "alert"], "description": "Optional. \"alert\" only for something that needs the user now (production down, a failed deploy they're waiting on): it still pops up while the user's Focus / Do Not Disturb holds other messages, if they let alerts through. Defaults to normal." })
+}
+
+/// The call's optional "priority", as the board takes it.
+fn priority_arg(c: &Call<'_>) -> Result<Option<&'static str>, String> {
+    match c.str("priority")?.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(p) if p.eq_ignore_ascii_case("normal") => Ok(None),
+        Some(p) if p.eq_ignore_ascii_case("alert") => Ok(Some("alert")),
+        Some(p) => Err(format!("Unknown priority \"{p}\"; use normal or alert")),
+    }
+}
+
 fn strategy_schema() -> Value {
     json!({
         "type": "string",
@@ -175,6 +189,7 @@ pub fn tools() -> Value {
                     "size": { "type": "string", "enum": ["standard", "compact", "large"], "description": "Lay the text out for a board size: standard 6x22 (default), compact 3x15, large 8x30. Boards set to match each message take this size; others use their own." },
                     "strategy": strategy_schema(),
                     "link": link_schema(),
+                    "priority": priority_schema(),
                     "board": { "type": "string", "description": "Which board: \"this\" (this board, the default unless the user set another), or the name of a saved board or group from list_boards, or \"all\"." }
                 },
                 "required": ["text"],
@@ -192,7 +207,8 @@ pub fn tools() -> Value {
                     "text": { "type": "string", "minLength": 1, "maxLength": 1000, "description": "The status, e.g. \"Deploying…\"." },
                     "seconds": { "type": "integer", "minimum": 3, "maximum": 3600, "default": 15, "description": "How long to show it after the flaps settle, 3-3600 (default 15)." },
                     "color": color_schema("as an accent"),
-                    "link": link_schema()
+                    "link": link_schema(),
+                    "priority": priority_schema()
                 },
                 "required": ["text"],
                 "additionalProperties": false
@@ -392,17 +408,23 @@ async fn send_message(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
     if let Some(l) = link_arg(c)? {
         body.insert("link".into(), json!(l));
     }
-    deliver(b, c, body, Some(&text), hint).await
+    let priority = priority_arg(c)?;
+    deliver(b, c, body, Some(&text), hint, priority).await
 }
 
 /// Sends a message body to the board the call names, or the default target, or this board.
-async fn deliver(b: &dyn Backend, c: &Call<'_>, body: Map<String, Value>, text: Option<&str>, hint: Option<(usize, usize)>) -> Result<Value, String> {
+/// A priority goes to this board only: saved boards get the layout alone.
+async fn deliver(b: &dyn Backend, c: &Call<'_>, body: Map<String, Value>, text: Option<&str>, hint: Option<(usize, usize)>, priority: Option<&str>) -> Result<Value, String> {
     let named = c.str("board")?.map(str::trim).filter(|s| !s.is_empty()).map(String::from);
     let here = |s: &str| s.eq_ignore_ascii_case("this") || s.eq_ignore_ascii_case("this board");
     let board = named.or_else(|| b.default_target()).filter(|s| !here(s));
     let Some(want) = board else {
         let size = layout_size(b, hint).await;
         // A notification that stays, so the history says who sent it; it's never re-shown.
+        let mut body = body;
+        if let Some(p) = priority {
+            body.insert("priority".into(), json!(p));
+        }
         let mut n = body.clone();
         n.insert("source".into(), json!(c.source));
         match b.notify(Value::Object(n)).await {
@@ -449,7 +471,8 @@ async fn show_status(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
     // A notification: shown once, then the board goes back to what it would otherwise show
     // (the previous message, or the Sources rotation). Not a sequence, so nothing about it
     // is ever re-shown as a new message.
-    match b.notify(json!({ "text": text, "seconds": secs, "source": c.source, "link": link })).await {
+    let priority = priority_arg(c)?;
+    match b.notify(json!({ "text": text, "seconds": secs, "source": c.source, "link": link, "priority": priority })).await {
         Ok(()) => {}
         Err(e) if e == NO_NOTIFY => {
             // An older Rattleboard: the two-frame sequence it understands.
@@ -468,7 +491,7 @@ async fn send_layout(b: &dyn Backend, c: &Call<'_>) -> Result<Value, String> {
     body.insert("characters".into(), json!(g));
     c.strategy(&mut body)?;
     let (r, cl) = vestaboard::dims_of(&g);
-    let mut out = deliver(b, c, body, None, None).await?;
+    let mut out = deliver(b, c, body, None, None, None).await?;
     out["text"] = json!(format!("{r} x {cl} layout. {}", out["text"].as_str().unwrap_or_default()));
     Ok(out)
 }
@@ -1001,6 +1024,25 @@ mod tests {
         assert!(m.played.lock().unwrap().is_empty(), "no sequence");
         let tools = tools();
         assert!(tools.as_array().unwrap().iter().filter(|t| t["name"] == "send_message" || t["name"] == "show_status").all(|t| t["inputSchema"]["properties"]["link"].is_object()));
+    }
+
+    /// priority "alert" reaches this board's notification, for Focus / Do Not Disturb.
+    #[tokio::test]
+    async fn priority() {
+        let (m, _h, b) = start(false).await;
+        handle(&b, call("send_message", json!({"text": "Hi"}))).await.unwrap();
+        assert!(!m.notices.lock().unwrap().last().unwrap().alert);
+        let r = handle(&b, call("send_message", json!({"text": "Prod down", "priority": "alert"}))).await.unwrap();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert!(m.notices.lock().unwrap().last().unwrap().alert);
+        let r = handle(&b, call("show_status", json!({"text": "Deploy failed", "priority": "ALERT"}))).await.unwrap();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert!(m.notices.lock().unwrap().last().unwrap().alert);
+        handle(&b, call("show_status", json!({"text": "Deploying", "priority": "normal"}))).await.unwrap();
+        assert!(!m.notices.lock().unwrap().last().unwrap().alert);
+        let r = handle(&b, call("send_message", json!({"text": "x", "priority": "urgent"}))).await.unwrap();
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        assert!(tools().as_array().unwrap().iter().filter(|t| t["name"] == "send_message" || t["name"] == "show_status").all(|t| t["inputSchema"]["properties"]["priority"].is_object()));
     }
 
     #[tokio::test]

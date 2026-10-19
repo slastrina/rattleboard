@@ -32,6 +32,8 @@ Don't post routine progress, every step of a plan, or anything the user is clear
 - `send_layout`: an exact grid of character codes (0–71), for pictures or precise placement.
 - `get_board`: what the board shows now. Check it before replacing something the user put up themselves.
 
+`send_message` and `show_status` take `priority: "alert"`, which still pops up while the user's Focus or Do Not Disturb holds other messages. Use it only when something needs the user now (a production outage, a failure they're waiting on), never for routine results.
+
 ## Examples
 
 - After a 10-minute test run passes: `send_message` with text `TESTS PASSED` and color `green`.

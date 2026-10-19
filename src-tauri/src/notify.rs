@@ -187,7 +187,7 @@ mod win {
             // message or the Sources rotation) without the old message counting as new.
             let seconds = (back_after > 0).then_some(back_after.max(3) as u64);
             let source = if from.trim().is_empty() { "Notification".to_string() } else { format!("{} notification", from.trim()) };
-            crate::notify_here(&app, crate::server::Notice { layout, tr: Transition::default(), seconds, source, link: None });
+            crate::notify_here(&app, crate::server::Notice { layout, tr: Transition::default(), seconds, source, link: None, alert: false });
             return;
         }
         let before = if back_after > 0 { crate::read_target(&app, &target).await.ok() } else { None };
