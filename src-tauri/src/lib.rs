@@ -110,6 +110,9 @@ struct Runtime {
     focus_summary: Option<String>,
     /// What's on the board came as an alert (it was let through a Focus, sound and all)
     shown_alert: bool,
+    /// Messages from outside waiting for the rotation's card that just popped up: the
+    /// latest one's number (see `after_card`)
+    waiting: u64,
 }
 
 /// A timed notification showing (see `show_notice`).
@@ -473,9 +476,32 @@ fn notify_here(app: &AppHandle, n: server::Notice) -> String {
     let id = next_id(app, "note");
     stop_player(app, HERE);
     let (a, i) = (app.clone(), id.clone());
-    // Windows must be touched from the main thread.
-    let _ = app.run_on_main_thread(move || show_notice(&a, i, n));
+    after_card(app, move || show_notice(&a, i, n));
     id
+}
+
+/// Runs `f` (putting a message from outside on the board) on the main thread, where windows
+/// must be touched: at once, or once the rotation's card that just popped up has had its
+/// pop-up time. Of the messages that arrive meanwhile only the latest goes up.
+fn after_card(app: &AppHandle, f: impl FnOnce() + Send + 'static) {
+    let st = app.state::<AppState>();
+    let wait = st.sources.wait_for_card(now_ms());
+    let n = {
+        let mut rt = st.rt.lock().unwrap();
+        rt.waiting += 1;
+        rt.waiting
+    };
+    if wait == 0 {
+        let _ = app.run_on_main_thread(f);
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(wait as u64)).await;
+        if app.state::<AppState>().rt.lock().unwrap().waiting == n {
+            let _ = app.run_on_main_thread(f);
+        }
+    });
 }
 
 /// Shows a notification. One that stays is a message like any other, labelled with who sent
@@ -606,6 +632,11 @@ fn put_on_board_as(app: &AppHandle, layout: Grid, id: Option<String>, src: &str,
         if how == Shown::Message {
             // Nothing to go back to: the message replaced the alert, or the notification.
             rt.alert_return = None;
+            rt.notice = None;
+        }
+        if how == Shown::Ambient {
+            // The rotation's card replaced a notification (they kept coming, and the rotation
+            // got its turn): nothing goes back when it's over.
             rt.notice = None;
         }
         record(&mut rt.history, layout, src, link, how, now_ms());
@@ -764,6 +795,7 @@ fn sources_ctx(app: &AppHandle) -> sources::Ctx {
     } else {
         None
     };
+    st.sources.set_gap(s.hide_sec as i64 * 1000);
     sources::Ctx { now: now_ms(), local: chrono::Local::now().naive_local(), paused, dims: s.dims() }
 }
 
@@ -828,6 +860,9 @@ fn run_actions(app: &AppHandle, actions: Vec<sources::Action>) {
                             _ => Shown::Ambient,
                         };
                         let (a, src, id, alert, link) = (app.clone(), format!("{} · Sources", card.name), next_id(app, "src"), how == sources::How::Alert, card.link.clone());
+                        // The rotation's next card pops the board up for the source's pop-up
+                        // time (not a live card re-drawn, which stays as it is).
+                        let pop = (how == sources::How::Ambient).then(|| app.state::<AppState>().sources.popup_of(&card.instance));
                         let _ = app.run_on_main_thread(move || {
                             if alert {
                                 let st = a.state::<AppState>();
@@ -837,6 +872,9 @@ fn run_actions(app: &AppHandle, actions: Vec<sources::Action>) {
                                 }
                             }
                             put_on_board_as(&a, layout, Some(id), &src, Transition::default(), shown, link, alert);
+                            if let Some(secs) = pop {
+                                pop_card(&a, secs);
+                            }
                         });
                     } else {
                         hub_push(app, d, &card, page, how);
@@ -1205,10 +1243,33 @@ fn over_menu_bar(_w: &WebviewWindow) {
 /// Shows the board window and tells it to flip into view. `countdown` starts the
 /// hide timer immediately ("Show board") instead of waiting for the flaps to settle.
 fn present_board(app: &AppHandle, countdown: bool) {
+    present_for(app, countdown, None);
+}
+
+/// `ms`: how long the pop-up stays, when not the board's own time.
+fn present_for(app: &AppHandle, countdown: bool, ms: Option<u64>) {
     if let Some(w) = board(app) {
         apply_layering(app);
         let _ = w.show();
-        let _ = app.emit_to("board", "rb://present", countdown);
+        let _ = app.emit_to("board", "rb://present", json!({ "countdown": countdown, "ms": ms }));
+    }
+}
+
+/// The rotation's next card pops the board up (a pop-up board; a pinned or full-screen one
+/// is up anyway) for `secs`, or the board's own time: not when the source says never (0),
+/// nor while a Focus holds pop-ups.
+fn pop_card(app: &AppHandle, secs: Option<u32>) {
+    let st = app.state::<AppState>();
+    let (setup_done, stays, rules, full) = {
+        let s = st.settings.lock().unwrap();
+        (s.setup_done, s.floating() || s.fullscreen(), focus_rules(&s), s.fullscreen())
+    };
+    if !setup_done || stays || secs == Some(0) {
+        return;
+    }
+    let on = st.rt.lock().unwrap().focus.on;
+    if focus::decide(rules, on, false, full).pop_up {
+        present_for(app, false, secs.map(|s| s as u64 * 1000));
     }
 }
 
@@ -1286,7 +1347,7 @@ fn cover_screen(app: &AppHandle) {
     focus_board(&w);
     app.state::<AppState>().rt.lock().unwrap().covered = Some(rect_of(&m));
     fullscreen::keep_awake(true);
-    let _ = app.emit_to("board", "rb://present", false);
+    let _ = app.emit_to("board", "rb://present", json!({ "countdown": false }));
 }
 
 /// Full screen takes keys (Esc, F11): the window, and the page in it.
@@ -1617,15 +1678,14 @@ impl server::Board for ApiBoard {
         let id = next_id(&self.0, "api");
         stop_player(&self.0, HERE);
         let (app, l, i) = (self.0.clone(), layout, id.clone());
-        // Windows must be touched from the main thread.
-        let _ = self.0.run_on_main_thread(move || show_message(&app, l, Some(i), "API server", tr, link));
+        after_card(&self.0, move || show_message(&app, l, Some(i), "API server", tr, link));
         id
     }
     fn post_alert(&self, layout: Grid, tr: Transition, link: Option<String>) -> String {
         let id = next_id(&self.0, "api");
         stop_player(&self.0, HERE);
         let (app, l, i) = (self.0.clone(), layout, id.clone());
-        let _ = self.0.run_on_main_thread(move || put_on_board_as(&app, l, Some(i), "API server", tr, Shown::Message, link, true));
+        after_card(&self.0, move || put_on_board_as(&app, l, Some(i), "API server", tr, Shown::Message, link, true));
         id
     }
     fn link(&self) -> Option<String> {
@@ -2763,7 +2823,18 @@ fn board_drag_move(app: AppHandle, st: State<AppState>, dx: f64, dy: f64) {
     let Some(o) = st.rt.lock().unwrap().drag_origin else { return };
     let (wa, scale) = work_area(&app, &w);
     let size = w.outer_size().unwrap_or_default();
-    let (x, y) = clamp_to(&wa, size, scale, o.x + (dx * scale) as i32, o.y + (dy * scale) as i32);
+    let (x, y) = (o.x + (dx * scale) as i32, o.y + (dy * scale) as i32);
+    // Kept on the display under the pointer (or the board's middle), so it can be dragged
+    // across to another one, whichever side of this one it's on.
+    let under = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| app.monitor_from_point(x as f64 + size.width as f64 / 2.0, y as f64 + size.height as f64 / 2.0).ok().flatten());
+    let (x, y) = match under {
+        Some(m) => clamp_to(m.work_area(), size, m.scale_factor(), x, y),
+        None => clamp_to(&wa, size, scale, x, y),
+    };
     let _ = w.set_position(PhysicalPosition::new(x, y));
 }
 

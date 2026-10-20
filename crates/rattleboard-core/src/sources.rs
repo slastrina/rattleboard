@@ -77,6 +77,9 @@ pub struct Instance {
     pub exclude: Vec<String>,
     /// Feed items mentioning one of these interrupt as an alert
     pub alert_words: Vec<String>,
+    /// Seconds its cards pop the board up for: None uses the board's own time, 0 never pops
+    /// it up (the card still goes on the board)
+    pub popup: Option<u32>,
 }
 
 fn words(v: Option<&Value>, what: &str) -> Result<Vec<String>, Refused> {
@@ -160,6 +163,13 @@ impl Instance {
             settings.insert(spec.key.clone(), v);
         }
         let chip = plugins::chip(o.get("chip").unwrap_or(&Value::Null)).map_err(bad)?;
+        let popup = match o.get("popup") {
+            None | Some(Value::Null) => None,
+            Some(v) => match v.as_u64() {
+                Some(n @ 0..=600) => Some(n as u32),
+                _ => return Err(bad("popup must be from 0 to 600 seconds")),
+            },
+        };
         Ok(Instance {
             id,
             plugin: p.id.clone(),
@@ -173,6 +183,7 @@ impl Instance {
             include: words(o.get("include"), "include")?,
             exclude: words(o.get("exclude"), "exclude")?,
             alert_words: words(o.get("alertWords"), "alertWords")?,
+            popup,
         })
     }
 
@@ -182,6 +193,7 @@ impl Instance {
             "weight": self.weight, "dwell": self.dwell, "schedule": self.schedule.as_ref().map(|s| s.to_json()),
             "settings": self.settings, "chip": self.chip.map(plugins::chip_name),
             "include": self.include, "exclude": self.exclude, "alertWords": self.alert_words,
+            "popup": self.popup,
         })
     }
 }
@@ -566,6 +578,40 @@ struct Inner {
     echo: VecDeque<(String, i64, bool)>,
     /// What mirrors put up in the last hour, for `mirrored`
     mirrored: VecDeque<(String, i64)>,
+    /// How long anything put on the board stays up before the rotation's next card may
+    /// replace it: the board's pop-up time (see `set_gap`)
+    gap: i64,
+    /// Messages and notifications have had the board since then, without the rotation
+    /// getting a turn (see `fair`)
+    busy_since: Option<i64>,
+    /// The rotation's card that just popped up has the board until then (see `wait_for_card`)
+    card_until: i64,
+    /// When the latest timed notification went up
+    last_notice: i64,
+}
+
+/// The pop-up time, until the board says otherwise (see `Engine::set_gap`).
+const DEFAULT_GAP_MS: i64 = 10_000;
+/// With no hold, messages and notifications that keep coming still let the rotation's next
+/// card in after twice the pop-up time, and at least this long.
+const FAIR_MS: i64 = 20_000;
+/// The least anything stays up before the rotation's card replaces it.
+const MIN_UP_MS: i64 = 3_000;
+
+/// How long messages and notifications that keep coming have the board before the rotation's
+/// next card gets a turn.
+fn fair(i: &Inner) -> i64 {
+    (2 * i.gap).max(FAIR_MS)
+}
+
+/// A message or notification is going up: when the board became busy with them (now, unless
+/// one was already holding the rotation).
+fn busy(i: &mut Inner, now: i64) -> i64 {
+    let holding = i.hold_until.is_some_and(|h| h >= now) || i.notice.is_some_and(|n| n.1 >= now);
+    if !holding || i.busy_since.is_none() {
+        i.busy_since = Some(now);
+    }
+    i.busy_since.unwrap_or(now)
 }
 
 pub struct Paths {
@@ -638,6 +684,10 @@ impl Engine {
                 stores: store_path(&paths).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
                 dims: (6, 22),
                 echo: VecDeque::new(),
+                gap: DEFAULT_GAP_MS,
+                busy_since: None,
+                card_until: 0,
+                last_notice: 0,
                 mirrored: VecDeque::new(),
             }),
             wake: Notify::new(),
@@ -1064,16 +1114,40 @@ impl Engine {
     pub fn note_message(&self, now: i64) {
         let mut i = self.inner.lock().unwrap();
         let hold = i.config.hold_minutes as i64 * 60_000;
-        if i.showing.as_ref().is_some_and(|s| s.how == How::Alert) {
-            i.showing = None;
-            i.resume = None;
-        }
-        // A notification showing is over too: the message replaced it.
+        // What was showing is gone (an alert has nothing to go back to), and so is a
+        // notification: the message replaced them.
+        i.showing = None;
+        i.resume = None;
         i.notice = None;
-        if hold > 0 {
-            i.hold_until = Some(now + hold);
-            i.showing = None;
-        }
+        let since = busy(&mut i, now);
+        i.hold_until = Some(if hold > 0 {
+            now + hold
+        } else {
+            // No hold: the rotation carries on once the message has been up for the pop-up
+            // time. Messages that keep coming still let it in now and then (each one up for a
+            // few seconds at least).
+            (now + i.gap).min((since + fair(&i)).max(now + MIN_UP_MS))
+        });
+    }
+
+    /// The board's pop-up time, in ms: how long a message stays up before the rotation's
+    /// next card replaces it (with no hold), and a card that pops up keeps the board.
+    pub fn set_gap(&self, ms: i64) {
+        self.inner.lock().unwrap().gap = ms.clamp(MIN_UP_MS, 600_000);
+    }
+
+    /// How long a message from outside (the API, an agent, a notification) should wait
+    /// before it goes up: the rotation's card that just popped up keeps the board for its
+    /// pop-up time, so it's seen before it's replaced. Messages from the API that arrive
+    /// meanwhile wait for it (the latest one goes up).
+    pub fn wait_for_card(&self, now: i64) -> i64 {
+        (self.inner.lock().unwrap().card_until - now).max(0)
+    }
+
+    /// Seconds a source's cards pop the board up for: None for the board's own time, 0
+    /// for never.
+    pub fn popup_of(&self, instance: &str) -> Option<u32> {
+        self.inner.lock().unwrap().config.rotation.iter().find(|x| x.id == instance).and_then(|x| x.popup)
     }
 
     /// A timed notification went up for about `ms`: like an alert it interrupts, so the
@@ -1083,6 +1157,8 @@ impl Engine {
     pub fn begin_notice(&self, now: i64, ms: i64) {
         let mut i = self.inner.lock().unwrap();
         let start = i.notice.map(|n| n.0).unwrap_or(now);
+        busy(&mut i, now);
+        i.last_notice = now;
         i.notice = Some((start, now + ms.max(0) + 60_000));
     }
 
@@ -1765,6 +1841,15 @@ fn show(i: &mut Inner, card: Card, how: How, ctx: &Ctx, page_ms: i64, total_ms: 
     let total = total_ms.unwrap_or(page_ms * pages as i64);
     let page_ms = total / pages as i64;
     note_shown(i, &card, ctx, matches!(how, How::Ambient | How::Update));
+    if how == How::Ambient {
+        // The rotation's turn: it pops up and keeps the board for its pop-up time.
+        i.busy_since = None;
+        let pop = match i.config.rotation.iter().find(|x| x.id == card.instance).and_then(|x| x.popup) {
+            Some(secs) => secs as i64 * 1000,
+            None => i.gap,
+        };
+        i.card_until = ctx.now + pop;
+    }
     i.showing = Some(Showing { card: card.clone(), how, page: 0, pages, since: ctx.now, page_at: ctx.now, page_ms, until: ctx.now + total, drawn_at: ctx.now });
     Action::Show { card: Box::new(card), page: 0, how }
 }
@@ -1897,7 +1982,9 @@ fn tick(i: &mut Inner, ctx: &Ctx) -> Vec<Action> {
     }
     // A timed notification is up: nothing replaces it, not even a manual Next (which waits).
     if let Some((_, latest)) = i.notice {
-        if now < latest {
+        // Notifications that keep coming still let the rotation in now and then.
+        let turn = i.busy_since.is_some_and(|b| i.last_notice > b && now >= b + fair(i)) && now >= i.last_notice + MIN_UP_MS;
+        if now < latest && !turn {
             return out;
         }
         i.notice = None;
@@ -2584,6 +2671,72 @@ pub mod tests {
         e.note_message(at(&c0, 4005).now);
         assert!(e.inner.lock().unwrap().notice.is_none());
         assert!(e.tick(&at(&c0, 4100)).is_empty(), "held");
+    }
+
+    /// With no hold, the API and agents share the board with the rotation: a message stays
+    /// up for the pop-up time before the next card replaces it, messages that keep coming
+    /// still let the rotation in after twice that (20 s at least), and a card that pops up
+    /// keeps the board for its own pop-up time (messages wait for it). Notifications that
+    /// keep coming do too.
+    #[test]
+    fn messages_share_the_board_without_a_hold() {
+        let (e, _) = engine("share");
+        e.install(&text_plugin("com.t.a"), false).unwrap();
+        e.install(&text_plugin("com.t.b"), false).unwrap();
+        e.put_rotation(&json!({"rotation": [
+            {"id": "a", "plugin": "com.t.a", "dwell": "60s", "popup": 5},
+            {"id": "b", "plugin": "com.t.b", "dwell": "60s"},
+        ], "holdMinutes": 0, "flipsPerHour": 360}), false).unwrap();
+        e.set_gap(8_000);
+        assert_eq!(e.popup_of("a"), Some(5));
+        assert_eq!(e.popup_of("b"), None);
+        let c0 = ctx(0);
+        assert_eq!(shows(&e.tick(&c0)), [("a".to_string(), How::Ambient)]);
+        // a popped up for 5 s: a message meanwhile waits for it.
+        assert_eq!(e.wait_for_card(at(&c0, 2).now), 3_000);
+        assert_eq!(e.wait_for_card(at(&c0, 6).now), 0);
+        // A message at 10 s: up for the pop-up time (8 s), then the rotation goes on. The
+        // card it replaced isn't redrawn over it.
+        e.note_message(at(&c0, 10).now);
+        assert!(e.tick(&at(&c0, 12)).is_empty());
+        assert!(e.tick(&at(&c0, 17)).is_empty());
+        assert_eq!(shows(&e.tick(&at(&c0, 19))), [("b".to_string(), How::Ambient)]);
+        assert_eq!(e.wait_for_card(at(&c0, 19).now), 8_000, "b pops up for the board's time");
+        // Messages every 4 s: each replaces the last, and after 20 s the rotation gets its
+        // turn all the same.
+        let mut turn = None;
+        for k in 0..30 {
+            let t = 30 + k * 4;
+            e.note_message(at(&c0, t).now);
+            for d in 1..4 {
+                if !shows(&e.tick(&at(&c0, t + d))).is_empty() && turn.is_none() {
+                    turn = Some(t + d);
+                }
+            }
+            if turn.is_some() {
+                break;
+            }
+        }
+        assert!(turn.is_some_and(|t| (50..=54).contains(&t)), "{turn:?}");
+        // Notifications that keep coming let it in too.
+        let n0 = 200;
+        let mut turn = None;
+        for k in 0..30 {
+            let t = n0 + k * 5;
+            e.begin_notice(at(&c0, t).now, 6_000);
+            for d in 1..5 {
+                if !shows(&e.tick(&at(&c0, t + d))).is_empty() && turn.is_none() {
+                    turn = Some(t + d);
+                }
+            }
+            if turn.is_some() {
+                break;
+            }
+        }
+        assert!(turn.is_some_and(|t| (n0 + 20..=n0 + 26).contains(&t)), "{turn:?}");
+        assert!(e.inner.lock().unwrap().notice.is_none());
+        // A source's pop-up time is checked.
+        assert!(e.put_rotation(&json!({"rotation": [{"id": "a", "plugin": "com.t.a", "popup": 601}]}), false).is_err());
     }
 
     #[test]

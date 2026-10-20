@@ -630,7 +630,7 @@ When nothing else is going on, Rattleboard can run a **rotation** of sources: ea
 
 ### The rotation
 
-- Each source in the rotation has an on/off switch, a **weight** (1–10: how often it comes round, relative to the others), how long it **shows for**, a colour chip, and an optional **schedule** (for example the clock only overnight, news 7–9 am on weekdays). Drag ⋮⋮ to reorder. You can add the same plugin more than once, say a countdown each for two birthdays.
+- Each source in the rotation has an on/off switch, a **weight** (1–10: how often it comes round, relative to the others), how long it **shows for**, how long its card **pops up for** (the board's own time, a few seconds, or never), a colour chip, and an optional **schedule** (for example the clock only overnight, news 7–9 am on weekdays). Drag ⋮⋮ to reorder. You can add the same plugin more than once, say a countdown each for two birthdays.
 - **In turn** shows them in order, spreading out the heavier ones; **Shuffle** picks at random, never the same twice running.
 - **Next** moves on at once and restarts that card's time: in Settings, in the tray menu, on the board's hover bar, in full screen's controls, or with the → key on the board.
 - **Up next** lists the coming hour, and why each card comes up: "Ambient", "after the held message", "after quiet hours", "Alert · Standup starts at 9:30".
@@ -638,10 +638,10 @@ When nothing else is going on, Rattleboard can run a **rotation** of sources: ea
 
 ### Priorities
 
-- **Ambient:** the rotation. Its cards never pop the board up or fill Message History; a pinned or full-screen board simply changes.
-- **Message:** anything else put on the board (Compose, the API, a sequence, a forwarded notification) holds the rotation for 30 minutes by default (**Hold messages for**), then it carries on.
+- **Ambient:** the rotation. Each new card pops the board up for its source's **Pops up for** time (a clock ticking over to the next minute doesn't); a pinned or full-screen board simply changes. Its cards don't fill Message History.
+- **Message:** anything else put on the board (Compose, the API, a sequence, a forwarded notification) holds the rotation for 30 minutes by default (**Hold messages for**), then it carries on. With the hold **Off**, a message stays up for the board's pop-up time and then the rotation carries on; messages that keep coming (an agent at work) still let the rotation's next card in every so often (after twice the pop-up time, 20 seconds at least). A card that has just popped up keeps the board for its pop-up time: a message from the API or an agent arriving meanwhile waits for it, and only the latest one goes up.
 - **Alert:** a feed item mentioning one of your alert words, an event starting in 10 minutes, a countdown's day, a board you follow changing, or a command plugin asking for it. It interrupts for 15 seconds (**Alerts stay up**), then the board goes back to whatever it showed before, a held message included.
-- A timed [notification](#notifications) (an agent's `show_status`, `--notify --seconds`, a forwarded notification that goes back) works like an alert: nothing replaces it while it's up, it doesn't hold the rotation, and the card it covered gets the time it lost.
+- A timed [notification](#notifications) (an agent's `show_status`, `--notify --seconds`, a forwarded notification that goes back) works like an alert: nothing replaces it while it's up, it doesn't hold the rotation, and the card it covered gets the time it lost. Notifications that keep coming still let the rotation's next card in every so often, the same way.
 
 ### Calm by default
 
@@ -824,8 +824,10 @@ A source in the rotation looks like this (`plugin` is a plugin's id; the rest is
 ```json
 {"id": "weather", "plugin": "rattleboard.weather", "name": "Weather", "enabled": true, "weight": 1, "dwell": "5m",
  "schedule": {"days": ["sat", "sun"], "from": "07:00", "to": "12:00"}, "settings": {"city": "Melbourne", "units": "celsius"},
- "chip": "yellow", "include": [], "exclude": [], "alertWords": []}
+ "chip": "yellow", "include": [], "exclude": [], "alertWords": [], "popup": 5}
 ```
+
+`popup` is how many seconds its card pops the board up for (0 to 600; 0 never pops it up, and leaving it out uses the board's own time).
 
 ```sh
 # A clock, the weather and a countdown, with quiet hours

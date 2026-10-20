@@ -9,6 +9,8 @@ const SR = {
 };
 const CHIP_NAMES = [['', 'Plugin colour'], ['red', 'Red'], ['orange', 'Orange'], ['yellow', 'Yellow'], ['green', 'Green'], ['blue', 'Blue'], ['violet', 'Violet'], ['white', 'White']];
 const CHIP_CODE = { red: 63, orange: 64, yellow: 65, green: 66, blue: 67, violet: 68, white: 69, black: 70 };
+// How long a source's card pops the board up for: '' is the board's own time.
+const POPUPS = [['', 'Board default'], [3, '3 s'], [5, '5 s'], [10, '10 s'], [20, '20 s'], [30, '30 s'], [60, '1 min'], [0, 'Never']];
 const DWELLS = [[0, 'Plugin default'], [10, '10 s'], [20, '20 s'], [30, '30 s'], [60, '1 min'], [120, '2 min'], [300, '5 min'], [600, '10 min'], [900, '15 min'], [1800, '30 min']];
 const DAYS = [['mon', 'M'], ['tue', 'T'], ['wed', 'W'], ['thu', 'T'], ['fri', 'F'], ['sat', 'S'], ['sun', 'S']];
 const KINDS = { native: 'Built-in', rss: 'RSS', json: 'JSON', ical: 'Calendar', text: 'Text', command: 'Command', script: 'Script' };
@@ -63,7 +65,7 @@ function flash(text, ok = false) {
 
 // ---------------------------------------------------------------- saving
 
-const plainInst = x => ({ id: x.id, plugin: x.plugin, name: x.name, enabled: x.enabled, weight: x.weight, dwell: x.dwell, schedule: x.schedule, settings: x.settings, chip: x.chip, include: x.include, exclude: x.exclude, alertWords: x.alertWords });
+const plainInst = x => ({ id: x.id, plugin: x.plugin, name: x.name, enabled: x.enabled, weight: x.weight, dwell: x.dwell, schedule: x.schedule, settings: x.settings, chip: x.chip, include: x.include, exclude: x.exclude, alertWords: x.alertWords, popup: x.popup });
 function saveRot(mutate) {
   const rot = SR.data.rotation.map(x => ({ ...x, settings: { ...x.settings } }));
   mutate(rot);
@@ -231,6 +233,8 @@ function summary(x, p) {
   const bits = [p ? p.name : x.plugin];
   if (x.plugin === 'rattleboard.mirror' && (x.settings || {}).show !== 'rotation') bits.push('pops up when it changes');
   else bits.push(x.dwell ? 'shows ' + fmtDur(x.dwell) : p && p.dwell ? 'shows ' + fmtDur(dur(p.dwell)) : 'shows 5 min');
+  if (x.popup === 0) bits.push('no pop-up');
+  else if (x.popup) bits.push('pops up ' + fmtDur(x.popup));
   if (x.weight > 1) bits.push('weight ' + x.weight);
   if (x.schedule && (x.schedule.days.length || x.schedule.from)) bits.push(scheduleText(x.schedule));
   return bits.join(' · ');
@@ -311,6 +315,9 @@ function editor(x, p) {
     <div class="lbl">Show for</div>
     <div style="display:flex; align-items:center; gap:10px"><select class="field" style="width:140px" data-src-dwell="${esc(x.id)}">${dwells.map(([v, l]) => `<option value="${v}" ${v === x.dwell ? 'selected' : ''}>${esc(v === 0 && p.dwell ? `Default (${fmtDur(dur(p.dwell))})` : l)}</option>`).join('')}</select>
       <span class="hint">then the next source</span></div>
+    <div class="lbl">Pops up for</div>
+    <div style="display:flex; align-items:center; gap:10px"><select class="field" style="width:140px" data-src-popup="${esc(x.id)}">${POPUPS.map(([v, l]) => `<option value="${v}" ${(x.popup == null ? '' : x.popup) === v ? 'selected' : ''}>${esc(v === '' ? `Board default (${S.settings.hideSec} s)` : l)}</option>`).join('')}</select>
+      <span class="hint">${S.settings.mode === 'toast' ? 'when its card comes up, the pop-up board shows it this long' : 'when the board is a pop-up (it stays up now)'}</span></div>
     <div class="lbl">Weight</div>
     <div style="display:flex; align-items:center; gap:10px">${seg([[1, '1'], [2, '2'], [3, '3'], [5, '5'], [10, '10']], x.weight, 'srcWeight')}<span class="hint">Comes round this many times as often</span></div>
     <div class="lbl">Colour</div>
@@ -422,7 +429,7 @@ function engineRows() {
     <div class="lbl">Order</div>${seg([['turn', 'In turn'], ['shuffle', 'Shuffle']], d.shuffle ? 'shuffle' : 'turn', 'srcShuffle')}
     <div class="lbl">Hold messages for</div>
     <div style="display:flex; align-items:center; gap:10px">${seg([[0, 'Off'], [5, '5 min'], [15, '15 min'], [30, '30 min'], [60, '1 h'], [120, '2 h']], d.holdMinutes, 'srcHold', 'poll')}</div>
-    <div></div><div class="hint" style="margin-top:-10px">A message from Compose, the API or a sequence pauses the rotation this long.</div>
+    <div></div><div class="hint" style="margin-top:-10px">${d.holdMinutes ? 'A message from Compose, the API or a sequence pauses the rotation this long.' : 'Off: a message stays up for the pop-up time, then the rotation carries on. Messages that keep coming still let the rotation in every so often.'}</div>
     <div class="lbl">Alerts stay up</div>${seg([[15, '15 s'], [30, '30 s'], [60, '1 min'], [120, '2 min'], [300, '5 min']], d.alertSeconds, 'srcAlert', 'poll')}
     <div class="lbl">Card changes</div>
     <div style="display:flex; align-items:center; gap:10px"><select class="field" style="width:110px" data-src-cfg="flipsPerHour">${[6, 12, 20, 30, 60, 120].map(n => `<option value="${n}" ${n === d.flipsPerHour ? 'selected' : ''}>${n} an hour</option>`).join('')}</select><span class="hint">at most, so the board stays calm</span></div>
@@ -643,6 +650,7 @@ root.addEventListener('change', e => {
     return saveSetting(d.inst, d.srcSet, v);
   }
   if (d.srcDwell) return saveInst(d.srcDwell, { dwell: +t.value });
+  if (d.srcPopup) return saveInst(d.srcPopup, { popup: t.value === '' ? null : +t.value });
   if (d.srcChip != null) return saveInst(d.srcChip, { chip: t.value || null });
   if (d.srcSched) { const s = currentSched(); return saveInst(SR.open, { schedule: { ...s, [d.srcSched]: t.value || null } }); }
   if (d.srcWords) return saveInst(SR.open, { [d.srcWords]: t.value.split(',').map(w => w.trim()).filter(Boolean) });

@@ -154,7 +154,7 @@ const checkingPaused = () => !!S && !S.settings.polling && S.settings.source !==
 function startCountdown(float = stays()) {
   if (!ui.visible) return;
   if (float) { ui.remaining = 0; ui.total = 0; }
-  else { const t = (S ? S.settings.hideSec : 10) * 1000; ui.remaining = t; ui.total = t; }
+  else { const t = ui.popMs || (S ? S.settings.hideSec : 10) * 1000; ui.remaining = t; ui.total = t; }
   render();
 }
 
@@ -177,10 +177,13 @@ RB.onState(snap => {
   render();
 });
 RB.listen('rb://present', e => {
+  const p = e.payload || {};
+  // A source's card may pop up for a time of its own.
+  ui.popMs = p.ms || 0;
   ui.visible = true; ui.remaining = 0; ui.hover = false; render();
   // Shown under a resting pointer: that's a hover too (checkHover asks where it is).
   setTimeout(() => { if (ui.visible && !ui.hover) pointer().then(pt => { if (pt && within(pt, stage)) setHover(true); }); }, 300);
-  if (e.payload) startCountdown();
+  if (p.countdown) startCountdown();
   else setTimeout(() => { if (ui.visible && !ui.flipping && ui.remaining === 0) startCountdown(); }, 500);
 });
 
