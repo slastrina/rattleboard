@@ -63,9 +63,9 @@ function render() {
 // "Focus on — holding pop-ups" (Settings → Behavior → While Focus is on), under the status.
 function focusLine() {
   const f = S.focus;
-  if (!f || !f.on || !(f.holding || f.muted)) return '';
-  const name = S.os === 'mac' ? 'Focus' : 'Do Not Disturb';
-  const text = f.holding ? `${name} on — holding pop-ups${f.held ? ` · ${f.held} waiting` : ''}` : `${name} on — pop-ups are silent`;
+  if (!f || !f.quiet || !(f.holding || f.muted)) return '';
+  const name = f.on ? (S.os === 'mac' ? 'Focus' : 'Do Not Disturb') + ' on' : f.call;
+  const text = f.holding ? `${name} — holding pop-ups${f.held ? ` · ${f.held} waiting` : ''}` : `${name} — pop-ups are silent`;
   return `<div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:#55575c">
     <div style="width:7px; height:7px; border-radius:50%; background:#8a6ad8; flex:none"></div><span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${RB.esc(text)}</span>
   </div>`;

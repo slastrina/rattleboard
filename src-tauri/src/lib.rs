@@ -1,5 +1,6 @@
 pub mod agents;
 mod community;
+mod calls;
 mod focus;
 mod fullscreen;
 mod notify;
@@ -243,6 +244,8 @@ struct Snapshot {
 struct FocusInfo {
     #[serde(flatten)]
     status: focus::Status,
+    /// A Focus is on, or a call or slideshow that counts as one
+    quiet: bool,
     /// Pop-ups are being held now
     holding: bool,
     /// The flaps are silent now
@@ -253,14 +256,16 @@ struct FocusInfo {
 }
 
 fn focus_rules(s: &Settings) -> focus::Rules {
-    focus::Rules { mode: focus::Mode::of(&s.focus_mode), alerts_through: s.focus_alerts, fullscreen_obeys: s.focus_fullscreen }
+    focus::Rules { mode: focus::Mode::of(&s.focus_mode), alerts_through: s.focus_alerts, fullscreen_obeys: s.focus_fullscreen, calls: s.focus_calls }
 }
 
 fn focus_info(s: &Settings, rt: &Runtime) -> FocusInfo {
-    let (rules, on, full) = (focus_rules(s), rt.focus.on, s.fullscreen());
+    let rules = focus_rules(s);
+    let (on, full) = (rt.focus.quiet(rules), s.fullscreen());
     let quiet = focus::decide(rules, on, false, full);
     FocusInfo {
         status: rt.focus.clone(),
+        quiet: on,
         holding: quiet.held,
         muted: !focus::decide(rules, on, rt.shown_alert, full).sound,
         held: rt.held.count,
@@ -606,7 +611,7 @@ fn put_on_board_as(app: &AppHandle, layout: Grid, id: Option<String>, src: &str,
     let tray_open = app.get_webview_window("tray").and_then(|w| w.is_visible().ok()).unwrap_or(false);
     let pop_up = {
         let mut rt = st.rt.lock().unwrap();
-        let d = focus::decide(rules, rt.focus.on, alert, full);
+        let d = focus::decide(rules, rt.focus.quiet(rules), alert, full);
         if loud && d.held {
             rt.held.note(layout.clone(), link.clone());
         }
@@ -665,15 +670,18 @@ fn focus_changed(app: &AppHandle, now: focus::Status) {
     let s = st.settings.lock().unwrap().clone();
     let summary = {
         let mut rt = st.rt.lock().unwrap();
-        let was = rt.focus.on;
+        let rules = focus_rules(&s);
+        let (was, is) = (rt.focus.quiet(rules), now.quiet(rules));
+        // A call or slideshow held them, rather than a Focus.
+        let call = !rt.focus.on;
         rt.focus = now.clone();
-        if !was && now.on {
+        if !was && is {
             rt.held = focus::Held::default();
             None
-        } else if was && !now.on {
+        } else if was && !is {
             match rt.held.take() {
                 Some((n, latest)) => {
-                    let text = focus::summary_text(n);
+                    let text = focus::summary_text(n, call);
                     rt.focus_summary = Some(text.clone());
                     // The latest held message, if the board has moved on since (a source's
                     // card), as "Flip again" shows a history entry.
@@ -689,7 +697,14 @@ fn focus_changed(app: &AppHandle, now: focus::Status) {
             None
         }
     };
-    eprintln!("[focus] {} via {} ({}){}", if now.on { "on" } else { "off" }, if now.via.is_empty() { "nothing" } else { &now.via }, now.access, summary.as_ref().map(|t| format!(": {t}")).unwrap_or_default());
+    eprintln!(
+        "[focus] {} via {} ({}){}{}",
+        if now.on { "on" } else { "off" },
+        if now.via.is_empty() { "nothing" } else { &now.via },
+        now.access,
+        if now.call.is_empty() { String::new() } else { format!("; {}", now.call) },
+        summary.as_ref().map(|t| format!(": {t}")).unwrap_or_default()
+    );
     broadcast(app);
     let Some(text) = summary else { return };
     if s.setup_done {
@@ -1267,7 +1282,7 @@ fn pop_card(app: &AppHandle, secs: Option<u32>) {
     if !setup_done || stays || secs == Some(0) {
         return;
     }
-    let on = st.rt.lock().unwrap().focus.on;
+    let on = st.rt.lock().unwrap().focus.quiet(rules);
     if focus::decide(rules, on, false, full).pop_up {
         present_for(app, false, secs.map(|s| s as u64 * 1000));
     }

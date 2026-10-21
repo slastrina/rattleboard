@@ -20,16 +20,18 @@
 //!   through `gsettings`, and KDE Plasma's `Inhibited` property on org.freedesktop.Notifications.
 //!   Elsewhere, "not detected".
 //!
-//! Debug builds only: RATTLEBOARD_FAKE_FOCUS=on|off, or the path of a file holding on or off
-//! (read again every second), stands in for the system's state, to try the hold-and-summary
-//! flow without touching the user's Focus.
+//! A call or a slideshow (calls.rs) counts as a Focus too, when the user lets it (`Rules::calls`).
+//!
+//! Debug builds only: RATTLEBOARD_FAKE_FOCUS=on|off|call, or the path of a file holding one of
+//! those (read again every second), stands in for the system's state, to try the
+//! hold-and-summary flow without touching the user's Focus or joining a call.
 
 use crate::vestaboard::Grid;
 use serde::Serialize;
 use std::time::Duration;
 
 /// How often the system's state is read.
-const EVERY: Duration = Duration::from_secs(10);
+const EVERY: Duration = Duration::from_secs(5);
 const FAKE_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -59,6 +61,8 @@ pub struct Rules {
     pub alerts_through: bool,
     /// "Full screen too": a full-screen board follows Focus as well
     pub fullscreen_obeys: bool,
+    /// "Calls and slideshows": a call or a slideshow counts as a Focus
+    pub calls: bool,
 }
 
 /// What a message does while things stand as they are.
@@ -113,11 +117,13 @@ impl Held {
     }
 }
 
-pub fn summary_text(n: usize) -> String {
+/// `call`: it was a call or a slideshow that held them, not a Focus.
+pub fn summary_text(n: usize, call: bool) -> String {
+    let while_ = if call { "while you were busy" } else { "while you were focused" };
     if n == 1 {
-        "1 message while you were focused".into()
+        format!("1 message {while_}")
     } else {
-        format!("{n} messages while you were focused")
+        format!("{n} messages {while_}")
     }
 }
 
@@ -134,11 +140,18 @@ pub struct Status {
     pub access: String,
     /// What's on, in a few words ("Focus", "Do Not Disturb", "Presentation mode"), when on
     pub what: String,
+    /// A call or a slideshow, in a few words ("In a call (Slack)"), or "" (see calls.rs)
+    pub call: String,
 }
 
 impl Status {
     fn new(via: &str, access: &str, on: bool, what: &str) -> Status {
-        Status { on, via: via.into(), access: access.into(), what: if on { what.into() } else { String::new() } }
+        Status { on, via: via.into(), access: access.into(), what: if on { what.into() } else { String::new() }, call: String::new() }
+    }
+
+    /// A Focus is on, or a call or slideshow that counts as one.
+    pub fn quiet(&self, r: Rules) -> bool {
+        self.on || (r.calls && !self.call.is_empty())
     }
 }
 
@@ -149,10 +162,14 @@ fn fake() -> Option<Status> {
     }
     let v = std::env::var("RATTLEBOARD_FAKE_FOCUS").ok().filter(|v| !v.trim().is_empty())?;
     let word = match v.trim() {
-        w @ ("on" | "off") => w.to_string(),
+        w @ ("on" | "off" | "call") => w.to_string(),
         path => std::fs::read_to_string(path).unwrap_or_default().trim().to_lowercase(),
     };
-    Some(Status::new("fake", "ok", word == "on", "Focus (simulated)"))
+    let mut s = Status::new("fake", "ok", word == "on", "Focus (simulated)");
+    if word == "call" {
+        s.call = "In a call (simulated)".into();
+    }
+    Some(s)
 }
 
 /// RATTLEBOARD_FAKE_FOCUS is set (debug builds): the system isn't asked anything.
@@ -165,9 +182,10 @@ pub fn fake_set() -> bool {
 pub fn watch(changed: impl Fn(Status) + Send + 'static) {
     std::thread::spawn(move || {
         let mut det = Detector::default();
+        let mut calls = crate::calls::Watch::default();
         let mut last: Option<Status> = None;
         loop {
-            let now = fake().unwrap_or_else(|| det.read());
+            let now = fake().unwrap_or_else(|| Status { call: calls.read(), ..det.read() });
             if last.as_ref() != Some(&now) {
                 last = Some(now.clone());
                 changed(now);
@@ -485,7 +503,7 @@ fn gnome_banners() -> Option<bool> {
 mod tests {
     use super::*;
 
-    const HOLD: Rules = Rules { mode: Mode::Hold, alerts_through: true, fullscreen_obeys: false };
+    const HOLD: Rules = Rules { mode: Mode::Hold, alerts_through: true, fullscreen_obeys: false, calls: true };
     const HUSH: Decision = Decision { pop_up: false, sound: false, held: true };
     const QUIET: Decision = Decision { pop_up: true, sound: false, held: false };
 
@@ -544,8 +562,20 @@ mod tests {
         assert_eq!(h.count, 0);
         h.note(g(4), Some("https://example.com/4".into()));
         assert_eq!(h.take().map(|(n, m)| (n, m.link)), Some((1, Some("https://example.com/4".into()))));
-        assert_eq!(summary_text(1), "1 message while you were focused");
-        assert_eq!(summary_text(5), "5 messages while you were focused");
+        assert_eq!(summary_text(1, false), "1 message while you were focused");
+        assert_eq!(summary_text(5, false), "5 messages while you were focused");
+        assert_eq!(summary_text(2, true), "2 messages while you were busy");
+    }
+
+    #[test]
+    fn calls_count() {
+        let mut s = Status::new("macos", "noEntitlement", false, "");
+        assert!(!s.quiet(HOLD));
+        s.call = "In a call (Slack)".into();
+        assert!(s.quiet(HOLD), "a call counts, even where Focus can't be read");
+        assert!(!s.quiet(Rules { calls: false, ..HOLD }), "unless the user says not");
+        s.on = true;
+        assert!(s.quiet(Rules { calls: false, ..HOLD }));
     }
 
     #[test]

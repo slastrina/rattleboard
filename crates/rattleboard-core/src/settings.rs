@@ -109,6 +109,8 @@ pub struct Settings {
     pub focus_alerts: bool,
     /// A full-screen board follows Focus too; off (the default), a kiosk ignores it
     pub focus_fullscreen: bool,
+    /// A call (another app using the microphone or camera) or a slideshow counts as a Focus
+    pub focus_calls: bool,
 }
 
 /// Board sizes by name: rows × columns.
@@ -170,6 +172,7 @@ impl Default for Settings {
             focus_mode: "hold".into(),
             focus_alerts: true,
             focus_fullscreen: false,
+            focus_calls: true,
         }
     }
 }

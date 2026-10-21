@@ -37,7 +37,7 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
 - **Works with AI agents.** Claude Code, opencode, Cursor, Codex, Gemini CLI, Claude Desktop and VS Code can post to the board as a tool call (MCP), for example when a long task finishes or they need your input. Set it up from Settings → Agents. See [Agents (MCP)](#agents-mcp).
 - **Sequences.** Play several messages in turn, each held for a while once its flaps settle, once or on a loop.
 - **Pair a phone.** Show a QR code that the Rattleboard phone app scans to add this board.
-- **Respects Focus and Do Not Disturb.** While a Focus (macOS) or Do Not Disturb (Windows, GNOME, KDE) is on, the board keeps updating but holds its pop-ups and sound, then tells you how many messages came. See [Focus and Do Not Disturb](#focus-and-do-not-disturb).
+- **Respects Focus, Do Not Disturb and your meetings.** While a Focus (macOS) or Do Not Disturb (Windows, GNOME, KDE) is on, or you're in a call (Teams, a Slack huddle, Zoom, Meet) or presenting, the board keeps updating but holds its pop-ups and sound, then tells you how many messages came. See [Focus and Do Not Disturb](#focus-and-do-not-disturb).
 - **Notification forwarding (Windows).** Put notifications from the apps you choose on a board. See [Notification forwarding](#notification-forwarding-windows).
 - **Demo mode.** No board yet? It flips through sample messages so you can try everything.
 - **Sources.** Left to itself, the board takes turns showing a clock, the weather, countdowns, news feeds, your calendar, a quote of the day or anything a plugin fetches, calmly, and it can drive your other boards too. See [Sources and plugins](#sources-and-plugins).
@@ -891,21 +891,27 @@ Each board can be renamed or removed. Removing it deletes its key from the crede
 
 ## Focus and Do Not Disturb
 
-**Settings → Behavior → While Focus is on** (Do Not Disturb on Windows and Linux) decides what a new message does while you don't want to be interrupted:
+**Settings → Behavior → During a Focus or call** (Do Not Disturb on Windows and Linux) decides what a new message does while you don't want to be interrupted:
 
 - **Hold pop-ups** (the default): the board still changes, and a pinned widget shows each message as usual, but the pop-up stays hidden, the flaps make no sound, and the tray icon shows its dot. The tray menu says "Focus on — holding pop-ups". When the Focus ends, one pop-up shows the latest message with "3 messages while you were focused"; click that line for Message history.
 - **Mute sound only**: pops up as usual, without the flap sound.
 - **Ignore Focus**: nothing changes.
 
+**Calls and slideshows** (on by default) counts a call or a presentation as a Focus: while another app is using the microphone or the camera (a Teams or Zoom meeting, a Slack huddle, Meet in a browser, FaceTime), or a Keynote or PowerPoint slideshow fills a display (macOS). The tray menu then says, for example, "In a call (Microsoft Teams) — holding pop-ups", and afterwards "3 messages while you were busy". A call counts for 20 seconds after the microphone and camera go quiet, so rejoining or switching headsets doesn't let a pop-up through. Rattleboard only asks whether a device is in use, never what it hears or sees, and needs no permission for it:
+
+- **macOS:** Core Audio's list of the processes taking input (macOS 14 and later; Siri, dictation, Voice Control and screen recordings don't count; before 14, any running microphone does), Core Media IO for cameras, and the window list for a slideshow covering a display.
+- **Windows:** the privacy settings' record of which apps are using the microphone or camera (`CapabilityAccessManager\ConsentStore`). PowerPoint's slideshow is a full-screen app, which Windows reports already.
+- **Linux:** PulseAudio or PipeWire recording streams (`pactl list source-outputs`), other than level meters and output monitors.
+
 **Let alerts through** (on by default) lets Sources [alerts](#priorities) and messages sent with `"priority": "alert"` ([API](#notifications), or an agent's `send_message` and `show_status`) pop up anyway. A **full-screen** board ignores Focus, as a kiosk should, unless **Full screen too** is on.
 
 How Rattleboard knows:
 
-- **macOS 12 and later:** the Focus status API. macOS asks once whether Rattleboard may see your Focus status, and only reports a Focus whose **Share Focus Status** is on (System Settings → Focus → Focus Status). The release build is signed with the Communication Notifications entitlement that macOS requires for this; builds without it (from source, for example) hide the setting.
+- **macOS 12 and later:** the Focus status API. macOS asks once whether Rattleboard may see your Focus status, and only reports a Focus whose **Share Focus Status** is on (System Settings → Focus → Focus Status). The release build is signed with the Communication Notifications entitlement that macOS requires for this; builds without it (from source, for example) only go by calls and slideshows.
 - **Windows:** full-screen apps and games, presentation mode, quiet time, and Windows 11 Focus sessions, through documented APIs (`SHQueryUserNotificationState`, `FocusSessionManager`). Rattleboard's own full screen doesn't count. Windows may not report Do Not Disturb switched on by hand.
 - **Linux:** GNOME's Do Not Disturb (`org.gnome.desktop.notifications show-banners`) and KDE Plasma's (the notification server's `Inhibited` property). Other desktops don't report it.
 
-Rattleboard checks every 10 seconds, so a Focus can take that long to take effect.
+Rattleboard checks every 5 seconds, so a Focus or a call can take that long to take effect.
 
 ## Notification forwarding (Windows)
 
@@ -938,7 +944,7 @@ docker run --rm -p 7070:7070 -v rattleboard:/data rattleboard-web
 RATTLEBOARD_DATA=./web-data cargo run -p rattleboard-web
 ```
 
-To try changes without touching your own settings and keys, run a debug build with `RATTLEBOARD_PROFILE=<name>`: it uses config and data folders of its own (`…rattleboard.<name>`) and keeps its keys in a `secrets.json` there instead of the credential store. Profiles can run side by side (give each its own API port), and `RATTLEBOARD_OPEN=settings/sources` opens a window at launch. `RATTLEBOARD_FAKE_FOCUS=on` (or `off`, or the path of a file holding `on` or `off`, read every second) stands in for the system's [Focus](#focus-and-do-not-disturb) state, to try holding pop-ups without touching yours. Release builds ignore all three. `cargo test -p rattleboard live_focus -- --ignored --nocapture` prints what this computer reports.
+To try changes without touching your own settings and keys, run a debug build with `RATTLEBOARD_PROFILE=<name>`: it uses config and data folders of its own (`…rattleboard.<name>`) and keeps its keys in a `secrets.json` there instead of the credential store. Profiles can run side by side (give each its own API port), and `RATTLEBOARD_OPEN=settings/sources` opens a window at launch. `RATTLEBOARD_FAKE_FOCUS=on` (or `off`, or `call` for a call, or the path of a file holding one of those, read every second) stands in for the system's [Focus](#focus-and-do-not-disturb) state, to try holding pop-ups without touching yours. Release builds ignore all three. `cargo test -p rattleboard live_focus -- --ignored --nocapture` prints what this computer reports (`live_calls` for calls).
 
 The UI is plain HTML, CSS and JavaScript in `src/`, with no bundler. The desktop's Rust side, in `src-tauri/src/`, handles polling, the tray icon and window placement; the engine in `crates/rattleboard-core/src/` does everything that doesn't touch a window.
 

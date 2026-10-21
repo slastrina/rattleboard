@@ -36,7 +36,7 @@ toml_edit = { version = "0.25", default-features = false, features = ["parse", "
 futures-util = { version = "0.3", default-features = false }
 
 [target."cfg(windows)".dependencies]
-windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "ApplicationModel", "UI_Notifications", "UI_Notifications_Management", "Win32_System_SystemInformation", "Win32_System_Power", "Win32_Foundation", "Win32_UI_Shell", "UI_Shell"] }
+windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "ApplicationModel", "UI_Notifications", "UI_Notifications_Management", "Win32_System_SystemInformation", "Win32_System_Power", "Win32_Foundation", "Win32_UI_Shell", "UI_Shell", "Win32_System_Registry"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
 objc2 = "0.6"

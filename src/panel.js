@@ -159,19 +159,28 @@ function focusStatus() {
 }
 
 // macOS only shares Focus status with apps signed with the Communication Notifications
-// entitlement; builds without it (and Macs before 12) hide the setting rather than offer one
-// that can't work.
-const focusAvailable = () => !(S.os === 'mac' && S.focus && ['noEntitlement', 'needsMacos12'].includes(S.focus.access) && S.focus.via !== 'fake');
+// entitlement; builds without it (and Macs before 12) can still tell calls and slideshows.
+const focusReadable = () => !(S.os === 'mac' && S.focus && ['noEntitlement', 'needsMacos12'].includes(S.focus.access) && S.focus.via !== 'fake');
+// "Calls and slideshows": what this system can tell, and what's going on now.
+function callsHint() {
+  const f = S.focus || {};
+  const what = S.os === 'mac' ? 'another app is using the microphone or camera (Teams, Slack huddles, Zoom, Meet, FaceTime), or a Keynote or PowerPoint slideshow is playing'
+    : S.os === 'windows' ? 'another app is using the microphone or camera (Teams, Slack huddles, Zoom, Meet)'
+    : 'another app is recording from the microphone (Teams, Slack huddles, Zoom, Meet)';
+  return `Counts as ${S.os === 'mac' ? 'a Focus' : 'Do Not Disturb'} while ${what}.${f.call ? ` ${esc(f.call)} now.` : ''}`;
+}
 function focusRows() {
   const s = S.settings, mac = S.os === 'mac', off = s.focusMode === 'ignore';
-  return `<div class="lbl">${mac ? 'While Focus is on' : 'While Do Not Disturb is on'}</div>
+  return `<div class="lbl">${mac ? 'During a Focus or call' : 'During Do Not Disturb or a call'}</div>
       <div style="display:flex; flex-direction:column; gap:6px">
         ${seg([['hold', 'Hold pop-ups'], ['mute', 'Mute sound only'], ['ignore', mac ? 'Ignore Focus' : 'Ignore it']], s.focusMode || 'hold', 'focusMode')}
         <span class="hint">${s.focusMode === 'mute' ? 'The board pops up as usual, without the flap sound.'
           : off ? 'The board pops up as usual.'
-          : 'The board still updates, but doesn\'t pop up or make a sound; the tray icon shows a dot. When it ends, one pop-up says how many messages came.'} ${focusStatus()}</span>
+          : 'The board still updates, but doesn\'t pop up or make a sound; the tray icon shows a dot. When it ends, one pop-up says how many messages came.'} ${focusReadable() ? focusStatus() : ''}</span>
       </div>
-      ${off ? '' : `<div class="lbl">Let alerts through</div>
+      ${off ? '' : `<div class="lbl">Calls and slideshows</div>
+      <div style="display:flex; align-items:center; gap:10px">${tog(s.focusCalls !== false, 'focusCalls')}<span class="hint">${callsHint()}</span></div>
+      <div class="lbl">Let alerts through</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.focusAlerts !== false, 'focusAlerts')}<span class="hint">Sources alerts, and messages sent with priority "alert", still pop up with sound</span></div>
       <div class="lbl">Full screen too</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(!!s.focusFullscreen, 'focusFullscreen')}<span class="hint">A full-screen board ignores ${mac ? 'Focus' : 'Do Not Disturb'} unless this is on</span></div>`}`;
@@ -198,7 +207,7 @@ function viewSettings() {
       <div style="display:flex; align-items:center; gap:10px">${tog(s.pauseOnHover, 'pauseOnHover')}<span class="hint">Countdown waits while the pointer is over the board</span></div>
       <div class="lbl">Click to open links</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.clickLinks !== false, 'clickLinks')}<span class="hint">A card from a feed story or a page (marked ↗) opens it in your browser when you click the board, full screen too. Turn off for a kiosk.</span></div>
-      ${focusAvailable() ? focusRows() : ''}
+      ${focusRows()}
       <div class="lbl">Flip speed</div>
       <div style="display:flex; align-items:center; gap:10px">${range(0.5, 2, 0.1, s.speed, 'speed')}<span id="speedLabel" style="font-variant-numeric:tabular-nums">${speedLabel(s.speed)}</span></div>
       <div class="lbl">Flap sound</div>
@@ -967,6 +976,7 @@ RB.delegate(root, 'click', {
   focusMode: el => { save({ focusMode: el.dataset.v }); if (el.dataset.v !== 'ignore') RB.invoke('focus_request_access'); },
   focusAlerts: () => save({ focusAlerts: S.settings.focusAlerts === false }),
   focusFullscreen: () => save({ focusFullscreen: !S.settings.focusFullscreen }),
+  focusCalls: () => save({ focusCalls: S.settings.focusCalls === false }),
   focusAccess: (el, e) => { e.preventDefault(); RB.invoke('focus_request_access'); },
   launchLogin: () => save({ launchLogin: !S.settings.launchLogin }),
   updateCheck: () => save({ updateCheck: !S.settings.updateCheck }),
