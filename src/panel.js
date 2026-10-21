@@ -930,7 +930,13 @@ function fitWindow(v) {
     h = Math.max(h, contentHeight());
   }
   if (v === 'settings') L.tab = saved; else if (v === 'setup') [L.step, L.setupSource] = saved;
-  RB.invoke('panel_resize', { width: WIDTH[v] || 600, height: Math.min(Math.ceil(h), v === 'history' ? 560 : v === 'update' ? 600 : 9999) });
+  const width = WIDTH[v] || 600, want = Math.min(Math.ceil(h), v === 'history' ? 560 : v === 'update' ? 600 : 9999);
+  // The window can come out shorter than asked (on macOS by the title bar's height), which cut off
+  // short views' buttons; once it has settled, ask again for what's missing (the screen still caps it).
+  RB.invoke('panel_resize', { width, height: want }).then(() => setTimeout(() => {
+    const lack = want - window.innerHeight;
+    if (L.view === v && lack > 1) RB.invoke('panel_resize', { width, height: want + lack });
+  }, 150));
 }
 
 function render(force) {
