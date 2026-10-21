@@ -1,11 +1,16 @@
 //! Update check: asks GitHub for the latest Rattleboard release and says whether it's newer
-//! than this one. It only ever suggests: nothing is downloaded or installed.
+//! than this one, and for the notes of the releases since this one. Installing is the
+//! desktop app's (src-tauri/src/updates.rs), and only when the user says so.
 
 use serde::Deserialize;
 use std::cmp::Ordering;
 use std::time::Duration;
 
 const LATEST: &str = "https://api.github.com/repos/slastrina/rattleboard/releases/latest";
+/// The most recent releases, newest first, for their notes.
+const RECENT: &str = "https://api.github.com/repos/slastrina/rattleboard/releases?per_page=30";
+/// Where every release's notes stop and its download instructions start.
+const NOTES_END: &str = "Download the installer for your platform below.";
 /// Where to send people when the release has no page of its own.
 pub const RELEASES: &str = "https://github.com/slastrina/rattleboard/releases/latest";
 /// Automatic checks: once a day, and never again within this long of the last one, even
@@ -143,6 +148,52 @@ struct GhRelease {
     draft: bool,
     #[serde(default)]
     prerelease: bool,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+}
+
+/// A release's notes for the update window.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notes {
+    pub version: String,
+    /// "2026-10-21", or ""
+    pub date: String,
+    /// Markdown, without the download instructions every release ends with (may be "")
+    pub notes: String,
+    pub url: String,
+}
+
+/// What a release says about itself: its body up to the download instructions, without a
+/// "What's new" heading (the window has its own).
+pub fn notes_of(body: &str) -> String {
+    let body = body.replace("\r\n", "\n");
+    let mut n = body.split(NOTES_END).next().unwrap_or("").trim();
+    for h in ["## What's new", "## What’s new", "# What's new"] {
+        if let Some(rest) = n.strip_prefix(h) {
+            n = rest.trim_start();
+        }
+    }
+    n.trim().to_string()
+}
+
+/// The published releases newer than `current`, newest first, from GitHub's release list.
+pub fn parse_since(body: &[u8], current: &str) -> Result<Vec<Notes>, String> {
+    let list: Vec<GhRelease> = serde_json::from_slice(body).map_err(|_| "GitHub's answer wasn't understood".to_string())?;
+    let mut out: Vec<(Version, Notes)> = list
+        .into_iter()
+        .filter(|r| !r.draft && !r.prerelease && is_newer(&r.tag_name, current))
+        .filter_map(|r| {
+            let v = Version::parse(&r.tag_name)?;
+            let url = if is_release_url(&r.html_url) { r.html_url } else { RELEASES.into() };
+            let date = r.published_at.unwrap_or_default().chars().take(10).collect();
+            Some((v.clone(), Notes { version: v.to_string(), date, notes: notes_of(r.body.as_deref().unwrap_or("")), url }))
+        })
+        .collect();
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(out.into_iter().map(|(_, n)| n).collect())
 }
 
 /// Reads GitHub's `releases/latest` answer.
@@ -167,8 +218,17 @@ pub fn client() -> reqwest::Client {
 
 /// Asks GitHub for the latest release.
 pub async fn latest(c: &reqwest::Client) -> Result<Release, String> {
+    parse_release(&get(c, LATEST).await?)
+}
+
+/// Asks GitHub for the notes of the releases newer than `current`, newest first.
+pub async fn since(c: &reqwest::Client, current: &str) -> Result<Vec<Notes>, String> {
+    parse_since(&get(c, RECENT).await?, current)
+}
+
+async fn get(c: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
     let res = c
-        .get(LATEST)
+        .get(url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -179,13 +239,35 @@ pub async fn latest(c: &reqwest::Client) -> Result<Release, String> {
         403 | 429 => return Err("GitHub is rate-limiting requests; try again later".into()),
         s => return Err(format!("GitHub answered HTTP {s}")),
     }
-    let body = res.bytes().await.map_err(|_| "Network error".to_string())?;
-    parse_release(&body)
+    Ok(res.bytes().await.map_err(|_| "Network error".to_string())?.to_vec())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_notes() {
+        let body = "## What's new\r\n\r\n- **Calls.** Quiet in meetings.\r\n- Faster.\r\n\r\nDownload the installer for your platform below.\r\n\r\n**macOS 11+:** open the dmg";
+        assert_eq!(notes_of(body), "- **Calls.** Quiet in meetings.\n- Faster.");
+        assert_eq!(notes_of("**More than one display?** Drag it.\n\nDownload the installer for your platform below.\n…"), "**More than one display?** Drag it.");
+        assert_eq!(notes_of("Download the installer for your platform below.\n\n**Windows:** run it"), "");
+        assert_eq!(notes_of(""), "");
+        let list = br###"[
+            {"tag_name":"v0.10.4","html_url":"https://github.com/slastrina/rattleboard/releases/tag/v0.10.4","body":"## What's new\n\n- Updates.\n\nDownload the installer for your platform below.","published_at":"2026-10-22T01:00:00Z"},
+            {"tag_name":"v0.11.0-beta.1","prerelease":true,"html_url":"","body":"beta"},
+            {"tag_name":"v0.10.3","html_url":"https://evil.example/x","body":null,"published_at":"2026-10-21T00:26:26Z"},
+            {"tag_name":"v0.10.2","html_url":"https://github.com/slastrina/rattleboard/releases/tag/v0.10.2","body":"old"},
+            {"tag_name":"v0.10.5","draft":true,"html_url":"","body":"draft"}
+        ]"###;
+        let n = parse_since(list, "0.10.2").unwrap();
+        assert_eq!(n.iter().map(|r| r.version.as_str()).collect::<Vec<_>>(), ["0.10.4", "0.10.3"]);
+        assert_eq!(n[0].notes, "- Updates.");
+        assert_eq!(n[0].date, "2026-10-22");
+        assert_eq!(n[1].url, RELEASES, "a link that isn't the repo's goes to the releases page");
+        assert_eq!(n[1].notes, "");
+        assert!(parse_since(list, "0.10.4").unwrap().is_empty());
+    }
 
     #[test]
     fn tags() {

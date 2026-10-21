@@ -1,12 +1,19 @@
-//! Suggests updates: checks GitHub for a newer release (see `rattleboard_core::update`) and,
-//! when there is one, puts "Update available" at the top of the tray menu. Clicking it opens
-//! the release page; nothing is ever downloaded or installed here.
+//! Updates: checks GitHub for a newer release (see `rattleboard_core::update`) and, when there
+//! is one, puts "Update available" at the top of the tray menu. That item and "Check for
+//! updates…" open the update window (panel.js, view "update"): what's new in each release since
+//! this one, and a way to update. Nothing is downloaded or installed until the user says so.
+//!
+//! Installing goes through Tauri's updater: it reads `latest.json` from the latest release
+//! (made by the release workflow), downloads this platform's bundle, checks its signature
+//! against the public key in tauri.conf.json, replaces this copy and restarts. Copies that
+//! something else manages update their own way (`how`): the Homebrew cask with `brew upgrade`,
+//! and a .deb (or a debug build) from the release page.
 
 use crate::{broadcast, AppState};
 use rattleboard_core::{now_ms, update};
 use serde::Serialize;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
@@ -85,12 +92,69 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Checked, String> {
     Ok(Checked { current: CURRENT, newer: update::is_newer(&r.version, CURRENT), latest: r.version })
 }
 
-/// Opens the release page found by the last check. Only ever a github.com/slastrina/rattleboard
-/// https page, so the pages need no opener permission of their own.
+/// How this copy updates: "install" (in place, by the updater), "homebrew" (`brew upgrade`)
+/// or "download" (from the release page: a .deb, which apt manages, or a debug build).
+pub fn how() -> &'static str {
+    // Debug builds update in place only to try it (RATTLEBOARD_UPDATE_TEST=1, with a test
+    // key and endpoint passed to `tauri build --debug --config`).
+    if cfg!(debug_assertions) && std::env::var("RATTLEBOARD_UPDATE_TEST").as_deref() != Ok("1") {
+        "download"
+    } else if from_homebrew() {
+        "homebrew"
+    } else if cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_none() {
+        "download"
+    } else {
+        "install"
+    }
+}
+
+/// The update window: the notes of every release since this one, newest first. Debug builds
+/// with RATTLEBOARD_UPDATE_FAKE_LATEST show the real notes since 0.10.0.
 #[tauri::command]
-pub fn open_update(app: AppHandle) {
+pub async fn update_notes() -> Result<Vec<update::Notes>, String> {
+    let since = if fake_latest().is_some() { "0.10.0" } else { CURRENT };
+    update::since(&update::client(), since).await
+}
+
+/// "Update and restart": downloads the latest release for this platform, checks its signature,
+/// installs it over this copy and restarts. Progress goes to the update window as
+/// rb://update-progress { got, total } (bytes; total may be null).
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    if how() != "install" {
+        return Err("This copy of Rattleboard can't update itself; download the new version instead.".into());
+    }
+    let found = app
+        .updater()
+        .map_err(|e| format!("Updates aren't set up in this build ({e})"))?
+        .check()
+        .await
+        .map_err(|e| format!("Couldn't check for the update: {e}"))?;
+    let Some(up) = found else { return Err("You're already up to date.".into()) };
+    let (a, mut got) = (app.clone(), 0usize);
+    up.download_and_install(
+        move |n, total| {
+            got += n;
+            let _ = a.emit_to("panel", "rb://update-progress", serde_json::json!({ "got": got, "total": total }));
+        },
+        || {},
+    )
+    .await
+    .map_err(|e| format!("Couldn't install the update: {e}"))?;
+    let _ = app.emit_to("panel", "rb://update-progress", serde_json::json!({ "installed": true }));
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    crate::before_exit(&app);
+    app.restart();
+}
+
+/// Opens a release's page (`url`, from the update window), or the one found by the last check.
+/// Only ever a github.com/slastrina/rattleboard https page, so the pages need no opener
+/// permission of their own.
+#[tauri::command]
+pub fn open_update(app: AppHandle, url: Option<String>) {
     use tauri_plugin_opener::OpenerExt;
-    let url = app.state::<AppState>().settings.lock().unwrap().update_url.clone();
+    let url = url.unwrap_or_else(|| app.state::<AppState>().settings.lock().unwrap().update_url.clone());
     let url = if update::is_release_url(&url) { url } else { update::RELEASES.to_string() };
     let _ = app.opener().open_url(url, None::<&str>);
 }

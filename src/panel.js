@@ -17,7 +17,7 @@ const L = {
   // Settings → API server → Pair a phone
   pair: null, pairAsk: false
 };
-const WIDTH = { settings: 640, history: 680, setup: 640, compose: 780 };
+const WIDTH = { settings: 640, history: 680, setup: 640, compose: 780, update: 560 };
 const PAIR_MS = 2 * 60 * 1000;
 const WALL = {
   mac: 'linear-gradient(165deg, #8c8478 0%, #5d5853 50%, #36332f 100%)',
@@ -119,10 +119,9 @@ function updateRow() {
   const status = !u ? ''
     : u.state === 'checking' ? 'Checking…'
     : u.state === 'ok' ? `You're up to date (v${esc(u.current)})`
-    : u.state === 'new' ? `<span style="color:${RB.ACC}; font-weight:600">v${esc(u.latest)} is available</span> — <a href="#" data-act="openUpdate" style="${link}">Download</a>`
+    : u.state === 'new' ? `<span style="color:${RB.ACC}; font-weight:600">v${esc(u.latest)} is available</span> — <a href="#" data-act="showUpdate" style="${link}">What's new…</a>`
     : `Couldn't check: ${esc(u.error)}`;
-  const brew = u && u.state === 'new' && S.update && S.update.homebrew
-    ? `<span class="hint">Update with: <code style="user-select:text">brew upgrade --cask rattleboard</code></span>` : '';
+  const brew = '';
   return `<div style="display:flex; flex-direction:column; gap:4px">
       <div style="display:flex; align-items:center; gap:10px"><button class="btn" data-act="checkUpdates" ${u && u.state === 'checking' ? 'disabled' : ''}>Check for updates</button><span class="hint" data-update-status>${status}</span></div>
       ${brew}
@@ -215,7 +214,7 @@ function viewSettings() {
       <div class="lbl">Start at login</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.launchLogin, 'launchLogin')}<span class="hint">Start Rattleboard when I log in</span></div>
       <div class="lbl">Updates</div>
-      <div style="display:flex; align-items:center; gap:10px">${tog(s.updateCheck, 'updateCheck')}<span class="hint">Check for updates automatically (once a day, on GitHub). Rattleboard never installs anything itself.</span></div>
+      <div style="display:flex; align-items:center; gap:10px">${tog(s.updateCheck, 'updateCheck')}<span class="hint">Check for updates automatically (once a day, on GitHub). Nothing is installed until you choose Update.</span></div>
       <div></div>${updateRow()}
       <div class="lbl">Plugin updates</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.pluginUpdateCheck !== false, 'pluginUpdateCheck')}<span class="hint">Check once a day for newer versions of the plugins you installed from Community plugins, and ask before updating any of them</span></div>
@@ -559,6 +558,88 @@ function viewHistory() {
     </div></div>`;
 }
 
+// ---------------------------------------------------------------- software update
+
+// "Check for updates…" (the tray), "Update available", or Settings: checks GitHub, shows what's
+// new in each release since this version, and updates the way this copy can (S.update.how):
+// in place, with `brew upgrade` for the Homebrew cask, or from the release page.
+const BREW = 'brew upgrade --cask rattleboard';
+function updateOpen() {
+  L.up = { state: 'checking' };
+  render(true);
+  Promise.all([RB.invoke('check_for_updates'), RB.invoke('update_notes').catch(() => [])])
+    .then(([r, notes]) => { L.up = r.newer ? { state: 'new', latest: r.latest, notes } : { state: 'current', current: r.current }; })
+    .catch(e => { L.up = { state: 'error', error: String(e) }; })
+    .finally(() => { L.update = null; lastView = null; render(true); });
+}
+function installUpdate() {
+  L.up = Object.assign({}, L.up, { state: 'installing', got: 0, total: null, error: '' });
+  render(true);
+  RB.invoke('install_update').catch(e => { L.up = Object.assign({}, L.up, { state: 'new', error: String(e) }); render(true); });
+}
+RB.listen('rb://update-progress', e => {
+  const p = e.payload || {};
+  if (!L.up || L.up.state !== 'installing') return;
+  if (p.installed) L.up.done = true; else Object.assign(L.up, { got: p.got, total: p.total });
+  render(true);
+});
+
+// Release notes are short Markdown: paragraphs, "- " lists, headings, **bold** and `code`.
+function md(text) {
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+  const out = [];
+  let list = null;
+  for (const raw of String(text).split('\n')) {
+    const line = raw.trim(), item = line.match(/^[-*] (.*)/);
+    if (item) { (list = list || []).push(`<li style="margin:3px 0">${inline(item[1])}</li>`); continue; }
+    if (list) { out.push(`<ul style="margin:4px 0; padding-left:20px">${list.join('')}</ul>`); list = null; }
+    if (!line) continue;
+    const h = line.match(/^#{1,6} (.*)/);
+    out.push(h ? `<div style="font-weight:600; margin:8px 0 2px">${inline(h[1])}</div>` : `<p style="margin:4px 0">${inline(line)}</p>`);
+  }
+  if (list) out.push(`<ul style="margin:4px 0; padding-left:20px">${list.join('')}</ul>`);
+  return out.join('');
+}
+
+function viewUpdate() {
+  const u = L.up || { state: 'checking' }, how = (S.update && S.update.how) || 'download';
+  const pad = 'padding:16px 20px', link = `color:${RB.ACC}; text-decoration:none`;
+  const msg = (title, sub, buttons) => `<div class="scroll"><div style="${pad}; display:flex; flex-direction:column; gap:10px">
+      <div style="font-size:15px; font-weight:600">${title}</div>${sub ? `<div class="hint" style="font-size:12.5px">${sub}</div>` : ''}
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:6px">${buttons}</div></div></div>`;
+  if (u.state === 'checking') return msg('Checking for updates…', '', '');
+  if (u.state === 'current') return msg(`You're up to date`, `Rattleboard v${esc(u.current)} is the newest version.`, `<button class="primary" data-act="updateLater">OK</button>`);
+  if (u.state === 'error') return msg(`Couldn't check for updates`, esc(u.error), `<button class="btn" data-act="updateLater">Close</button><button class="primary" data-act="updateRetry">Try again</button>`);
+  const releases = (u.notes || []).map(r => `<div style="padding:12px 0; border-top:1px solid rgba(0,0,0,.07)">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px">
+        <span style="font-weight:600">v${esc(r.version)}</span>
+        <span class="hint">${r.date ? esc(new Date(r.date + 'T12:00:00').toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })) + ' · ' : ''}<a href="#" data-act="openRelease" data-v="${esc(r.url)}" style="${link}">Release page ↗</a></span>
+      </div>
+      <div style="line-height:1.45; color:#2b2c30; user-select:text">${r.notes ? md(r.notes) : '<p class="hint" style="margin:4px 0">Fixes and small improvements.</p>'}</div>
+    </div>`).join('');
+  const installing = u.state === 'installing';
+  const pct = u.total ? Math.min(100, Math.round(100 * u.got / u.total)) : null;
+  const action = installing
+    ? `<div style="flex:1; display:flex; flex-direction:column; gap:5px">
+        <div class="hint">${u.done ? 'Installed. Restarting…' : pct === null ? 'Downloading…' : `Downloading… ${pct}%`}</div>
+        <div style="height:5px; border-radius:3px; background:rgba(0,0,0,.1); overflow:hidden"><div style="height:100%; width:${u.done ? 100 : pct || 4}%; background:${RB.ACC}; transition:width .2s"></div></div>
+      </div>`
+    : how === 'install' ? `<button class="btn" data-act="updateLater">Later</button><button class="primary" data-act="installUpdate">Update and restart</button>`
+    : how === 'homebrew' ? `<span class="hint" style="flex:1">Installed with Homebrew. Update with <code style="user-select:text">${BREW}</code></span><button class="btn" data-act="copyBrew">${L.copied === 'brew' ? 'Copied' : 'Copy'}</button><button class="btn" data-act="updateLater">Later</button>`
+    : `<button class="btn" data-act="updateLater">Later</button><button class="primary" data-act="openUpdate">Download v${esc(u.latest)}</button>`;
+  return `<div class="hdr" style="${pad}; display:flex; gap:14px; align-items:center; border-bottom:1px solid rgba(0,0,0,.08)">
+      <div style="width:40px; height:40px; border-radius:9px; background:#1b1b1d; color:#fff; display:flex; align-items:center; justify-content:center; font-size:20px; flex:none">↑</div>
+      <div style="display:flex; flex-direction:column; gap:3px">
+        <span style="font-size:15px; font-weight:600">Rattleboard v${esc(u.latest)} is available</span>
+        <span class="hint">You have v${esc(S.version || '')}. Here's what's new${(u.notes || []).length > 1 ? ` in ${u.notes.length} releases` : ''}.</span>
+      </div>
+    </div>
+    <div class="scroll"><div style="padding:0 20px 4px">${releases || `<p class="hint" style="padding:12px 0">The release notes couldn't be loaded. <a href="#" data-act="openUpdate" style="${link}">See them on GitHub ↗</a></p>`}</div></div>
+    <div class="hdr" style="${pad}; display:flex; gap:8px; align-items:center; justify-content:flex-end; border-top:1px solid rgba(0,0,0,.08)">
+      ${u.error ? `<span class="hint" style="flex:1; color:#c0392b">${esc(u.error)}</span>` : ''}${action}
+    </div>`;
+}
+
 // ---------------------------------------------------------------- resending
 
 // A small picture of a grid, at its own size.
@@ -830,7 +911,7 @@ function setupNext() {
 // ---------------------------------------------------------------- render loop
 
 let lastView = '', lastPage = '', pointerDown = false;
-const draw = v => (v === 'history' ? viewHistory() : v === 'setup' ? viewSetup() : v === 'compose' ? viewCompose() : viewSettings());
+const draw = v => (v === 'history' ? viewHistory() : v === 'setup' ? viewSetup() : v === 'compose' ? viewCompose() : v === 'update' ? viewUpdate() : viewSettings());
 // Natural height of what's in #root: fixed header/footer plus the full scrollable content.
 const contentHeight = () => [...root.children].reduce((h, el) => h + (el.classList.contains('scroll') ? el.firstElementChild.offsetHeight : el.offsetHeight), 0);
 
@@ -849,7 +930,7 @@ function fitWindow(v) {
     h = Math.max(h, contentHeight());
   }
   if (v === 'settings') L.tab = saved; else if (v === 'setup') [L.step, L.setupSource] = saved;
-  RB.invoke('panel_resize', { width: WIDTH[v] || 600, height: Math.min(Math.ceil(h), v === 'history' ? 560 : 9999) });
+  RB.invoke('panel_resize', { width: WIDTH[v] || 600, height: Math.min(Math.ceil(h), v === 'history' ? 560 : v === 'update' ? 600 : 9999) });
 }
 
 function render(force) {
@@ -878,6 +959,7 @@ function setView(path) {
   L.view = v;
   if (v === 'settings' && tab) L.tab = tab;
   if (more === 'updates') puOpenSoon();
+  if (v === 'update') updateOpen();
   if (v === 'setup') Object.assign(L, { step: 0, test: 'idle', testLayout: null, setupSource: setupDefault(), su: newSetupChoices(), suBusy: false, suError: '', suRotation: null });
   if (v === 'settings' && L.tab === 'boards' && L.addMode === 'nearby') scanNearby();
   if (v === 'settings' && L.tab === 'display') loadScreens();
@@ -983,6 +1065,12 @@ RB.delegate(root, 'click', {
   pluginUpdateCheck: () => save({ pluginUpdateCheck: S.settings.pluginUpdateCheck === false }),
   checkUpdates,
   openUpdate: (el, e) => { e.preventDefault(); RB.invoke('open_update'); },
+  openRelease: (el, e) => { e.preventDefault(); RB.invoke('open_update', { url: el.dataset.v }); },
+  showUpdate: (el, e) => { e.preventDefault(); RB.invoke('open_window', { view: 'update' }); },
+  installUpdate: () => installUpdate(),
+  copyBrew: () => { navigator.clipboard.writeText(BREW).then(() => flashCopied('brew')); },
+  updateLater: () => RB.invoke('close_window', { label: 'panel' }),
+  updateRetry: () => updateOpen(),
   site: (el, e) => { e.preventDefault(); RB.invoke('open_site'); },
   kofi: (el, e) => { e.preventDefault(); RB.invoke('open_kofi'); },
   fullscreenLaunch: () => save({ fullscreenLaunch: !S.settings.fullscreenLaunch }),
@@ -1080,6 +1168,7 @@ RB.onState(snap => {
   // The pairing code shows the old address and key once either changes.
   if (L.pair && ((wasLan && !S.settings.serverLan) || !S.server.running)) L.pair = null;
   if (first && L.view === 'setup') L.setupSource = setupDefault();
+  if (first && L.view === 'update') updateOpen();
   render();
 });
 setInterval(() => { if (L.view === 'settings' && L.tab === 'connection') render(); }, 1000);

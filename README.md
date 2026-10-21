@@ -68,7 +68,9 @@ For a server or a NAS, [Rattleboard Web](#rattleboard-web-docker) runs as a cont
 
 ### Updates
 
-Rattleboard checks GitHub for a newer release once a day. When there is one, **Update available** appears at the top of the menu-bar / tray menu and in **Settings → Behavior**; clicking it opens the release page. It never downloads or installs anything itself: update with the new installer, or with `brew upgrade --cask rattleboard` if you installed with Homebrew. Turn **Check for updates automatically** off in **Settings → Behavior** to stop the checks (**Check for updates** there still checks on demand).
+Rattleboard checks GitHub for a newer release once a day. When there is one, **Update available** appears at the top of the menu-bar / tray menu; **Check for updates…** in the menu (and in **Settings → Behavior**) checks on demand. Either opens a window with what's new in every release since yours, and **Update and restart**: Rattleboard downloads the new version, checks its signature against the key built into the app, replaces itself and restarts. Nothing is downloaded until you choose it. A copy installed with Homebrew shows `brew upgrade --cask rattleboard` instead, and a Linux `.deb` links to the new installer (the AppImage updates itself). Turn **Check for updates automatically** off in **Settings → Behavior** to stop the daily check.
+
+Releases carry a `latest.json` (each platform's bundle and signature) for the updater. Debug builds don't update themselves unless `RATTLEBOARD_UPDATE_TEST=1`, for trying it with a test key and a local `latest.json` (`npx tauri build --debug --bundles app --config <file setting plugins.updater>`); `RATTLEBOARD_UPDATE_FAKE_LATEST=9.9.9` makes the window show an update without one.
 
 ### Phones, tablets and TVs (coming soon)
 

@@ -281,6 +281,8 @@ struct UpdateInfo {
     available: Option<String>,
     /// Installed with the Homebrew cask, so `brew upgrade` is the way to update
     homebrew: bool,
+    /// How this copy updates: "install" | "homebrew" | "download" (see `updates::how`)
+    how: &'static str,
 }
 
 /// Whether the tray icon was put up, set once at launch.
@@ -361,6 +363,7 @@ fn snapshot(st: &AppState) -> Snapshot {
         update: UpdateInfo {
             available: (s.update_check && rattleboard_core::update::is_newer(&s.update_latest, env!("CARGO_PKG_VERSION"))).then(|| s.update_latest.clone()),
             homebrew: updates::from_homebrew(),
+            how: updates::how(),
         },
         plugin_updates: if s.plugin_update_check { community::offered() } else { 0 },
         focus: focus_info(&s, &rt),
@@ -1620,6 +1623,7 @@ fn open_panel(app: &AppHandle, view: &str) {
         "history" => ("Message History", 680.0),
         "setup" => ("Set up Rattleboard", 640.0),
         "compose" => ("Compose", 780.0),
+        "update" => ("Software Update", 560.0),
         _ => ("Rattleboard Settings", 600.0),
     };
     if let Some(w) = app.get_webview_window("panel") {
@@ -2773,13 +2777,19 @@ fn finish_setup(app: AppHandle, st: State<AppState>) {
     });
 }
 
-#[tauri::command]
-fn quit(app: AppHandle) {
+/// Lets the display sleep again, hides the windows and closes the API server, before quitting
+/// or restarting into an update.
+fn before_exit(app: &AppHandle) {
     fullscreen::keep_awake(false);
     for w in app.webview_windows().values() {
         let _ = w.hide();
     }
     drop(app.state::<AppState>().server.lock().unwrap().take());
+}
+
+#[tauri::command]
+fn quit(app: AppHandle) {
+    before_exit(&app);
     app.exit(0);
     // Backstop: if the event loop doesn't wind down (seen on Windows), leave anyway.
     std::thread::spawn(|| {
@@ -2946,6 +2956,7 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_state,
             update_settings,
@@ -2997,6 +3008,8 @@ pub fn run() {
             open_docs,
             updates::check_for_updates,
             updates::open_update,
+            updates::update_notes,
+            updates::install_update,
             get_sources,
             save_sources,
             add_source,
@@ -3136,6 +3149,7 @@ pub fn run() {
                         &MenuItem::with_id(app, "compose", "Compose…", true, None::<&str>)?,
                         &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
+                        &MenuItem::with_id(app, "check_updates", "Check for updates…", true, None::<&str>)?,
                         &MenuItem::with_id(app, "site", concat!("Rattleboard v", env!("CARGO_PKG_VERSION"), " on iokig.com"), true, None::<&str>)?,
                         &MenuItem::with_id(app, "kofi", "Support Rattleboard on Ko-fi", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
@@ -3146,7 +3160,7 @@ pub fn run() {
                 app.manage(PauseItem(pause_item));
                 sync_pause_item(&h);
                 tray = tray.menu(&menu).on_menu_event(|app, e| match e.id().as_ref() {
-                    "update" => updates::open_update(app.clone()),
+                    "update" | "check_updates" => open_panel(app, "update"),
                     "plugin_updates" => open_panel(app, "settings/sources/updates"),
                     "show" => present_board(app, true),
                     "next" => sources_next(app.clone()),

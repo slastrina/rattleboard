@@ -13,6 +13,12 @@ name: Release
 #   RATTLEBOARD_PROVISION_PROFILE (base64 Developer ID provisioning profile for
 #   io.github.slastrina.rattleboard with Communication Notifications, which macOS requires
 #   before it shares Focus status; optional: without it the app ships without the entitlement).
+#
+# In-place updates (Settings → Check for updates): every bundle is signed with the updater key,
+#   TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, whose public half is
+#   plugins.updater.pubkey in src-tauri/tauri.conf.json. The "Updater manifest" job then
+#   publishes latest.json, which the app reads from the latest release. A tag without the key
+#   fails rather than publish a release that installed copies can't update to.
 on:
   push:
     tags: ['v*']
@@ -102,12 +108,28 @@ jobs:
             echo "Embedding the provisioning profile and the Focus entitlement."
           fi
 
+      - name: Updater key
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          pub=$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")
+          if [ -z "$KEY" ] || [ -z "$pub" ]; then
+            echo "::error::The updater key isn't set up (TAURI_SIGNING_PRIVATE_KEY secret, plugins.updater.pubkey in tauri.conf.json)."
+            exit 1
+          fi
+
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_ORG_NAME: ${{ secrets.APPLE_ORG_NAME }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          # latest.json comes from the "Updater manifest" job, once every build is in, rather
+          # than from four builds updating one file at once.
+          includeUpdaterJson: false
           args: ${{ matrix.args }} ${{ env.RB_MAC_ARGS }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: Rattleboard ${{ github.ref_name }}
@@ -134,6 +156,50 @@ jobs:
             target/**/release/bundle/deb/*.deb
             target/**/release/bundle/appimage/*.AppImage
           if-no-files-found: error
+
+  # latest.json for the in-app updater (see updates.rs): each platform's bundle and signature
+  # from this release, and its notes. Every platform must be there, or the job fails.
+  updater:
+    name: Updater manifest
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern '*.sig' --dir sigs
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body,publishedAt > release.json
+          python3 - <<'PY'
+          import json, os, sys
+          tag, repo = os.environ["TAG"], os.environ["GITHUB_REPOSITORY"]
+          v = tag.lstrip("v")
+          files = {
+              "darwin-aarch64": "Rattleboard_universal.app.tar.gz",
+              "darwin-x86_64": "Rattleboard_universal.app.tar.gz",
+              "windows-x86_64": f"Rattleboard_{v}_x64-setup.exe",
+              "windows-x86_64-nsis": f"Rattleboard_{v}_x64-setup.exe",
+              "windows-x86_64-msi": f"Rattleboard_{v}_x64_en-US.msi",
+              "linux-x86_64": f"Rattleboard_{v}_amd64.AppImage",
+              "linux-aarch64": f"Rattleboard_{v}_aarch64.AppImage",
+          }
+          platforms, missing = {}, []
+          for key, name in files.items():
+              sig = os.path.join("sigs", name + ".sig")
+              if not os.path.exists(sig):
+                  missing.append(name + ".sig")
+                  continue
+              platforms[key] = {"signature": open(sig).read().strip(), "url": f"https://github.com/{repo}/releases/download/{tag}/{name}"}
+          if missing:
+              sys.exit("Missing signatures: " + ", ".join(sorted(set(missing))))
+          rel = json.load(open("release.json"))
+          notes = rel["body"].split("Download the installer for your platform below.")[0].strip()
+          json.dump({"version": v, "notes": notes, "pub_date": rel["publishedAt"], "platforms": platforms}, open("latest.json", "w"), indent=2)
+          print(json.dumps(sorted(platforms)))
+          PY
+          gh release upload "$TAG" latest.json -R "$GITHUB_REPOSITORY" --clobber
 
   # Bumps the cask in slastrina/homebrew-tap once the release has its DMG.
   # Needs a HOMEBREW_TAP_PAT secret with write access to that repo; skipped without it.

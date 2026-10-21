@@ -29,10 +29,10 @@ function render() {
     [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ...(S.link ? [['openLink', 'Open current link ↗', '']] : []), ...(src.active ? [['next', src.showing ? `Next source <span style="color:#8a8c91">· now ${RB.esc(src.showing)}</span>` : 'Next source', kbd('⌘→', 'Ctrl+→')]] : []), ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
     [['pin', 'Pin as widget', '', s.mode === 'float'], ['full', 'Full screen', kbd('⌃⌘F', 'F11'), s.mode === 'fullscreen'], ...(virt ? [] : [['pause', paused ? 'Resume checking' : 'Pause checking', '', false]])],
     [['compose', 'Compose…', kbd('⌘N', 'Ctrl+N')], ['history', 'Message history…', ''], ['settings', 'Settings…', kbd('⌘,', '')], ['setup', 'Run setup again…', '']],
-    [['site', `Rattleboard${S.version ? ` v${RB.esc(S.version)}` : ''} on iokig.com`, ''], ['kofi', 'Support Rattleboard on Ko-fi', '']],
+    [['checkUpdates', 'Check for updates…', ''], ['site', `Rattleboard${S.version ? ` v${RB.esc(S.version)}` : ''} on iokig.com`, ''], ['kofi', 'Support Rattleboard on Ko-fi', '']],
     [['quit', 'Quit Rattleboard', kbd('⌘Q', '')]]
   ];
-  // A newer release (see updates.rs): first thing in the menu; it opens the release page.
+  // A newer release (see updates.rs): first thing in the menu; it opens the update window.
   const up = S.update && S.update.available;
   // Newer versions of community plugins (see community.rs): under it; it opens the review sheet.
   const pu = S.pluginUpdates || 0;
@@ -108,7 +108,8 @@ const act = {
   setup: () => RB.invoke('open_window', { view: 'setup' }),
   site: () => { RB.invoke('open_site'); RB.invoke('close_window', { label: 'tray' }); },
   kofi: () => { RB.invoke('open_kofi'); RB.invoke('close_window', { label: 'tray' }); },
-  update: () => { RB.invoke('open_update'); RB.invoke('close_window', { label: 'tray' }); },
+  update: () => RB.invoke('open_window', { view: 'update' }),
+  checkUpdates: () => RB.invoke('open_window', { view: 'update' }),
   pluginUpdates: () => RB.invoke('open_window', { view: 'settings/sources/updates' }),
   resume: () => RB.invoke('update_settings', { patch: { polling: true } }),
   quit: () => RB.invoke('quit')
