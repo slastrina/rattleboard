@@ -3200,7 +3200,7 @@ dependencies = [
 
 [[package]]
 name = "rattleboard"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "block2",
  "chrono",
@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "rattleboard-core"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "axum",
  "chrono",
@@ -3252,7 +3252,7 @@ dependencies = [
 
 [[package]]
 name = "rattleboard-web"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "axum",
  "chrono",
