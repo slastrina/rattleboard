@@ -19,10 +19,10 @@ Don't post routine progress, every step of a plan, or anything the user is clear
 ## How to write it
 
 - The board is **6 rows of 22 characters** unless `list_boards` says otherwise (compact is 3 × 15, large is 8 × 30). Aim for 1–3 short lines. Text past the last row is cut off, and the tool's result tells you when that happened.
-- Text is upper-cased, word-wrapped and centred. Use `\n` to break lines yourself.
+- Text is upper-cased, word-wrapped and centred. To break a line yourself, put a real line break in the text (a newline character in the JSON string, which JSON writes as `\n`). Don't type `/n`: `/` is a character on the board, so it shows up, and the `n` with it.
 - Only A–Z, 0–9, space and `! @ # $ ( ) - + & = ; : ' " % , . / ? °` show up. Emoji, accents and other symbols show as blanks.
 - Add a **colour chip** with `color`: `green` for success, `red` for failure, `yellow` or `orange` for needs-attention, `blue` or `violet` for information.
-- Lead with the outcome and leave out details the user can read in the terminal. `TESTS PASSED\n412 OK IN 3M` is better than a sentence.
+- Lead with the outcome and leave out details the user can read in the terminal. `TESTS PASSED` on one line and `412 OK IN 3M` on the next is better than a sentence.
 
 ## Which tool
 
@@ -37,7 +37,7 @@ Don't post routine progress, every step of a plan, or anything the user is clear
 ## Examples
 
 - After a 10-minute test run passes: `send_message` with text `TESTS PASSED` and color `green`.
-- Blocked on a question: `send_message` with text `NEED YOUR INPUT\nAPI DESIGN` and color `yellow`.
+- Blocked on a question: `send_message` with `NEED YOUR INPUT` and `API DESIGN` on two lines, and color `yellow`.
 - Starting a deploy you'll report on later: `show_status` with text `DEPLOYING` and seconds `120`.
 
 If a tool reports that Rattleboard isn't reachable, tell the user once that they can open Rattleboard and turn on Settings → API server. Don't keep retrying.

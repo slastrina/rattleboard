@@ -81,6 +81,17 @@ fn launch(target: Option<String>) -> Launch {
     Launch { exe, profile: crate::profile(), target }
 }
 
+/// At launch: skills installed by an earlier version get this version's text. Release
+/// builds only, so a debug build never touches the user's agent apps.
+pub fn refresh_skills() {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    for f in harness::refresh_skills(&harness::all(&Env::system(), &launch(None))) {
+        eprintln!("Rattleboard: updated the skill at {}", f.display());
+    }
+}
+
 fn state_path(app: &AppHandle) -> Option<PathBuf> {
     Some(crate::profile_dir(app.path().app_config_dir().ok()?).join("agents.json"))
 }

@@ -3047,6 +3047,7 @@ pub fn run() {
             if profile().is_some() {
                 let _ = secrets::PROFILE_FILE.set(cfg.join("secrets.json"));
             }
+            std::thread::spawn(agents::refresh_skills);
             let settings_path = cfg.join("settings.json");
             let history_path = data.join("history.json");
             let boards_path = cfg.join("boards.json");

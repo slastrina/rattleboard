@@ -218,6 +218,21 @@ fn skill(dir: PathBuf) -> (Part, PathBuf, Piece) {
     (Part::Skill, dir.join("rattleboard").join("SKILL.md"), Piece::Own { contents: SKILL.replace("\r\n", "\n") })
 }
 
+/// Brings the Rattleboard skill installed by an earlier version up to date with this one.
+/// Only an existing SKILL.md that is ours (name: rattleboard) and differs is rewritten;
+/// nothing is created, so a skill the user disconnected stays gone. Returns what changed.
+pub fn refresh_skills(hs: &[Harness]) -> Vec<PathBuf> {
+    let mut done = vec![];
+    for (_, f, piece) in hs.iter().flat_map(|h| h.pieces.iter().filter(|p| p.0 == Part::Skill)) {
+        let Piece::Own { contents } = piece else { continue };
+        let Ok(cur) = std::fs::read_to_string(f) else { continue };
+        if cur.replace("\r\n", "\n").starts_with("---\nname: rattleboard\n") && cur != *contents && !done.contains(f) && std::fs::write(f, contents).is_ok() {
+            done.push(f.clone());
+        }
+    }
+    done
+}
+
 /// opencode's alerts: a plugin that runs --notify when a session goes idle or asks permission.
 fn opencode_plugin(l: &Launch) -> String {
     let env = match &l.profile {
@@ -943,6 +958,27 @@ mod tests {
             write(&c);
             println!("{}: {:?}", h.id, status(h));
         }
+    }
+
+    #[test]
+    fn skills_refreshed() {
+        let (_t, env) = tmp("skills");
+        let hs = all(&env, &launch());
+        let ours = env.home.join(".claude/skills/rattleboard/SKILL.md");
+        let other = env.home.join(".cursor/skills/rattleboard/SKILL.md");
+        // nothing installed: nothing created
+        assert!(refresh_skills(&hs).is_empty());
+        assert!(!ours.exists());
+        for f in [&ours, &other] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        }
+        std::fs::write(&ours, "---\nname: rattleboard\ndescription: old\n---\nUse `\\n`").unwrap();
+        std::fs::write(&other, "---\nname: someone-elses\n---\n").unwrap();
+        assert_eq!(refresh_skills(&hs), vec![ours.clone()]);
+        assert_eq!(std::fs::read_to_string(&ours).unwrap(), SKILL.replace("\r\n", "\n"));
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "---\nname: someone-elses\n---\n");
+        // up to date: left alone
+        assert!(refresh_skills(&hs).is_empty());
     }
 
     #[test]

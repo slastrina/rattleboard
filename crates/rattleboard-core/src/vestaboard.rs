@@ -302,11 +302,21 @@ pub fn text_layout(text: &str, rows: usize, cols: usize) -> Grid {
     place(&wrap(text, cols), rows, cols, false)
 }
 
+/// Text with a typed `\n` (backslash, n) read as the line break it was meant to be. Agents
+/// sometimes escape a newline twice; a backslash isn't on the board, so nothing is lost.
+fn breaks(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\\') {
+        text.replace("\\r\\n", "\n").replace("\\R\\N", "\n").replace("\\n", "\n").replace("\\N", "\n").into()
+    } else {
+        text.into()
+    }
+}
+
 /// Word-wraps text into lines of at most `cols` codes, as `text_layout` does: explicit
 /// newlines start a new line, and only a word longer than a whole line is split.
 pub fn wrap(text: &str, cols: usize) -> Vec<Vec<u8>> {
     let mut lines: Vec<Vec<u8>> = vec![];
-    for para in text.split('\n') {
+    for para in breaks(text).split('\n') {
         let mut cur: Vec<u8> = vec![];
         for word in para.split_whitespace() {
             let mut w = parse(word);
@@ -337,7 +347,7 @@ pub fn wrap(text: &str, cols: usize) -> Vec<Vec<u8>> {
 
 /// Whether text lays out in `rows` lines of `cols` without cutting a word.
 pub fn fits(text: &str, rows: usize, cols: usize) -> bool {
-    text.split_whitespace().all(|w| parse(w).len() <= cols) && wrap(text, cols).len() <= rows
+    breaks(text).split_whitespace().all(|w| parse(w).len() <= cols) && wrap(text, cols).len() <= rows
 }
 
 /// Puts lines on a rows×cols board, centred vertically, and centred or left-aligned
@@ -435,6 +445,18 @@ mod demo_tests {
         assert_eq!(demo(8, 30, 4).layout[7][0], 63 + (7 % 6) as u8);
         assert_eq!(parse("{g}A°"), vec![66, 1, 62]);
         assert_eq!(parse("{63}B{7}"), vec![63, 2, 7]);
+    }
+
+    #[test]
+    fn typed_line_breaks() {
+        // An agent's twice-escaped newline breaks the line instead of showing as "N".
+        let two = vec![parse("TESTS PASSED"), parse("412 OK")];
+        for t in ["Tests passed\n412 OK", "Tests passed\\n412 OK", "TESTS PASSED\\N412 OK", "Tests passed\\r\\n412 OK", "Tests passed \\n 412 OK"] {
+            assert_eq!(wrap(t, 22), two, "{t:?}");
+        }
+        assert!(fits("TESTS PASSED\\n412 OK", 2, 12));
+        // a slash is a character on the board, so "/n" and "Y/N" stay as they are
+        assert_eq!(wrap("Y/N", 22), vec![parse("Y/N")]);
     }
 
     #[test]

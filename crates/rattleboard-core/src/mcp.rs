@@ -127,8 +127,8 @@ const CODES: &str = "Character codes: 0 blank, 1-26 A-Z, 27-35 the digits 1-9, 3
 63-70 solid colour chips (63 red, 64 orange, 65 yellow, 66 green, 67 blue, 68 violet, 69 white, 70 black), 71 a filled tile.";
 
 const TEXT_RULES: &str = "The board is a split-flap display, 6 rows x 22 characters unless it says otherwise \
-(list_boards shows each board's size). Text is upper-cased, word-wrapped and centred; \\n starts a new row, \
-and anything past the last row is cut off, so keep it short: ideally 1-4 lines of up to 22 characters. \
+(list_boards shows each board's size). Text is upper-cased, word-wrapped and centred; a real line break (a newline character in the string) starts a new row. \
+Don't write /n for one: / is a character on the board, so it shows. Anything past the last row is cut off, so keep it short: ideally 1-4 lines of up to 22 characters. \
 Only A-Z, 0-9, space and ! @ # $ ( ) - + & = ; : ' \" % , . / ? ° can be shown; anything else (emoji, accents, \
 lower-case-only symbols) shows as a blank. {63}-{70} inside the text inserts a colour chip (63 red, 64 orange, \
 65 yellow, 66 green, 67 blue, 68 violet, 69 white, 70 black).";
@@ -184,7 +184,7 @@ pub fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "text": { "type": "string", "minLength": 1, "maxLength": 1000, "description": "The message, e.g. \"Build passed\" or \"Tests failed\\nin auth module\"." },
+                    "text": { "type": "string", "minLength": 1, "maxLength": 1000, "description": "The message, e.g. \"Build passed\". Put each line on a line of its own: \"Tests failed\" then a line break then \"in auth module\"." },
                     "color": color_schema("as an accent"),
                     "size": { "type": "string", "enum": ["standard", "compact", "large"], "description": "Lay the text out for a board size: standard 6x22 (default), compact 3x15, large 8x30. Boards set to match each message take this size; others use their own." },
                     "strategy": strategy_schema(),
