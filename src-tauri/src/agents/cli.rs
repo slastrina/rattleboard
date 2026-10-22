@@ -120,18 +120,18 @@ fn backend(route: &Route) -> mcp::Http {
         secrets::use_file(config_dir().join("secrets.json"));
     }
     let mut b = match route.url.clone() {
-        None => mcp::Http::locating(Box::new(|| {
+        None => mcp::Http::locating(keeping_key(Box::new(|| {
             // The local API server's address and key, read fresh each time.
             let s = Settings::load(&config_dir().join("settings.json"));
             (format!("http://127.0.0.1:{}", s.server_port), secrets::get(secrets::SERVER_KEY))
-        })),
+        }))),
         Some(url) => {
             let u = url.clone();
-            let mut b = mcp::Http::locating(Box::new(move || {
+            let mut b = mcp::Http::locating(keeping_key(Box::new(move || {
                 let saved = boards::load(&config_dir().join("boards.json"));
                 let (key, _) = remote_key(&u, &saved, &secrets::get, std::env::var(KEY_ENV).ok());
                 (u.clone(), key)
-            }));
+            })));
             b.unreachable = format!("Couldn't reach the Rattleboard at {url}. Check that it's running with its API server on (and Other devices on, if it's another computer).");
             b.no_key = format!(
                 "No key for {url}. Add that Rattleboard in Settings → Boards on this computer, so its key is kept in the keychain, or set {KEY_ENV}."
@@ -140,7 +140,28 @@ fn backend(route: &Route) -> mcp::Http {
         }
     };
     b.target = route.target.clone();
+    b.wait = std::time::Duration::from_secs(10);
     b
+}
+
+/// Remembers the last key that could be read, and reads it once straight away. After
+/// `brew upgrade` deletes the app this process was started from, macOS may no longer let it
+/// read the keychain, which made every call say Rattleboard wasn't reachable until the agent
+/// app reconnected. A new key (Regenerate) is still picked up whenever it can be read.
+fn keeping_key(locate: mcp::Locate) -> mcp::Locate {
+    let kept = std::sync::Mutex::new(String::new());
+    let f: mcp::Locate = Box::new(move || {
+        let (base, key) = locate();
+        let mut k = kept.lock().unwrap();
+        if key.is_empty() {
+            (base, k.clone())
+        } else {
+            k.clone_from(&key);
+            (base, key)
+        }
+    });
+    f();
+    f
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -169,14 +190,90 @@ fn run_mcp(args: &[String]) -> i32 {
         }
     };
     let b = backend(&route);
-    let input = tokio::io::BufReader::new(tokio::io::stdin());
-    match runtime().block_on(mcp::serve(&b, input, tokio::io::stdout())) {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!("rattleboard --mcp: {e}");
-            1
+    let me = Exe::now();
+    let mut client = std::env::var(CLIENT_ENV).ok().filter(|c| !c.is_empty());
+    let (mut input, mut output) = (tokio::io::BufReader::new(tokio::io::stdin()), tokio::io::stdout());
+    let rt = runtime();
+    let mut watch = true;
+    loop {
+        match rt.block_on(mcp::serve_until(&b, client.clone(), &mut input, &mut output, &|| watch && me.replaced())) {
+            Ok(None) => return 0,
+            Ok(Some(c)) => {
+                // Only comes back if the new version couldn't be started: carry on as we are.
+                me.hand_over(args, c.clone());
+                client = c;
+                watch = false;
+            }
+            Err(e) => {
+                eprintln!("rattleboard --mcp: {e}");
+                return 1;
+            }
         }
     }
+}
+
+/// The client's name (from `initialize`), for a copy handed over to by `Exe::hand_over`.
+const CLIENT_ENV: &str = "RATTLEBOARD_MCP_CLIENT";
+
+/// This program's file, to notice when an update replaces it under a running `--mcp`.
+struct Exe {
+    path: Option<PathBuf>,
+    id: Option<(u64, u64)>,
+}
+
+impl Exe {
+    fn now() -> Exe {
+        let path = std::env::current_exe().ok();
+        let id = path.as_deref().and_then(file_id);
+        Exe { path, id }
+    }
+
+    /// The app at this path is now another file: an update (brew upgrade, or the app's own)
+    /// put a new version there. While it's missing (mid-update) it isn't replaced yet, nor
+    /// while it's still being written.
+    fn replaced(&self) -> bool {
+        let (Some(p), Some(id)) = (&self.path, self.id) else { return false };
+        let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).ok();
+        match file_id(p) {
+            Some(now) if now != id => {
+                let before = size(p);
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                file_id(p) == Some(now) && size(p) == before
+            }
+            _ => false,
+        }
+    }
+
+    /// Becomes the new version, keeping stdin and stdout, so the agent app's connection to
+    /// Rattleboard carries on without a reconnect. Unix only. Returns only if it couldn't.
+    #[cfg(unix)]
+    fn hand_over(&self, args: &[String], client: Option<String>) {
+        use std::os::unix::process::CommandExt;
+        let Some(p) = &self.path else { return };
+        let mut c = std::process::Command::new(p);
+        c.arg("--mcp").args(args);
+        match client {
+            Some(n) => c.env(CLIENT_ENV, n),
+            None => c.env_remove(CLIENT_ENV),
+        };
+        let e = c.exec();
+        eprintln!("rattleboard --mcp: couldn't start the updated app ({e}); carrying on");
+    }
+
+    #[cfg(not(unix))]
+    fn hand_over(&self, _args: &[String], _client: Option<String>) {}
+}
+
+#[cfg(unix)]
+fn file_id(p: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// Windows can't replace a running program, so its installer closes `--mcp` instead.
+#[cfg(not(unix))]
+fn file_id(_: &std::path::Path) -> Option<(u64, u64)> {
+    None
 }
 
 #[derive(Debug, PartialEq)]
@@ -343,6 +440,36 @@ mod tests {
         assert!(parse_notify(&args(&["x", "--seconds", "10", "--target", "tv"])).is_err());
         // text that merely starts with a brace is still text
         assert_eq!(parse_notify(&args(&["{63} Done"])).unwrap().text, "{63} Done");
+    }
+
+    #[test]
+    fn key_kept() {
+        // what the keychain gives each time: the key, nothing (refused after an update), a new key
+        let reads = std::sync::Mutex::new(vec!["k2", "", "", "k1"]);
+        let f = keeping_key(Box::new(move || ("http://x".into(), reads.lock().unwrap().pop().unwrap_or("").to_string())));
+        // read once straight away, then kept while the keychain says nothing
+        assert_eq!(f().1, "k1");
+        assert_eq!(f().1, "k1");
+        assert_eq!(f().1, "k2");
+        assert_eq!(f().1, "k2");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replaced_exe() {
+        let d = std::env::temp_dir().join(format!("rb-exe-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("rattleboard");
+        std::fs::write(&p, "v1").unwrap();
+        let me = Exe { path: Some(p.clone()), id: file_id(&p) };
+        assert!(!me.replaced());
+        // mid-update: gone, not replaced yet
+        std::fs::rename(&p, d.join("old")).unwrap();
+        assert!(!me.replaced());
+        // a new file in its place, as brew upgrade or the updater leaves it
+        std::fs::write(&p, "v2").unwrap();
+        assert!(me.replaced());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

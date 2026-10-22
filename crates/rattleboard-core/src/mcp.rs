@@ -741,6 +741,39 @@ where
     Ok(())
 }
 
+/// `serve` for `rattleboard --mcp`, which can hand over to a newer copy of itself: after each
+/// answer, with nothing more waiting on `input`, `stale()` is asked whether the app has been
+/// replaced (by an update). If it has, this returns Some(the client's name) so the caller
+/// can start the new copy on the same stdin and stdout, and the agent app never notices.
+/// `client` is the name a previous copy was given by `initialize`.
+pub async fn serve_until<R, W>(b: &dyn Backend, client: Option<String>, input: &mut tokio::io::BufReader<R>, output: &mut W, stale: &dyn Fn() -> bool) -> std::io::Result<Option<Option<String>>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let session = Session { client: std::sync::Mutex::new(client) };
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if input.read_line(&mut line).await? == 0 {
+            return Ok(None);
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(answer) = handle_text_in(b, &session, line.trim_end()).await {
+            let mut s = answer.to_string();
+            s.push('\n');
+            output.write_all(s.as_bytes()).await?;
+            output.flush().await?;
+        }
+        if input.buffer().is_empty() && stale() {
+            return Ok(Some(session.client.lock().unwrap().clone()));
+        }
+    }
+}
+
 // ---------------------------------------------------------------- the local API over HTTP
 
 /// Where the API server is and its key, looked up again for every request so a new key, a
@@ -757,6 +790,8 @@ pub struct Http {
     /// Said when the server can't be reached, or has no key here
     pub unreachable: String,
     pub no_key: String,
+    /// How long to keep trying while the server refuses connections (restarting)
+    pub wait: Duration,
 }
 
 impl Http {
@@ -768,19 +803,28 @@ impl Http {
 
     pub fn locating(locate: Locate) -> Self {
         let client = reqwest::Client::builder().timeout(Duration::from_secs(45)).no_proxy().build().unwrap_or_default();
-        Http { locate, client, target: None, unreachable: NOT_RUNNING.into(), no_key: NOT_RUNNING.into() }
+        Http { locate, client, target: None, unreachable: NOT_RUNNING.into(), no_key: NOT_RUNNING.into(), wait: Duration::ZERO }
     }
 
     async fn req(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<(u16, Value), String> {
-        let (base, key) = (self.locate)();
-        if key.is_empty() {
-            return Err(self.no_key.clone());
-        }
-        let mut r = self.client.request(method, format!("{base}{path}")).bearer_auth(&key);
-        if let Some(b) = body {
-            r = r.json(&b);
-        }
-        let res = r.send().await.map_err(|e| if e.is_timeout() { "Rattleboard didn't answer in time.".to_string() } else { self.unreachable.clone() })?;
+        // Rattleboard restarting (after an update, say) is a few seconds of refused
+        // connections: wait that out rather than tell the agent it isn't there.
+        let give_up = std::time::Instant::now() + self.wait;
+        let res = loop {
+            let (base, key) = (self.locate)();
+            if key.is_empty() {
+                return Err(self.no_key.clone());
+            }
+            let mut r = self.client.request(method.clone(), format!("{base}{path}")).bearer_auth(&key);
+            if let Some(b) = &body {
+                r = r.json(b);
+            }
+            match r.send().await {
+                Ok(res) => break res,
+                Err(e) if e.is_connect() && std::time::Instant::now() < give_up => tokio::time::sleep(Duration::from_millis(500)).await,
+                Err(e) => return Err(if e.is_timeout() { "Rattleboard didn't answer in time.".to_string() } else { self.unreachable.clone() }),
+            }
+        };
         let status = res.status().as_u16();
         let v: Value = res.json().await.unwrap_or(Value::Null);
         match status {
@@ -1182,6 +1226,49 @@ mod tests {
         assert_eq!(lines[0]["result"]["protocolVersion"], "2025-11-25");
         assert_eq!(lines[1]["id"], 2);
         assert_eq!(*m.shown.lock().unwrap(), vestaboard::text_layout("Hello", 6, 22));
+    }
+
+    /// `--mcp` hands over to an updated copy between requests, never in the middle of one,
+    /// and keeps the client's name across it.
+    #[tokio::test]
+    async fn stdio_hand_over() {
+        let (_m, _h, b) = start(false).await;
+        let init = concat!(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"Claude Code"}}}"#, "\n");
+        let two = concat!(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#, "\n", r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#, "\n");
+        let mut out = vec![];
+        // not replaced: serves to the end
+        let mut input = tokio::io::BufReader::new(init.as_bytes());
+        assert_eq!(serve_until(&b, None, &mut input, &mut out, &|| false).await.unwrap(), None);
+        // replaced: hands over after the answer, with the name from initialize
+        let mut input = tokio::io::BufReader::new(init.as_bytes());
+        assert_eq!(serve_until(&b, None, &mut input, &mut out, &|| true).await.unwrap(), Some(Some("Claude Code".into())));
+        // a request already waiting is answered first
+        out.clear();
+        let mut input = tokio::io::BufReader::new(two.as_bytes());
+        assert_eq!(serve_until(&b, Some("Codex".into()), &mut input, &mut out, &|| true).await.unwrap(), Some(Some("Codex".into())));
+        assert_eq!(String::from_utf8(out).unwrap().lines().count(), 2);
+    }
+
+    /// While the app restarts, a call waits for it to come back instead of failing.
+    #[tokio::test]
+    async fn waits_for_a_restart() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let mut b = Http::new(&format!("http://127.0.0.1:{port}"), "secret-key-123");
+        b.wait = Duration::from_secs(10);
+        let later = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            server::serve(server::router(Arc::new(Mock { shown: Mutex::new(vec![vec![0; 22]; 6]), ..Default::default() }), axum::Router::new()), port, false).await.unwrap()
+        });
+        let t = std::time::Instant::now();
+        assert!(b.info().await.is_ok());
+        assert!(t.elapsed() >= Duration::from_millis(1000));
+        drop(later);
+        // with no wait, it says so straight away
+        let mut b = Http::new("http://127.0.0.1:9", "k");
+        b.wait = Duration::ZERO;
+        assert_eq!(b.info().await.unwrap_err(), NOT_RUNNING);
     }
 
     /// The API server's own /mcp: Streamable HTTP with JSON answers, behind the key.

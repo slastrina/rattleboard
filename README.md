@@ -476,6 +476,8 @@ To set it up by hand instead, add Rattleboard as a stdio MCP server. Here it is 
 
 That path is for macOS. On Windows and Linux, use the path shown at the bottom of **Settings → Agents**. Rattleboard has to be running, with **Settings → API server** on. **Connect** turns the server on for you, for this computer only.
 
+An agent app keeps its connection when Rattleboard restarts or updates. A call made while Rattleboard is restarting waits up to 10 seconds for it to come back. After an update (**Update and restart**, or `brew upgrade`), the running `--mcp` switches itself to the new version on macOS and Linux, so the agent app doesn't need to reconnect. Before 0.10.6, an update left `--mcp` saying Rattleboard wasn't reachable until the agent app reconnected; connections started before 0.10.6 still need that one reconnect after installing it. On Windows the installer closes `--mcp`, so reconnect there after an update.
+
 ### Settings → Agents
 
 The tab lists the agent apps it finds on this computer. For each one you get:
@@ -602,6 +604,8 @@ Claude Desktop only adds remote servers through its Connectors settings, and tho
 | --- | --- |
 | `send_message` | `{text, color?, size?, strategy?, link?, priority?, board?}`: text that stays until something replaces it, shown once and never repeated (it holds the rotation like any message). `link` (http or https) is opened by clicking the board. `color` adds a chip (red, orange, yellow, green, blue, violet, white or black), and `size` is standard, compact or large. `board` is "this" (the default), a saved board or group by name from **Settings → Boards**, or "all". |
 | `show_status` | `{text, seconds?, color?, link?, priority?}`: a temporary status (15 s by default), as a timed [notification](#notifications): afterwards the board goes back to the previous message or the Sources rotation, without holding the rotation and without showing anything again as new. Starting it stops any sequence that was playing. |
+
+In `text`, a line break starts a new row. A typed `\n` (a backslash and n, which agents sometimes send) counts as one too. `/n` doesn't, since `/` is a character on the board.
 
 `priority` is `normal` (the default) or `alert`: an alert gets through a [Focus or Do Not Disturb](#focus-and-do-not-disturb) that holds pop-ups (if the user lets alerts through). It applies on this computer's board; saved boards get the message alone.
 | `send_layout` | `{characters, board?}`: an exact grid of character codes 0–71, up to 12 × 40. |
