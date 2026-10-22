@@ -1850,6 +1850,14 @@ fn show(i: &mut Inner, card: Card, how: How, ctx: &Ctx, page_ms: i64, total_ms: 
         };
         i.card_until = ctx.now + pop;
     }
+    // newEachTime: run again just after this showing ends, so it's new next time round and
+    // never changes while it's up (at most once a minute).
+    let fresh = i.config.rotation.iter().find(|x| x.id == card.instance).and_then(|x| i.plugins.iter().find(|p| p.id == x.plugin)).is_some_and(|p| p.new_each_time);
+    if fresh && matches!(how, How::Ambient | How::Message) {
+        if let Some(f) = i.feeds.get_mut(&card.instance) {
+            f.next_at = ctx.now + total.max(60_000) + 1000;
+        }
+    }
     i.showing = Some(Showing { card: card.clone(), how, page: 0, pages, since: ctx.now, page_at: ctx.now, page_ms, until: ctx.now + total, drawn_at: ctx.now });
     Action::Show { card: Box::new(card), page: 0, how }
 }
@@ -2351,6 +2359,25 @@ pub mod tests {
         e.put_rotation(&json!({"rotation": rot}), false).unwrap();
         let (g, _) = e.preview(&id, &at(&c, 10), false, true).await.unwrap();
         assert!(text(&g[0]).contains("NO TRAINS"), "{}", text(&g[0]));
+    }
+
+    /// newEachTime: once its card has been shown, it runs again just after the showing ends
+    /// (a minute at least), not an hour later.
+    #[test]
+    fn new_each_time() {
+        for (fresh, next) in [(true, ctx(0).now + 61_000), (false, 3_600_000)] {
+            let (e, _) = engine(if fresh { "fresh" } else { "fresh2" });
+            let m = json!({"format": 1, "id": "com.example.joke", "name": "Joke", "kind": "json", "fetch": {"url": "https://jokes.example.com/", "every": "1h"},
+                "pick": {"title": "$.joke"}, "dwell": "45s", "newEachTime": fresh});
+            e.install(&m, false).unwrap();
+            e.put_rotation(&json!([{"id": "j", "plugin": "com.example.joke"}]), false).unwrap();
+            e.store("j", Ok(Data { items: vec![Item { key: "1".into(), title: "A joke".into(), ..Default::default() }], single: true }), 0);
+            let a = e.tick(&ctx(0));
+            assert!(matches!(a.first(), Some(Action::Show { .. })), "{a:?}");
+            assert_eq!(e.inner.lock().unwrap().feeds["j"].next_at, next, "newEachTime {fresh}");
+        }
+        let bad = json!({"format": 1, "id": "com.example.t", "name": "T", "kind": "text", "card": {"template": "Hi"}, "newEachTime": true});
+        assert!(plugins::parse(&bad, false).is_err());
     }
 
     /// A feed item's link goes with its card, and so does a digest's (its newest item's).

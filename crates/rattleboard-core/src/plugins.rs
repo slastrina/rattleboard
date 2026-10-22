@@ -57,6 +57,9 @@ pub struct Manifest {
     pub dwell: Option<u64>,
     /// Seconds between fetches (or runs, or re-renders of a text card)
     pub every: u64,
+    /// "newEachTime": run again once its card has been shown, so it's new the next time
+    /// round (a joke, a quote) without ever changing while it's up
+    pub new_each_time: bool,
     pub schedule: Option<Schedule>,
     pub settings: Vec<SettingSpec>,
     pub secrets: Vec<SecretSpec>,
@@ -666,7 +669,15 @@ pub fn parse(v: &Value, builtin: bool) -> Result<Manifest, String> {
     if (card.row.is_some() || card.empty.is_some()) && !pick.status {
         return Err("card.row and card.empty are for \"pick\": {\"as\": \"status\"}".into());
     }
-    Ok(Manifest { id, name, description, kind, fetch, run, script, pick, card, alert, alert_words, max_items, dwell, every, schedule, settings, secrets, builtin, raw: v.clone() })
+    let new_each_time = match o.get("newEachTime") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("newEachTime must be true or false".into()),
+    };
+    if new_each_time && !matches!(kind.as_str(), "script" | "json" | "command") {
+        return Err("newEachTime is for script, json and command plugins".into());
+    }
+    Ok(Manifest { id, name, description, kind, fetch, run, script, pick, card, alert, alert_words, max_items, dwell, every, new_each_time, schedule, settings, secrets, builtin, raw: v.clone() })
 }
 
 fn parse_sign(g: &Map<String, Value>) -> Result<Sign, String> {

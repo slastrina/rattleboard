@@ -745,6 +745,7 @@ A plugin is one JSON file, `*.rattleboard-plugin.json`:
 | `alertWhen` | `["keyword:launch"]`: new items mentioning one of these interrupt |
 | `maxItems` | 1–50 items per fetch (default 10), after `pick.where` and `pick.sort` |
 | `dwell` | How long its card shows, `10s` to `1h`; each source in the rotation can override it |
+| `newEachTime` | Since 0.10.7, for `script`, `json` and `command`: `true` runs it again as soon as its card has been shown, so it's different the next time it comes round (a joke, a quote), and never changes while it's up. At most once a minute, and its `every` still applies when it isn't shown. Older versions ignore it. |
 | `schedule` | Days (`mon`…`sun`; none means every day) and `from`/`to` (HH:MM, may run past midnight) |
 | `settings` | Fields shown in Settings → Sources: `key`, `label`, `type` (`text`, `number`, `toggle`, `select` with `options`, `date`, `time` or `lines`) and `default` |
 | `secrets` | Fields kept in the credential store: `key` and `label` |
