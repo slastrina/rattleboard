@@ -255,19 +255,28 @@ struct FocusInfo {
     summary: Option<String>,
 }
 
+/// What a message does now: as the Focus rules say, unless pop-ups are paused from the tray.
+fn decide(s: &Settings, rt: &Runtime, alert: bool) -> focus::Decision {
+    if s.paused() {
+        return focus::PAUSED;
+    }
+    let rules = focus_rules(s);
+    focus::decide(rules, rt.focus.quiet(rules), alert, s.fullscreen())
+}
+
 fn focus_rules(s: &Settings) -> focus::Rules {
     focus::Rules { mode: focus::Mode::of(&s.focus_mode), alerts_through: s.focus_alerts, fullscreen_obeys: s.focus_fullscreen, calls: s.focus_calls }
 }
 
 fn focus_info(s: &Settings, rt: &Runtime) -> FocusInfo {
     let rules = focus_rules(s);
-    let (on, full) = (rt.focus.quiet(rules), s.fullscreen());
-    let quiet = focus::decide(rules, on, false, full);
+    let on = rt.focus.quiet(rules);
+    let quiet = decide(s, rt, false);
     FocusInfo {
         status: rt.focus.clone(),
         quiet: on,
         holding: quiet.held,
-        muted: !focus::decide(rules, on, rt.shown_alert, full).sound,
+        muted: !decide(s, rt, rt.shown_alert).sound,
         held: rt.held.count,
         summary: rt.focus_summary.clone(),
     }
@@ -601,20 +610,20 @@ fn put_on_board_as(app: &AppHandle, layout: Grid, id: Option<String>, src: &str,
     // A fixed board takes on the size of a board it mirrors (posted messages arrive fitted to
     // it already); an adaptive one just shows each message at its own size.
     let detected = vestaboard::dims_of(&layout);
-    let (setup_done, stays, rules, full) = {
+    let (setup_done, stays, s) = {
         let mut s = st.settings.lock().unwrap();
         if !s.adaptive && s.dims() != detected {
             s.set_dims(detected);
             s.save(&st.settings_path);
         }
-        (s.setup_done, s.floating() || s.fullscreen(), focus_rules(&s), s.fullscreen())
+        (s.setup_done, s.floating() || s.fullscreen(), s.clone())
     };
     // Ask the window system first: on macOS that call waits for the main thread, which may
     // itself be waiting for `rt`, so it must never happen while a lock is held.
     let tray_open = app.get_webview_window("tray").and_then(|w| w.is_visible().ok()).unwrap_or(false);
     let pop_up = {
         let mut rt = st.rt.lock().unwrap();
-        let d = focus::decide(rules, rt.focus.quiet(rules), alert, full);
+        let d = decide(&s, &rt, alert);
         if loud && d.held {
             rt.held.note(layout.clone(), link.clone());
         }
@@ -674,28 +683,16 @@ fn focus_changed(app: &AppHandle, now: focus::Status) {
     let summary = {
         let mut rt = st.rt.lock().unwrap();
         let rules = focus_rules(&s);
-        let (was, is) = (rt.focus.quiet(rules), now.quiet(rules));
+        // While pop-ups are paused, the pause holds them and has the summary when it ends.
+        let (was, is) = (s.paused() || rt.focus.quiet(rules), s.paused() || now.quiet(rules));
         // A call or slideshow held them, rather than a Focus.
-        let call = !rt.focus.on;
+        let by = if rt.focus.on { focus::HeldBy::Focus } else { focus::HeldBy::Call };
         rt.focus = now.clone();
         if !was && is {
             rt.held = focus::Held::default();
             None
         } else if was && !is {
-            match rt.held.take() {
-                Some((n, latest)) => {
-                    let text = focus::summary_text(n, call);
-                    rt.focus_summary = Some(text.clone());
-                    // The latest held message, if the board has moved on since (a source's
-                    // card), as "Flip again" shows a history entry.
-                    if rt.layout.as_ref() != Some(&latest.layout) {
-                        rt.display = Some(latest.layout);
-                        rt.display_link = latest.link;
-                    }
-                    Some(text)
-                }
-                None => None,
-            }
+            take_summary(&mut rt, by)
         } else {
             None
         }
@@ -709,8 +706,28 @@ fn focus_changed(app: &AppHandle, now: focus::Status) {
         summary.as_ref().map(|t| format!(": {t}")).unwrap_or_default()
     );
     broadcast(app);
-    let Some(text) = summary else { return };
-    if s.setup_done {
+    if let Some(text) = summary {
+        show_summary(app, text, s.setup_done);
+    }
+}
+
+/// The summary of what was held, once a Focus or a pause is over: nothing if nothing was.
+fn take_summary(rt: &mut Runtime, by: focus::HeldBy) -> Option<String> {
+    let (n, latest) = rt.held.take()?;
+    let text = focus::summary_text(n, by);
+    rt.focus_summary = Some(text.clone());
+    // The latest held message, if the board has moved on since (a source's card), as "Flip
+    // again" shows a history entry.
+    if rt.layout.as_ref() != Some(&latest.layout) {
+        rt.display = Some(latest.layout);
+        rt.display_link = latest.link;
+    }
+    Some(text)
+}
+
+/// Pops the summary up (the state already has it).
+fn show_summary(app: &AppHandle, text: String, setup_done: bool) {
+    if setup_done {
         let a = app.clone();
         let _ = app.run_on_main_thread(move || present_board(&a, false));
     }
@@ -731,6 +748,93 @@ fn focus_changed(app: &AppHandle, now: focus::Status) {
             broadcast(&a);
         }
     });
+}
+
+// ---------------------------------------------------------------- Pausing pop-ups
+
+/// Pop-ups paused or resumed (`s` is the new settings). Paused, the board still takes every
+/// message (a pinned or full-screen board shows it, silently) but nothing pops up, and a
+/// pop-up on screen goes; resumed, one summary pops up, as after a Focus. A Focus that holds
+/// pop-ups and a pause run on into each other with one summary, when both are over.
+fn pause_changed(app: &AppHandle, s: &Settings) {
+    let st = app.state::<AppState>();
+    let rules = focus_rules(s);
+    let summary = {
+        let mut rt = st.rt.lock().unwrap();
+        let focus_holds = rt.focus.quiet(rules) && focus::decide(rules, true, false, s.fullscreen()).held;
+        if focus_holds {
+            None
+        } else if s.paused() {
+            rt.held = focus::Held::default();
+            None
+        } else {
+            take_summary(&mut rt, focus::HeldBy::Pause)
+        }
+    };
+    eprintln!("[pause] {}", if s.paused() { "pop-ups paused" } else { "pop-ups resumed" });
+    if s.paused() {
+        let _ = app.emit_to("board", "rb://dismiss", ());
+    }
+    sync_popup_pause_menu(app);
+    broadcast(app);
+    if let Some(text) = summary {
+        show_summary(app, text, s.setup_done);
+    }
+}
+
+/// A timed pause ends on its own (checked every second, so a pause that ended while the
+/// computer slept, or before a restart, ends on the next check).
+async fn pause_loop(app: AppHandle) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let over = app.state::<AppState>().settings.lock().unwrap().pause_over(now_ms());
+        if over {
+            let _ = apply_settings(&app, json!({ "pauseUntil": 0 }));
+        }
+    }
+}
+
+/// Tray: pause pop-ups for `minutes`, or until they're resumed (none).
+#[tauri::command]
+fn pause_popups(app: AppHandle, minutes: Option<u32>) {
+    let until = minutes.map_or(-1, |m| now_ms() + m.max(1) as i64 * 60_000);
+    let _ = apply_settings(&app, json!({ "pauseUntil": until }));
+}
+
+#[tauri::command]
+fn resume_popups(app: AppHandle) {
+    let _ = apply_settings(&app, json!({ "pauseUntil": 0 }));
+}
+
+/// The native tray menu's "Pause pop-ups" submenu (Windows, Linux): its title says until
+/// when, and Resume is there only while paused.
+#[cfg(not(target_os = "macos"))]
+struct PopupPauseMenu(tauri::menu::Submenu<tauri::Wry>, tauri::menu::MenuItem<tauri::Wry>);
+
+/// " until 3:40 PM", " until tomorrow 9:00 AM", or nothing for a pause until resumed.
+#[cfg(not(target_os = "macos"))]
+fn pause_until_text(until: i64) -> String {
+    if until == -1 {
+        return String::new();
+    }
+    let Some(t) = chrono::DateTime::from_timestamp_millis(until).map(|t| t.with_timezone(&chrono::Local)) else { return String::new() };
+    let day = if t.date_naive() == chrono::Local::now().date_naive() { "" } else { "tomorrow " };
+    format!(" until {day}{}", t.format("%-I:%M %p"))
+}
+
+fn sync_popup_pause_menu(app: &AppHandle) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let until = app.state::<AppState>().settings.lock().unwrap().pause_until;
+        let h = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(m) = h.try_state::<PopupPauseMenu>() else { return };
+            let _ = m.0.set_text(if until == 0 { "Pause pop-ups".to_string() } else { format!("Pop-ups paused{}", pause_until_text(until)) });
+            let _ = m.1.set_enabled(until != 0);
+        });
+    }
+    #[cfg(target_os = "macos")]
+    let _ = app;
 }
 
 fn clear_focus_summary(app: &AppHandle) {
@@ -1275,18 +1379,15 @@ fn present_for(app: &AppHandle, countdown: bool, ms: Option<u64>) {
 
 /// The rotation's next card pops the board up (a pop-up board; a pinned or full-screen one
 /// is up anyway) for `secs`, or the board's own time: not when the source says never (0),
-/// nor while a Focus holds pop-ups.
+/// nor while a Focus holds pop-ups or they're paused.
 fn pop_card(app: &AppHandle, secs: Option<u32>) {
     let st = app.state::<AppState>();
-    let (setup_done, stays, rules, full) = {
-        let s = st.settings.lock().unwrap();
-        (s.setup_done, s.floating() || s.fullscreen(), focus_rules(&s), s.fullscreen())
-    };
-    if !setup_done || stays || secs == Some(0) {
+    let s = st.settings.lock().unwrap().clone();
+    if !s.setup_done || s.floating() || s.fullscreen() || secs == Some(0) {
         return;
     }
-    let on = st.rt.lock().unwrap().focus.quiet(rules);
-    if focus::decide(rules, on, false, full).pop_up {
+    let pop_up = decide(&s, &st.rt.lock().unwrap(), false).pop_up;
+    if pop_up {
         present_for(app, false, secs.map(|s| s as u64 * 1000));
     }
 }
@@ -2575,6 +2676,11 @@ fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), Strin
     if old.polling != new.polling || old.source != new.source {
         sync_pause_item(app);
     }
+    if old.paused() != new.paused() {
+        pause_changed(app, &new);
+    } else if old.pause_until != new.pause_until {
+        sync_popup_pause_menu(app);
+    }
     broadcast(app);
     Ok(())
 }
@@ -2974,6 +3080,8 @@ pub fn run() {
             quit,
             board_resize,
             board_hidden,
+            pause_popups,
+            resume_popups,
             cursor_in_window,
             board_drag_start,
             board_drag_move,
@@ -3136,10 +3244,24 @@ pub fn run() {
                 });
             #[cfg(not(target_os = "macos"))]
             {
-                use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+                use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
                 let full_item = CheckMenuItem::with_id(app, "fullscreen", "Full screen", true, full, Some("F11"))?;
                 app.manage(FullItem(full_item.clone()));
                 let pause_item = MenuItem::with_id(app, "pause", "Pause checking", true, None::<&str>)?;
+                let resume_popups_item = MenuItem::with_id(app, "resume_popups", "Resume pop-ups", false, None::<&str>)?;
+                let popup_pause = Submenu::with_id_and_items(
+                    app,
+                    "pause_popups",
+                    "Pause pop-ups",
+                    true,
+                    &[
+                        &MenuItem::with_id(app, "pause_1h", "For 1 hour", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "pause_2h", "For 2 hours", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "pause_on", "Until I resume", true, None::<&str>)?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &resume_popups_item,
+                    ],
+                )?;
                 let menu = Menu::with_items(
                     app,
                     &[
@@ -3147,6 +3269,7 @@ pub fn run() {
                         &MenuItem::with_id(app, "next", "Next source", true, None::<&str>)?,
                         &full_item,
                         &pause_item,
+                        &popup_pause,
                         &MenuItem::with_id(app, "compose", "Compose…", true, None::<&str>)?,
                         &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
@@ -3159,7 +3282,9 @@ pub fn run() {
                 )?;
                 app.manage(TrayMenu(menu.clone()));
                 app.manage(PauseItem(pause_item));
+                app.manage(PopupPauseMenu(popup_pause, resume_popups_item));
                 sync_pause_item(&h);
+                sync_popup_pause_menu(&h);
                 tray = tray.menu(&menu).on_menu_event(|app, e| match e.id().as_ref() {
                     "update" | "check_updates" => open_panel(app, "update"),
                     "plugin_updates" => open_panel(app, "settings/sources/updates"),
@@ -3170,6 +3295,10 @@ pub fn run() {
                         let polling = app.state::<AppState>().settings.lock().unwrap().polling;
                         let _ = apply_settings(app, json!({ "polling": !polling }));
                     }
+                    "pause_1h" => pause_popups(app.clone(), Some(60)),
+                    "pause_2h" => pause_popups(app.clone(), Some(120)),
+                    "pause_on" => pause_popups(app.clone(), None),
+                    "resume_popups" => resume_popups(app.clone()),
                     "compose" => open_panel(app, "compose"),
                     "settings" => open_panel(app, "settings"),
                     "site" => open_site(app.clone()),
@@ -3197,6 +3326,7 @@ pub fn run() {
 
             tauri::async_runtime::spawn(poll_loop(h.clone()));
             tauri::async_runtime::spawn(sources_loop(h.clone()));
+            tauri::async_runtime::spawn(pause_loop(h.clone()));
             tauri::async_runtime::spawn(watch_screens(h.clone()));
             notify::start(&h);
             // Focus / Do Not Disturb: read now and then; macOS asks for access once.

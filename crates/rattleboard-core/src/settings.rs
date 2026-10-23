@@ -111,6 +111,10 @@ pub struct Settings {
     pub focus_fullscreen: bool,
     /// A call (another app using the microphone or camera) or a slideshow counts as a Focus
     pub focus_calls: bool,
+    /// Pop-ups paused from the tray: until this time (ms since the epoch), or -1 until the
+    /// user resumes them; 0 when they aren't. Like a Focus that holds pop-ups, but alerts are
+    /// held too. A pinned or full-screen board is on screen anyway and still changes, silently.
+    pub pause_until: i64,
 }
 
 /// Board sizes by name: rows × columns.
@@ -173,11 +177,23 @@ impl Default for Settings {
             focus_alerts: true,
             focus_fullscreen: false,
             focus_calls: true,
+            pause_until: 0,
         }
     }
 }
 
 impl Settings {
+    /// Pop-ups are paused from the tray. A timed pause stays on until the app's once-a-second
+    /// check sees its time has come and resumes, so the summary always follows.
+    pub fn paused(&self) -> bool {
+        self.pause_until != 0
+    }
+
+    /// A timed pause whose time has come by `now` (ms since the epoch).
+    pub fn pause_over(&self, now: i64) -> bool {
+        self.pause_until > 0 && now >= self.pause_until
+    }
+
     pub fn load(path: &PathBuf) -> Self {
         std::fs::read_to_string(path)
             .ok()
@@ -201,6 +217,9 @@ impl Settings {
             self.scale = 1.0;
         }
         self.scale = self.scale.clamp(0.4, 3.0);
+        if self.pause_until < -1 {
+            self.pause_until = 0;
+        }
         if !["tl", "tr", "bl", "br"].contains(&self.position.as_str()) {
             self.position = "br".into();
         }
@@ -320,6 +339,17 @@ pub fn in_quiet_hours(from: &str, to: &str, now: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pausing_pop_ups() {
+        let s = Settings::default();
+        assert!(!s.paused() && !s.pause_over(i64::MAX));
+        let s = s.merge(serde_json::json!({ "pauseUntil": -1 })).unwrap();
+        assert!(s.paused() && !s.pause_over(i64::MAX), "until resumed never ends by itself");
+        let s = s.merge(serde_json::json!({ "pauseUntil": 5000 })).unwrap();
+        assert!(s.paused() && !s.pause_over(4999) && s.pause_over(5000));
+        assert!(!s.merge(serde_json::json!({ "pauseUntil": -7 })).unwrap().paused());
+    }
 
     #[test]
     fn quiet_hours() {

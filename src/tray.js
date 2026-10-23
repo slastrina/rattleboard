@@ -1,6 +1,8 @@
 // The menu-bar / system-tray popover.
 const menu = document.getElementById('menu');
 let S = null, lastH = 0;
+// "Pause pop-ups…" was clicked: its choices show under it.
+let pickPause = false;
 
 document.documentElement.classList.add(navigator.userAgent.includes('Mac') ? 'mac' : 'win');
 const isMac = () => (S ? S.os === 'mac' : document.documentElement.classList.contains('mac'));
@@ -11,11 +13,28 @@ function checkedLabel(now) {
   return s <= 0 ? 'just now' : s < 60 ? s + 's ago' : RB.ago(now - S.lastChecked);
 }
 
+// " until 3:40 PM", " until tomorrow 9:00 AM", or nothing for a pause until resumed.
+function pauseUntil(until) {
+  if (until === -1) return '';
+  const t = new Date(until), time = t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return ` until ${t.toDateString() === new Date().toDateString() ? '' : 'tomorrow '}${time}`;
+}
+
+// The pause item, or its choices (indented) once it's been clicked.
+function pauseItems(popPaused) {
+  if (popPaused) return [['resumePop', 'Resume pop-ups', '']];
+  if (!pickPause) return [['pickPause', 'Pause pop-ups…', '']];
+  const sub = t => `<span style="padding-left:12px">${t}</span>`;
+  return [['pickPause', 'Pause pop-ups', '', false, '▾'], ['pause1h', sub('For 1 hour'), ''], ['pause2h', sub('For 2 hours'), ''], ['pauseOn', sub('Until I resume'), '']];
+}
+
 function render() {
   if (!S) return;
   const s = S.settings, now = Date.now(), mac = isMac(), fin = RB.fin(s.finish);
   // Pausing stops reading the mirrored board; a standalone (virtual) board has nothing to pause.
   const virt = s.source === 'virtual', paused = !s.polling && !virt;
+  // Pop-ups paused from here: the board takes messages but doesn't pop up (see pause_changed).
+  const popPaused = !!s.pauseUntil, held = (S.focus && S.focus.held) || 0;
   const connDot = paused ? '#9a9ca1' : S.conn === 'testing' ? '#e0a526' : S.conn === 'error' ? '#e0553f' : S.conn === 'ok' ? '#34b05a' : '#9a9ca1';
   const status = !s.setupDone ? 'Not set up yet'
     : paused ? 'Checking paused'
@@ -27,7 +46,7 @@ function render() {
   const to = s.sendTarget !== 'this' && RB.targets(S).some(t => t[0] === s.sendTarget) && { name: RB.targetName(S, s.sendTarget) };
   const groups = [
     [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ...(S.link ? [['openLink', 'Open current link ↗', '']] : []), ...(src.active ? [['next', src.showing ? `Next source <span style="color:#8a8c91">· now ${RB.esc(src.showing)}</span>` : 'Next source', kbd('⌘→', 'Ctrl+→')]] : []), ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
-    [['pin', 'Pin as widget', '', s.mode === 'float'], ['full', 'Full screen', kbd('⌃⌘F', 'F11'), s.mode === 'fullscreen'], ...(virt ? [] : [['pause', paused ? 'Resume checking' : 'Pause checking', '', false]])],
+    [['pin', 'Pin as widget', '', s.mode === 'float'], ['full', 'Full screen', kbd('⌃⌘F', 'F11'), s.mode === 'fullscreen'], ...(virt ? [] : [['pause', paused ? 'Resume checking' : 'Pause checking', '', false]]), ...pauseItems(popPaused)],
     [['compose', 'Compose…', kbd('⌘N', 'Ctrl+N')], ['history', 'Message history…', ''], ['settings', 'Settings…', kbd('⌘,', '')], ['setup', 'Run setup again…', '']],
     [['checkUpdates', 'Check for updates…', ''], ['site', `Rattleboard${S.version ? ` v${RB.esc(S.version)}` : ''} on iokig.com`, ''], ['kofi', 'Support Rattleboard on Ko-fi', '']],
     [['quit', 'Quit Rattleboard', kbd('⌘Q', '')]]
@@ -38,6 +57,7 @@ function render() {
   const pu = S.pluginUpdates || 0;
   menu.style.margin = mac ? '0 auto' : '0';
   menu.innerHTML = `
+    ${popPaused ? `<div class="update-group"><div class="item update" data-act="resumePop"><span class="chk">❙❙</span><span>Pop-ups paused${RB.esc(pauseUntil(s.pauseUntil))}${held ? ` · ${held} waiting` : ''}</span><span class="key">Resume</span></div></div>` : ''}
     ${paused && s.setupDone ? `<div class="update-group"><div class="item update" data-act="resume"><span class="chk">❙❙</span><span>Checking paused · Resume</span><span class="key"></span></div></div>` : ''}
     ${up || pu ? `<div class="update-group">${up ? `<div class="item update" data-act="update"><span class="chk">↑</span><span>Update available: v${RB.esc(up)}…</span><span class="key"></span></div>` : ''}${pu ? `<div class="item update" data-act="pluginUpdates"><span class="chk">↑</span><span>Plugin updates (${pu})…</span><span class="key"></span></div>` : ''}</div>` : ''}
     <div style="padding:8px 10px 10px; display:flex; flex-direction:column; gap:8px">
@@ -54,8 +74,8 @@ function render() {
       </div>
       ${playing()}
     </div>
-    ${groups.map(g => `<div class="group">${g.map(([act, label, key, on]) =>
-      `<div class="item" data-act="${act}"><span class="chk">${on ? '✓' : ''}</span><span>${label}</span><span class="key">${key}</span></div>`).join('')}</div>`).join('')}`;
+    ${groups.map(g => `<div class="group">${g.map(([act, label, key, on, mark]) =>
+      `<div class="item" data-act="${act}"><span class="chk">${on ? '✓' : ''}</span><span>${label}</span><span class="key">${mark || key}</span></div>`).join('')}</div>`).join('')}`;
   const h = Math.ceil(menu.offsetHeight + 28);
   if (h !== lastH) { lastH = h; RB.invoke('tray_resize', { height: h }); }
 }
@@ -63,6 +83,8 @@ function render() {
 // "Focus on — holding pop-ups" (Settings → Behavior → While Focus is on), under the status.
 function focusLine() {
   const f = S.focus;
+  // A pause says so at the top of the menu instead.
+  if (S.settings.pauseUntil) return '';
   if (!f || !f.quiet || !(f.holding || f.muted)) return '';
   const name = f.on ? (S.os === 'mac' ? 'Focus' : 'Do Not Disturb') + ' on' : f.call;
   const text = f.holding ? `${name} — holding pop-ups${f.held ? ` · ${f.held} waiting` : ''}` : `${name} — pop-ups are silent`;
@@ -112,8 +134,18 @@ const act = {
   checkUpdates: () => RB.invoke('open_window', { view: 'update' }),
   pluginUpdates: () => RB.invoke('open_window', { view: 'settings/sources/updates' }),
   resume: () => RB.invoke('update_settings', { patch: { polling: true } }),
+  pickPause: () => { pickPause = !pickPause; render(); },
+  pause1h: () => pausePop(60),
+  pause2h: () => pausePop(120),
+  pauseOn: () => pausePop(null),
+  resumePop: () => RB.invoke('resume_popups'),
   quit: () => RB.invoke('quit')
 };
+function pausePop(minutes) {
+  pickPause = false;
+  RB.invoke('pause_popups', { minutes });
+  RB.invoke('close_window', { label: 'tray' });
+}
 RB.delegate(menu, 'click', Object.fromEntries(Object.entries(act).map(([k, f]) => [k, () => f()])));
 RB.delegate(menu, 'click', { stopSeq: el => RB.invoke('stop_sequence', { target: el.dataset.v }) });
 
@@ -130,3 +162,5 @@ document.addEventListener('keydown', e => {
 
 RB.onState(snap => { S = snap; render(); });
 setInterval(render, 1000);
+// The pause choices fold away again when the menu closes.
+window.addEventListener('blur', () => { if (pickPause) { pickPause = false; render(); } });

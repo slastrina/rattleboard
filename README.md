@@ -37,7 +37,7 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
 - **Works with AI agents.** Claude Code, opencode, Cursor, Codex, Gemini CLI, Claude Desktop and VS Code can post to the board as a tool call (MCP), for example when a long task finishes or they need your input. Set it up from Settings → Agents. See [Agents (MCP)](#agents-mcp).
 - **Sequences.** Play several messages in turn, each held for a while once its flaps settle, once or on a loop.
 - **Pair a phone.** Show a QR code that the Rattleboard phone app scans to add this board.
-- **Respects Focus, Do Not Disturb and your meetings.** While a Focus (macOS) or Do Not Disturb (Windows, GNOME, KDE) is on, or you're in a call (Teams, a Slack huddle, Zoom, Meet) or presenting, the board keeps updating but holds its pop-ups and sound, then tells you how many messages came. See [Focus and Do Not Disturb](#focus-and-do-not-disturb).
+- **Respects Focus, Do Not Disturb and your meetings.** While a Focus (macOS) or Do Not Disturb (Windows, GNOME, KDE) is on, or you're in a call (Teams, a Slack huddle, Zoom, Meet) or presenting, the board keeps updating but holds its pop-ups and sound, then tells you how many messages came. You can also [pause pop-ups](#pausing-pop-ups) from the tray for an hour, two, or until you resume. See [Focus and Do Not Disturb](#focus-and-do-not-disturb).
 - **Notification forwarding (Windows).** Put notifications from the apps you choose on a board. See [Notification forwarding](#notification-forwarding-windows).
 - **Demo mode.** No board yet? It flips through sample messages so you can try everything.
 - **Sources.** Left to itself, the board takes turns showing a clock, the weather, countdowns, news feeds, your calendar, a quote of the day or anything a plugin fetches, calmly, and it can drive your other boards too. See [Sources and plugins](#sources-and-plugins).
@@ -920,6 +920,12 @@ How Rattleboard knows:
 - **Linux:** GNOME's Do Not Disturb (`org.gnome.desktop.notifications show-banners`) and KDE Plasma's (the notification server's `Inhibited` property). Other desktops don't report it.
 
 Rattleboard checks every 5 seconds, so a Focus or a call can take that long to take effect.
+
+### Pausing pop-ups
+
+To hold pop-ups whenever you like, choose **Pause pop-ups** in the tray menu: **For 1 hour**, **For 2 hours** or **Until I resume**. While paused, Rattleboard still takes every message, from the API, agents (MCP), Sources and notifications, and keeps it in Message history. A pinned or full-screen board still shows each message, silently, but nothing pops up or makes a sound, alerts included. A pop-up already on screen goes away when you pause.
+
+The top of the tray menu says "Pop-ups paused until 3:40 PM" and how many messages are waiting; click it to resume. When the pause ends, one pop-up shows the latest message with "3 messages while paused". A pause carries on through a restart, and if a Focus is still holding pop-ups when it ends, you get one summary once both are over.
 
 ## Notification forwarding (Windows)
 

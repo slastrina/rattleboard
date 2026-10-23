@@ -176,6 +176,8 @@ RB.onState(snap => {
   if (pair && pair.waiting && S.server.running && S.settings.serverLan && S.server.urls.length > 1) showPair();
   render();
 });
+// Pop-ups paused from the tray: a pop-up on screen goes (a pinned or full-screen board stays).
+RB.listen('rb://dismiss', () => { if (ui.visible && !stays()) hide(); });
 RB.listen('rb://present', e => {
   const p = e.payload || {};
   // A source's card may pop up for a time of its own.

@@ -78,6 +78,10 @@ pub struct Decision {
 
 const AS_USUAL: Decision = Decision { pop_up: true, sound: true, held: false };
 
+/// While pop-ups are paused from the tray: nothing pops up or makes a sound, alerts included,
+/// and everything counts towards the summary shown when the pause ends.
+pub const PAUSED: Decision = Decision { pop_up: false, sound: false, held: true };
+
 /// The rule: nothing changes without a Focus, with "Ignore Focus", on a full-screen board
 /// (a kiosk) unless it follows Focus too, or for an alert the user lets through. Otherwise
 /// "Mute sound only" pops up silently and "Hold pop-ups" doesn't pop up at all.
@@ -117,9 +121,22 @@ impl Held {
     }
 }
 
-/// `call`: it was a call or a slideshow that held them, not a Focus.
-pub fn summary_text(n: usize, call: bool) -> String {
-    let while_ = if call { "while you were busy" } else { "while you were focused" };
+/// What held them, for the summary.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum HeldBy {
+    Focus,
+    /// A call or a slideshow
+    Call,
+    /// Paused from the tray
+    Pause,
+}
+
+pub fn summary_text(n: usize, by: HeldBy) -> String {
+    let while_ = match by {
+        HeldBy::Focus => "while you were focused",
+        HeldBy::Call => "while you were busy",
+        HeldBy::Pause => "while paused",
+    };
     if n == 1 {
         format!("1 message {while_}")
     } else {
@@ -562,9 +579,10 @@ mod tests {
         assert_eq!(h.count, 0);
         h.note(g(4), Some("https://example.com/4".into()));
         assert_eq!(h.take().map(|(n, m)| (n, m.link)), Some((1, Some("https://example.com/4".into()))));
-        assert_eq!(summary_text(1, false), "1 message while you were focused");
-        assert_eq!(summary_text(5, false), "5 messages while you were focused");
-        assert_eq!(summary_text(2, true), "2 messages while you were busy");
+        assert_eq!(summary_text(1, HeldBy::Focus), "1 message while you were focused");
+        assert_eq!(summary_text(5, HeldBy::Focus), "5 messages while you were focused");
+        assert_eq!(summary_text(2, HeldBy::Call), "2 messages while you were busy");
+        assert_eq!(summary_text(3, HeldBy::Pause), "3 messages while paused");
     }
 
     #[test]
