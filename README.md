@@ -6,7 +6,7 @@ Compose messages and sequences and send them to every board you own. Scripts can
 
 [Rattleboard Web](#rattleboard-web-docker) runs the board in a container and shows it in any browser: a wall tablet, a TV, a Home Assistant dashboard.
 
-Free and open source under the MIT license. Rattleboard for Apple TV is [on the App Store](https://apps.apple.com/app/rattleboard/id6824192040); iPhone, iPad, Android and Android TV are coming soon. Project page: [iokig.com/rattleboard](https://www.iokig.com/rattleboard).
+Free and open source under the MIT license. Rattleboard for Android and Android TV is [on Google Play](https://play.google.com/store/apps/details?id=com.iokig.rattleboard), and for Apple TV [on the App Store](https://apps.apple.com/app/rattleboard/id6824192040); iPhone and iPad are coming soon. Project page: [iokig.com/rattleboard](https://www.iokig.com/rattleboard).
 
 Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with or endorsed by Vestaboard.
 
@@ -74,14 +74,14 @@ Releases carry a `latest.json` (each platform's bundle and signature) for the up
 
 ### Phones, tablets and TVs
 
-Rattleboard for Apple TV is [on the App Store](https://apps.apple.com/app/rattleboard/id6824192040). iPhone, iPad, Android and Android TV are on their way to the App Store and Google Play. Each is a one-off purchase with no subscription, and store links will be added here when they're live.
+Rattleboard for Android and Android TV is [on Google Play](https://play.google.com/store/apps/details?id=com.iokig.rattleboard), and for Apple TV [on the App Store](https://apps.apple.com/app/rattleboard/id6824192040). iPhone and iPad are on their way to the App Store. Each is a one-off purchase with no subscription, and the iPhone and iPad link will be added here when it's live.
 
 | Platform | Where | Setting it up |
 | --- | --- | --- |
 | iPhone and iPad (iOS 16+) | App Store *(link coming soon)* | Install it, open it, and choose a board to show or send to. To pair with a Rattleboard, scan the QR code from its **Settings → API server → Pair a phone** (on a TV, from its menu). Add the home-screen widget to see the board at a glance |
 | Apple TV (tvOS 16+) | [App Store](https://apps.apple.com/app/rattleboard/id6824192040), included with the iPhone and iPad purchase | Install it from the TV's App Store. It opens as a full-screen board with its own API server and Sources; pair your phone from its menu to send to it and set up its rotation |
-| Android phones and tablets (Android 8+) | Google Play *(link coming soon)* | Install it, open it, and pair by scanning a board's QR code. Optional: notification forwarding, which sends the notifications of the apps you choose to a board |
-| Android TV and Google TV (Android 8+) | Google Play on the TV *(link coming soon)* | Install it from the TV's Play Store. It opens as a full-screen board with its own API server and Sources; pair a phone from its menu, and use ◀ ▶ on the remote to skip to the next card |
+| Android phones and tablets (Android 8+) | [Google Play](https://play.google.com/store/apps/details?id=com.iokig.rattleboard) | Install it, open it, and pair by scanning a board's QR code. Optional: notification forwarding, which sends the notifications of the apps you choose to a board |
+| Android TV and Google TV (Android 8+) | [Google Play](https://play.google.com/store/apps/details?id=com.iokig.rattleboard) on the TV | Install it from the TV's Play Store. It opens as a full-screen board with its own API server and Sources; pair a phone from its menu, and use ◀ ▶ on the remote to skip to the next card |
 
 ## Connecting your board
 
@@ -106,7 +106,7 @@ Prop one on a shelf, mount it by the front door, or plug an old mini PC into a s
 | Old Mac (MacBook, iMac, Mac mini) | macOS 11 or later | **Available now:** [Releases](https://github.com/slastrina/rattleboard/releases/latest) or Homebrew |
 | Windows laptop, NUC or mini PC | Windows 10 or 11 | **Available now:** [Releases](https://github.com/slastrina/rattleboard/releases/latest) |
 | Raspberry Pi 4 or 5 | 64-bit Raspberry Pi OS (Bookworm) with desktop | **Available now:** [Releases](https://github.com/slastrina/rattleboard/releases/latest); see [Raspberry Pi](#raspberry-pi) |
-| Android phone, tablet, TV or TV box | Android 8 or later | Coming soon; links to come |
+| Android phone, tablet, TV or TV box | Android 8 or later | **Available now:** [Google Play](https://play.google.com/store/apps/details?id=com.iokig.rattleboard) |
 | Apple TV | tvOS 16 or later | **Available now:** [App Store](https://apps.apple.com/app/rattleboard/id6824192040) |
 | iPhone or iPad | iOS 16 or later | Coming soon; links to come |
 
