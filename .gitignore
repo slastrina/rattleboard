@@ -3,6 +3,7 @@ node_modules/
 /target/
 src-tauri/target/
 src-tauri/gen/schemas/
+src-tauri/saver/
 dist/
 
 # never commit secrets or local config

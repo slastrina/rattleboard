@@ -4,7 +4,7 @@
   },
   "bundle": {
     "resources": {
-      "../target/saver/Rattleboard.scr": "Rattleboard.scr"
+      "saver/Rattleboard.scr": "Rattleboard.scr"
     }
   }
 }

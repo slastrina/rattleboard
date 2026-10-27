@@ -3,7 +3,7 @@
 // beforeBundleCommand; see tauri.macos.conf.json and tauri.windows.conf.json):
 //
 //   macOS    target/saver/Rattleboard.saver   (Swift, arm64 + x86_64, macOS 11+)
-//   Windows  target/saver/Rattleboard.scr     (crates/rattleboard-saver)
+//   Windows  target/saver/Rattleboard.scr     (crates/rattleboard-saver), and src-tauri/saver/
 //   Linux    nothing
 //
 // Both carry the screen saver page (src/saver.html and saver.js, the split-flap renderer and
@@ -83,6 +83,9 @@ function windows() {
   run('cargo', ['build', '-p', 'rattleboard-saver', '--release']);
   const exe = join(root, 'target', 'release', 'rattleboard-saver.exe');
   copyFileSync(exe, join(out, 'Rattleboard.scr'));
+  // Where tauri.windows.conf.json bundles it from (src-tauri/build.rs leaves a stand-in there).
+  mkdirSync(join(root, 'src-tauri', 'saver'), { recursive: true });
+  copyFileSync(exe, join(root, 'src-tauri', 'saver', 'Rattleboard.scr'));
   console.log(`Screen saver: ${join(out, 'Rattleboard.scr')}`);
 }
 

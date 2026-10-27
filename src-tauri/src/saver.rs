@@ -144,7 +144,8 @@ pub fn bundled(resource_dir: Option<PathBuf>) -> Option<PathBuf> {
     if cfg!(debug_assertions) {
         places.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/saver").join(name));
     }
-    places.into_iter().find(|p| p.exists())
+    // An empty file is the stand-in a Windows build has until the real one is built (build.rs).
+    places.into_iter().find(|p| p.is_dir() || std::fs::metadata(p).is_ok_and(|m| m.len() > 0))
 }
 
 /// Where it goes.
