@@ -1,4 +1,5 @@
-// The screen saver's board (macOS .saver and Windows .scr host this page). The host calls
+// The screen saver's board (the Windows .scr hosts this page; the Mac draws the same natively,
+// saver/macos/RattleboardSaver.swift). The host calls
 // saverUpdate(view) about once a second with what the Rattleboard app on this computer is
 // showing (its local screen saver feed), or saverUpdate(null) when the app isn't running.
 // With nothing from the app, or a blank board, it shows the time and date instead.

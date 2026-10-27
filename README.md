@@ -971,10 +971,10 @@ cargo test --workspace
 The Rust code is a Cargo workspace: the desktop app in `src-tauri`, the board engine it shares with Rattleboard Web in `crates/rattleboard-core`, the Rattleboard Web server in `crates/rattleboard-web`, and the Windows screen saver in `crates/rattleboard-saver`.
 
 The screen saver is built while bundling (`node scripts/build-saver.mjs`, Tauri's `beforeBundleCommand`):
-- **macOS:** `saver/macos/RattleboardSaver.swift` becomes `Rattleboard.saver`, which goes into the app's Resources.
-- **Windows:** `crates/rattleboard-saver` becomes `Rattleboard.scr`.
+- **macOS:** `saver/macos/RattleboardSaver.swift` becomes `Rattleboard.saver`, which goes into the app's Resources. It draws the board natively with Core Animation: inside macOS's screen saver host a web view counts as hidden, and WebKit suspends it.
+- **Windows:** `crates/rattleboard-saver` becomes `Rattleboard.scr`, which shows `src/saver.html` in WebView2.
 
-Both show `src/saver.html`. To try it without installing: on macOS, `node scripts/build-saver.mjs`, then load the bundle from `target/saver`. Anywhere, `cargo run -p rattleboard-saver -- /s` opens it in a window. Debug builds run the feed without installing with `RATTLEBOARD_PROFILE=<name> RATTLEBOARD_SAVER_FEED=1`. To build and run Rattleboard Web locally:
+To try it without installing: on macOS, `node scripts/build-saver.mjs`, then load the bundle from `target/saver`. Anywhere, `cargo run -p rattleboard-saver -- /s` opens it in a window. Debug builds run the feed without installing with `RATTLEBOARD_PROFILE=<name> RATTLEBOARD_SAVER_FEED=1`. To build and run Rattleboard Web locally:
 
 ```sh
 docker build -f crates/rattleboard-web/Dockerfile -t rattleboard-web .

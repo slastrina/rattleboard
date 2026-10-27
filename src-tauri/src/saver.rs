@@ -176,8 +176,8 @@ fn exe_of(p: &Path) -> PathBuf {
 fn same(a: &Path, b: &Path) -> bool {
     match (std::fs::read(exe_of(a)), std::fs::read(exe_of(b))) {
         (Ok(x), Ok(y)) => x == y && {
-            // The page inside a .saver can change without the executable changing.
-            let (pa, pb) = (a.join("Contents/Resources/web/saver.js"), b.join("Contents/Resources/web/saver.js"));
+            // A .saver's Info.plist (its version) can change without the executable changing.
+            let (pa, pb) = (a.join("Contents/Info.plist"), b.join("Contents/Info.plist"));
             !pa.exists() || std::fs::read(pa).ok() == std::fs::read(pb).ok()
         },
         _ => false,
@@ -348,9 +348,9 @@ mod tests {
         let res = tmp.join("Resources");
         let saver = res.join("Rattleboard.saver/Contents");
         std::fs::create_dir_all(saver.join("MacOS")).unwrap();
-        std::fs::create_dir_all(saver.join("Resources/web")).unwrap();
+        std::fs::create_dir_all(saver.join("Resources")).unwrap();
         std::fs::write(saver.join("MacOS/Rattleboard"), b"build one").unwrap();
-        std::fs::write(saver.join("Resources/web/saver.js"), b"page one").unwrap();
+        std::fs::write(saver.join("Info.plist"), b"version one").unwrap();
         let home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.join("home"));
         let s = status(Some(res.clone()));
@@ -361,11 +361,11 @@ mod tests {
         let s = status(Some(res.clone()));
         assert!(s.installed && s.current, "{s:?}");
         assert!(!refresh(Some(res.clone())), "nothing to update");
-        // A new version of the app: its page changed.
-        std::fs::write(saver.join("Resources/web/saver.js"), b"page two").unwrap();
+        // A new version of the app: its Info.plist changed.
+        std::fs::write(saver.join("Info.plist"), b"version two").unwrap();
         assert!(!status(Some(res.clone())).current);
         assert!(refresh(Some(res.clone())));
-        assert_eq!(std::fs::read(dst.join("Contents/Resources/web/saver.js")).unwrap(), b"page two");
+        assert_eq!(std::fs::read(dst.join("Contents/Info.plist")).unwrap(), b"version two");
         assert!(status(Some(res.clone())).current);
         uninstall().unwrap();
         assert!(!dst.exists() && !status(Some(res)).installed);

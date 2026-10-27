@@ -6,8 +6,9 @@
 //   Windows  target/saver/Rattleboard.scr     (crates/rattleboard-saver), and src-tauri/saver/
 //   Linux    nothing
 //
-// Both carry the screen saver page (src/saver.html and saver.js, the split-flap renderer and
-// the font). On macOS, RB_SAVER_IDENTITY (a Developer ID Application identity, its name or
+// Windows shows the screen saver page (src/saver.html and saver.js, with the split-flap
+// renderer and the font); the Mac draws the same board natively (saver/macos), with the font
+// as a TTF. On macOS, RB_SAVER_IDENTITY (a Developer ID Application identity, its name or
 // SHA-1) signs the bundle for notarization, with the hardened runtime and a timestamp;
 // without it the bundle is signed ad hoc, which is enough to try it on this Mac.
 //
@@ -43,7 +44,7 @@ function mac() {
   for (const arch of ['arm64', 'x86_64']) {
     const o = join(out, `saver-${arch}`);
     run('xcrun', ['swiftc', '-O', '-target', `${arch}-apple-macos11.0`, '-module-name', 'RattleboardSaver',
-      '-emit-library', '-Xlinker', '-bundle', '-framework', 'ScreenSaver', '-framework', 'WebKit', '-framework', 'AppKit',
+      '-emit-library', '-Xlinker', '-bundle', '-framework', 'ScreenSaver', '-framework', 'QuartzCore', '-framework', 'CoreText', '-framework', 'AppKit',
       '-o', o, src]);
     slices.push(o);
   }
@@ -68,8 +69,8 @@ function mac() {
 </dict>
 </plist>
 `);
-  web(join(contents, 'Resources', 'web'));
-  for (const t of ['thumbnail.png', 'thumbnail@2x.png']) {
+  // The Mac draws the board natively (no web page): it needs the flap font.
+  for (const t of ['thumbnail.png', 'thumbnail@2x.png', 'BarlowSemiCondensed-SemiBold.ttf']) {
     const p = join(root, 'saver', 'macos', t);
     if (existsSync(p)) copyFileSync(p, join(contents, 'Resources', t));
   }
