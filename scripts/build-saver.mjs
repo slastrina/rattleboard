@@ -74,6 +74,8 @@ function mac() {
     const p = join(root, 'saver', 'macos', t);
     if (existsSync(p)) copyFileSync(p, join(contents, 'Resources', t));
   }
+  // The font's licence travels with it (SIL Open Font License).
+  copyFileSync(join(root, 'src', 'fonts', 'OFL.txt'), join(contents, 'Resources', 'OFL.txt'));
   const id = process.env.RB_SAVER_IDENTITY;
   if (id) run('codesign', ['--force', '--options', 'runtime', '--timestamp', '--sign', id, bundle]);
   else run('codesign', ['--force', '--sign', '-', bundle]);
