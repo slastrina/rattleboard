@@ -846,7 +846,8 @@ fn sync_popup_pause_menu(app: &AppHandle) {
 fn saver_view(st: &AppState) -> String {
     let s = st.settings.lock().unwrap().clone();
     let rt = st.rt.lock().unwrap();
-    let display = rt.display.clone().or_else(|| rt.layout.clone()).unwrap_or_else(|| blank(&s));
+    // Nothing on the board yet (just started): the last message instead.
+    let display = rt.display.clone().or_else(|| rt.layout.clone()).or_else(|| rt.history.first().map(|h| h.layout.clone())).unwrap_or_else(|| blank(&s));
     let (rows, cols) = if s.adaptive { vestaboard::dims_of(&display) } else { s.dims() };
     json!({
         "app": "rattleboard",

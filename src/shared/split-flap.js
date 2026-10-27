@@ -131,6 +131,14 @@
       this._emit('flapstart');
       if (!this._running) { this._running = true; this._raf = requestAnimationFrame(this._tick); }
     }
+    // Every flap straight to where it's going, without turning: for a page that isn't given
+    // animation frames (a screen saver's preview, for one), where the flaps would never move.
+    settle() {
+      cancelAnimationFrame(this._raf); this._running = false;
+      let moved = false;
+      for (const t of this.tiles) { if (t.cur !== t.target) { t.cur = t.target; moved = true; } this._settle(t); }
+      if (moved) this._emit('flapdone');
+    }
     _emit(n) { this.dispatchEvent(new CustomEvent(n, { bubbles: true, composed: true })); }
     _tick = now => {
       const d = 62 / Math.max(0.25, +this._p.speed || 1);

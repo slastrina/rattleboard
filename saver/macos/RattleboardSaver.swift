@@ -51,6 +51,11 @@ final class RattleboardSaverView: ScreenSaverView {
         guard web == nil else { return }
         let config = WKWebViewConfiguration()
         config.suppressesIncrementalRendering = true
+        // The preview in System Settings is told so: it shows the board at once, without waves.
+        if isPreview {
+            config.userContentController.addUserScript(
+                WKUserScript(source: "window.RB_SAVER_PREVIEW = true", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         let w = WKWebView(frame: bounds, configuration: config)
         w.autoresizingMask = [.width, .height]
         w.setValue(false, forKey: "drawsBackground")

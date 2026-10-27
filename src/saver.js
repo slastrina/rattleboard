@@ -10,6 +10,8 @@
 (() => {
   const sfb = document.getElementById('sfb'), stage = document.getElementById('stage');
   const root = document.documentElement;
+  // The little preview in System Settings: no waves, and flaps shown where they land.
+  const preview = !!window.RB_SAVER_PREVIEW || location.hash === '#preview';
 
   const DRIFT_MS = 60 * 1000;
   const WIPE_EVERY_MS = 5 * 60 * 1000;
@@ -148,15 +150,25 @@
     view = v && typeof v === 'object' ? v : null;
     heard = view ? Date.now() : 0;
     render(was !== !!view);
+    // The host's call still comes when the page gets no animation frames (and its timers are
+    // slowed): the flaps go straight to where they're going.
+    if (preview || performance.now() - lastFrame > 900) sfb.settle && sfb.settle();
   };
+
+  // Some hosts (macOS's preview pane, a hidden window) don't give the page animation frames,
+  // so flaps would never turn: then they go straight to where they're going.
+  let lastFrame = performance.now();
+  const frame = () => { lastFrame = performance.now(); requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+  setInterval(() => { if (preview || performance.now() - lastFrame > 900) sfb.settle && sfb.settle(); }, 500);
 
   addEventListener('resize', () => render(true));
   // The clock's next minute, and a host gone quiet.
   setInterval(() => render(false), 1000);
   setInterval(drift, DRIFT_MS);
-  setInterval(() => { if (Date.now() - lastWipe >= WIPE_EVERY_MS) wipe(); }, 5000);
+  if (!preview) setInterval(() => { if (Date.now() - lastWipe >= WIPE_EVERY_MS) wipe(); }, 5000);
   drift();
   render(true);
   // A first wave soon after starting, so every flap turns over at least once.
-  setTimeout(wipe, 20000);
+  if (!preview) setTimeout(wipe, 20000);
 })();
