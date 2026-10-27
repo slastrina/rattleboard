@@ -1,0 +1,10 @@
+{
+  "build": {
+    "beforeBundleCommand": "node scripts/build-saver.mjs"
+  },
+  "bundle": {
+    "resources": {
+      "../target/saver/Rattleboard.scr": "Rattleboard.scr"
+    }
+  }
+}

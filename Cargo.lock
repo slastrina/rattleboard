@@ -3292,7 +3292,7 @@ dependencies = [
 
 [[package]]
 name = "rattleboard"
-version = "0.10.8"
+version = "0.11.0"
 dependencies = [
  "block2",
  "chrono",
@@ -3320,7 +3320,7 @@ dependencies = [
 
 [[package]]
 name = "rattleboard-core"
-version = "0.10.8"
+version = "0.11.0"
 dependencies = [
  "axum",
  "chrono",
@@ -3344,8 +3344,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rattleboard-saver"
+version = "0.11.0"
+dependencies = [
+ "serde_json",
+ "tao",
+ "windows-sys 0.60.2",
+ "wry",
+]
+
+[[package]]
 name = "rattleboard-web"
-version = "0.10.8"
+version = "0.11.0"
 dependencies = [
  "axum",
  "chrono",

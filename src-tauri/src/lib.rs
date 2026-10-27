@@ -4,6 +4,7 @@ mod calls;
 mod focus;
 mod fullscreen;
 mod notify;
+mod saver;
 mod updates;
 
 // The board engine, shared with Rattleboard Web (crates/rattleboard-core).
@@ -176,6 +177,8 @@ struct AppState {
     http: reqwest::Client,
     wake: Notify,
     server: Mutex<Option<server::Handle>>,
+    /// The screen saver's local feed, while it's installed (saver.rs)
+    saver: Mutex<Option<saver::Feed>>,
     server_status: Mutex<ServerStatus>,
     advert: Mutex<Option<boards::Advert>>,
     boards: Mutex<Vec<SavedBoard>>,
@@ -835,6 +838,81 @@ fn sync_popup_pause_menu(app: &AppHandle) {
     }
     #[cfg(target_os = "macos")]
     let _ = app;
+}
+
+// ---------------------------------------------------------------- Screen saver
+
+/// What the screen saver shows: this board as it is now (see saver.rs).
+fn saver_view(st: &AppState) -> String {
+    let s = st.settings.lock().unwrap().clone();
+    let rt = st.rt.lock().unwrap();
+    let display = rt.display.clone().or_else(|| rt.layout.clone()).unwrap_or_else(|| blank(&s));
+    let (rows, cols) = if s.adaptive { vestaboard::dims_of(&display) } else { s.dims() };
+    json!({
+        "app": "rattleboard",
+        "version": env!("CARGO_PKG_VERSION"),
+        "name": s.board_name,
+        "rows": rows,
+        "cols": cols,
+        "display": display,
+        "finish": s.finish,
+        "seq": rt.seq,
+        "transition": rt.transition,
+    })
+    .to_string()
+}
+
+/// The feed runs while the screen saver is installed.
+async fn sync_saver_feed(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    // Debug profiles: RATTLEBOARD_SAVER_FEED=1 runs it without installing, to try the screen saver.
+    let forced = profile().is_some() && std::env::var("RATTLEBOARD_SAVER_FEED").is_ok_and(|v| v == "1");
+    let want = forced || (st.settings.lock().unwrap().screensaver && saver::target().is_some_and(|p| p.exists()));
+    let has = st.saver.lock().unwrap().is_some();
+    if want == has {
+        return;
+    }
+    if !want {
+        drop(st.saver.lock().unwrap().take());
+        eprintln!("[saver] feed stopped");
+        return;
+    }
+    let a = app.clone();
+    match saver::serve(Arc::new(move || saver_view(&a.state::<AppState>()))).await {
+        Ok(f) => {
+            *st.saver.lock().unwrap() = Some(f);
+            eprintln!("[saver] feed on 127.0.0.1:{}", saver::PORT);
+        }
+        Err(e) => eprintln!("[saver] couldn't start the feed on port {}: {e}", saver::PORT),
+    }
+}
+
+/// Settings → Display → Screen saver.
+#[tauri::command]
+fn saver_status(app: AppHandle) -> saver::Status {
+    saver::status(app.path().resource_dir().ok())
+}
+
+#[tauri::command]
+async fn saver_install(app: AppHandle) -> Result<saver::Status, String> {
+    saver::install(app.path().resource_dir().ok(), true)?;
+    apply_settings(&app, json!({ "screensaver": true }))?;
+    sync_saver_feed(&app).await;
+    saver::open_settings();
+    Ok(saver::status(app.path().resource_dir().ok()))
+}
+
+#[tauri::command]
+async fn saver_uninstall(app: AppHandle) -> Result<saver::Status, String> {
+    saver::uninstall()?;
+    apply_settings(&app, json!({ "screensaver": false }))?;
+    sync_saver_feed(&app).await;
+    Ok(saver::status(app.path().resource_dir().ok()))
+}
+
+#[tauri::command]
+fn saver_open_settings() {
+    saver::open_settings();
 }
 
 fn clear_focus_summary(app: &AppHandle) {
@@ -2676,6 +2754,10 @@ fn apply_settings(app: &AppHandle, patch: serde_json::Value) -> Result<(), Strin
     if old.polling != new.polling || old.source != new.source {
         sync_pause_item(app);
     }
+    if old.screensaver != new.screensaver {
+        let h = app.clone();
+        tauri::async_runtime::spawn(async move { sync_saver_feed(&h).await });
+    }
     if old.paused() != new.paused() {
         pause_changed(app, &new);
     } else if old.pause_until != new.pause_until {
@@ -3082,6 +3164,10 @@ pub fn run() {
             board_hidden,
             pause_popups,
             resume_popups,
+            saver_status,
+            saver_install,
+            saver_uninstall,
+            saver_open_settings,
             cursor_in_window,
             board_drag_start,
             board_drag_move,
@@ -3186,6 +3272,7 @@ pub fn run() {
                 http: vestaboard::client(),
                 wake: Notify::new(),
                 server: Mutex::new(None),
+                saver: Mutex::new(None),
                 server_status: Mutex::new(ServerStatus::default()),
                 advert: Mutex::new(None),
                 boards: Mutex::new(boards::load(&boards_path)),
@@ -3327,6 +3414,14 @@ pub fn run() {
             tauri::async_runtime::spawn(poll_loop(h.clone()));
             tauri::async_runtime::spawn(sources_loop(h.clone()));
             tauri::async_runtime::spawn(pause_loop(h.clone()));
+            let h4 = h.clone();
+            tauri::async_runtime::spawn(async move {
+                // An installed screen saver from an older version becomes this version's.
+                if saver::refresh(h4.path().resource_dir().ok()) {
+                    eprintln!("[saver] updated the installed screen saver");
+                }
+                sync_saver_feed(&h4).await;
+            });
             tauri::async_runtime::spawn(watch_screens(h.clone()));
             notify::start(&h);
             // Focus / Do Not Disturb: read now and then; macOS asks for access once.

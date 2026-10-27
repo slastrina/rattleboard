@@ -86,7 +86,42 @@ function screenRow() {
     <div style="display:flex; flex-direction:column; gap:6px; align-items:flex-start"><select class="field" style="width:280px" data-field="screen">${away}${list.map(opt).join('')}</select>
     <span class="hint">${hint}</span></div>`;
 }
-const loadScreens = () => RB.invoke('list_screens').then(l => { L.screens = l; render(true); });
+const loadScreens = () => {
+  RB.invoke('list_screens').then(l => { L.screens = l; render(true); });
+  RB.invoke('saver_status').then(v => { L.saver = v; render(true); }).catch(() => {});
+};
+
+// Settings → Display → Screen saver (macOS and Windows; see saver.rs): installs the screen
+// saver that ships with the app, which shows this board, or the time and date without it.
+function saverRows() {
+  const v = L.saver;
+  if (!v || !v.supported) return '';
+  const mac = S.os === 'mac', busy = L.saverBusy ? 'disabled' : '';
+  const what = "Shows this board while Rattleboard is running, and the time and date when it isn't. Every few minutes every flap turns over and the board drifts a little, so nothing stays on screen long enough to burn in.";
+  let note, buttons = '';
+  if (!v.bundled) note = "This copy of Rattleboard doesn't include the screen saver (a build from source).";
+  else if (!v.installed) {
+    note = what;
+    buttons = `<button class="primary" data-act="saverInstall" ${busy}>Install screen saver</button>`;
+  } else {
+    note = mac ? 'Installed. Choose Rattleboard in System Settings → Screen Saver.'
+      : v.active ? 'Installed, and Windows uses it.' : 'Installed. Windows is using another screen saver; choose Rattleboard in the screen saver settings.';
+    if (!v.current) note += ' Reinstall to bring it up to this version.';
+    buttons = `<button class="btn" data-act="saverOpen">Open ${mac ? 'Screen Saver settings' : 'screen saver settings'}</button>
+      ${!v.current ? `<button class="btn" data-act="saverInstall" ${busy}>Reinstall</button>` : ''}
+      <button class="btn" data-act="saverRemove" ${busy}>Remove</button>`;
+  }
+  return `<div class="lbl">Screen saver</div>
+    <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-start">
+      ${buttons ? `<div style="display:flex; gap:8px; flex-wrap:wrap">${buttons}</div>` : ''}
+      <span class="hint">${esc(note)}</span>
+      ${L.saverError ? `<span class="hint" style="color:#c0392b">${esc(L.saverError)}</span>` : ''}
+    </div>`;
+}
+function saverDo(cmd) {
+  L.saverBusy = true; L.saverError = ''; render(true);
+  RB.invoke(cmd).then(v => { L.saver = v; }).catch(e => { L.saverError = String(e); }).finally(() => { L.saverBusy = false; render(true); });
+}
 // Board size: the presets, or a custom size (validated here and in the backend).
 const presetSeg = (cur, act = 'model', rows = S.settings.rows, cols = S.settings.cols, fields = ['rows', 'cols']) => {
   const presets = seg([...RB.PRESETS.map(([v, l]) => [v, l]), ['custom', 'Custom']], cur, act);
@@ -195,6 +230,7 @@ function viewSettings() {
       <div class="lbl">Finish</div>${seg([['black', 'Black'], ['white', 'White']], s.finish, 'finish')}
       ${placementRows()}
       ${sizeRow()}
+      ${saverRows()}
     </div>`;
   } else if (L.tab === 'behavior') {
     body = `<div class="grid">
@@ -1006,6 +1042,9 @@ RB.delegate(root, 'click', {
   model: el => save({ model: el.dataset.v }),
   adaptive: el => save({ adaptive: el.dataset.v === 'auto' }),
   finish: el => save({ finish: el.dataset.v }),
+  saverInstall: () => saverDo('saver_install'),
+  saverRemove: () => saverDo('saver_uninstall'),
+  saverOpen: () => RB.invoke('saver_open_settings'),
   mode: el => { save({ mode: el.dataset.v }); if (L.view === 'settings') RB.invoke('show_board'); },
   floatLayer: el => save({ floatLayer: el.dataset.v }),
   corner: el => save({ position: el.dataset.v }),

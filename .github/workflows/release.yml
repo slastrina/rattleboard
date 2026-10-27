@@ -108,6 +108,36 @@ jobs:
             echo "Embedding the provisioning profile and the Focus entitlement."
           fi
 
+      # The screen saver inside the app, signed with the Developer ID before the app is bundled
+      # (notarization checks nested code), in a keychain of its own that's gone again before
+      # Tauri imports the certificate for the app. Without the secrets, Tauri's
+      # beforeBundleCommand builds it ad hoc.
+      - name: Screen saver (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "No Developer ID: the screen saver is built ad hoc while bundling."
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/saver.keychain-db"; PW=$(openssl rand -hex 16)
+          security create-keychain -p "$PW" "$KC"
+          security set-keychain-settings -lut 900 "$KC"
+          security unlock-keychain -p "$PW" "$KC"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/saver.p12"
+          security import "$RUNNER_TEMP/saver.p12" -k "$KC" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
+          rm -f "$RUNNER_TEMP/saver.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" "$KC" >/dev/null
+          OLD=$(security list-keychains -d user | tr -d '"')
+          security list-keychains -d user -s "$KC" $OLD
+          ID=$(security find-identity -v -p codesigning "$KC" | awk '/Developer ID Application/ {print $2; exit}')
+          [ -n "$ID" ] || { echo "::error::No Developer ID Application identity in the certificate"; exit 1; }
+          RB_SAVER_IDENTITY="$ID" node scripts/build-saver.mjs
+          codesign -dv --verbose=2 target/saver/Rattleboard.saver 2>&1 | grep -E "Authority=Developer ID|Runtime"
+          security list-keychains -d user -s $OLD
+          security delete-keychain "$KC"
+          echo "RB_SAVER_PREBUILT=1" >> "$GITHUB_ENV"
+
       - name: Updater key
         shell: bash
         env:

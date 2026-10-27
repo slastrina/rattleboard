@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Rattleboard</title>
+<link rel="stylesheet" href="shared/base.css">
+<style>
+  html, body { height: 100%; background: #000; overflow: hidden; cursor: none; }
+  body { display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
+  /* The board and its credit move together, a few pixels at a time (see drift in saver.js). */
+  #stage { display: flex; flex-direction: column; align-items: flex-end; gap: var(--credit-gap, 10px);
+    transition: transform 6s ease-in-out, opacity 1s ease; opacity: 0; will-change: transform; }
+  #stage.on { opacity: 1; }
+  #credit { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: var(--credit-fs, 11px);
+    letter-spacing: .02em; color: rgba(240,238,232,.28); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <split-flap-board id="sfb"></split-flap-board>
+  <div id="credit">iokig.com</div>
+</div>
+<script src="shared/split-flap.js"></script>
+<script src="saver.js"></script>
+</body>
+</html>

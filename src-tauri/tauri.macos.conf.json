@@ -1,0 +1,12 @@
+{
+  "build": {
+    "beforeBundleCommand": "node scripts/build-saver.mjs"
+  },
+  "bundle": {
+    "macOS": {
+      "files": {
+        "Resources/Rattleboard.saver": "../target/saver/Rattleboard.saver"
+      }
+    }
+  }
+}

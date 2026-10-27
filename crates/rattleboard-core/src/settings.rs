@@ -115,6 +115,8 @@ pub struct Settings {
     /// user resumes them; 0 when they aren't. Like a Focus that holds pop-ups, but alerts are
     /// held too. A pinned or full-screen board is on screen anyway and still changes, silently.
     pub pause_until: i64,
+    /// The screen saver is installed, so its local feed runs (see src-tauri saver.rs)
+    pub screensaver: bool,
 }
 
 /// Board sizes by name: rows × columns.
@@ -178,6 +180,7 @@ impl Default for Settings {
             focus_fullscreen: false,
             focus_calls: true,
             pause_until: 0,
+            screensaver: false,
         }
     }
 }

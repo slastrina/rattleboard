@@ -37,6 +37,7 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
 - **Works with AI agents.** Claude Code, opencode, Cursor, Codex, Gemini CLI, Claude Desktop and VS Code can post to the board as a tool call (MCP), for example when a long task finishes or they need your input. Set it up from Settings → Agents. See [Agents (MCP)](#agents-mcp).
 - **Sequences.** Play several messages in turn, each held for a while once its flaps settle, once or on a loop.
 - **Pair a phone.** Show a QR code that the Rattleboard phone app scans to add this board.
+- **A screen saver** for macOS and Windows: your board, live, or the time and date when Rattleboard isn't running, with burn-in care for OLED screens. Install it from Settings. See [Screen saver](#screen-saver-macos-and-windows).
 - **Respects Focus, Do Not Disturb and your meetings.** While a Focus (macOS) or Do Not Disturb (Windows, GNOME, KDE) is on, or you're in a call (Teams, a Slack huddle, Zoom, Meet) or presenting, the board keeps updating but holds its pop-ups and sound, then tells you how many messages came. You can also [pause pop-ups](#pausing-pop-ups) from the tray for an hour, two, or until you resume. See [Focus and Do Not Disturb](#focus-and-do-not-disturb).
 - **Notification forwarding (Windows).** Put notifications from the apps you choose on a board. See [Notification forwarding](#notification-forwarding-windows).
 - **Demo mode.** No board yet? It flips through sample messages so you can try everything.
@@ -162,6 +163,24 @@ An old Mac, a Windows laptop or a NUC behind a TV makes a good split-flap board.
 - The free desktop app shows a small "iokig.com" in the corner of the screen in full screen.
 
 Everything else keeps working in full screen: the API server, sequences, Compose, Message History and the tray menu. Settings and Compose open above the board.
+
+## Screen saver (macOS and Windows)
+
+Rattleboard comes with a screen saver. While Rattleboard is running, it shows what your board shows, live, with your Sources rotation, messages and agents' notes. When Rattleboard isn't running, it shows the time and date on the board instead.
+
+- **Install it** from **Settings → Display → Screen saver → Install screen saver**.
+  - On macOS it goes into `~/Library/Screen Savers`, and System Settings → Screen Saver opens so you can choose **Rattleboard**.
+  - On Windows it goes into `%LOCALAPPDATA%\Rattleboard`, becomes your screen saver, and the screen saver settings open so you can set when it starts.
+- **Updates:** it follows the app. When Rattleboard updates, the installed screen saver is replaced with the new version's the next time Rattleboard starts. **Remove** takes it out again.
+- **Burn-in care** (OLED screens especially):
+  - The board and its credit drift a few pixels every minute.
+  - Every five minutes every flap turns over: a wave of colour sweeps the board, then the flaps carry on round their drums back to what was there, so every letter, number and colour flap gets its turn.
+- **Multiple displays:** on Windows it covers every display. On macOS, macOS runs one per display.
+- **How it reads the board:** while the screen saver is installed, Rattleboard serves a read-only copy of the board on `127.0.0.1:7171` (`GET /rattleboard/saver`).
+  - Only programs on this computer can reach it.
+  - It refuses web pages: any request carrying an `Origin` or `Sec-Fetch-*` header, and any `Host` other than this address. It never sends CORS headers.
+  - It can't change anything, and it stops when you remove the screen saver.
+- Linux has no screen saver; on a spare Linux computer, use [full screen](#use-a-spare-computer-as-a-board).
 
 ## Rattleboard Web (Docker)
 
@@ -949,7 +968,13 @@ npm run build    # produce installers in target/release/bundle
 cargo test --workspace
 ```
 
-The Rust code is a Cargo workspace: the desktop app in `src-tauri`, the board engine it shares with Rattleboard Web in `crates/rattleboard-core`, and the Rattleboard Web server in `crates/rattleboard-web`. To build and run Rattleboard Web locally:
+The Rust code is a Cargo workspace: the desktop app in `src-tauri`, the board engine it shares with Rattleboard Web in `crates/rattleboard-core`, the Rattleboard Web server in `crates/rattleboard-web`, and the Windows screen saver in `crates/rattleboard-saver`.
+
+The screen saver is built while bundling (`node scripts/build-saver.mjs`, Tauri's `beforeBundleCommand`):
+- **macOS:** `saver/macos/RattleboardSaver.swift` becomes `Rattleboard.saver`, which goes into the app's Resources.
+- **Windows:** `crates/rattleboard-saver` becomes `Rattleboard.scr`.
+
+Both show `src/saver.html`. To try it without installing: on macOS, `node scripts/build-saver.mjs`, then load the bundle from `target/saver`. Anywhere, `cargo run -p rattleboard-saver -- /s` opens it in a window. Debug builds run the feed without installing with `RATTLEBOARD_PROFILE=<name> RATTLEBOARD_SAVER_FEED=1`. To build and run Rattleboard Web locally:
 
 ```sh
 docker build -f crates/rattleboard-web/Dockerfile -t rattleboard-web .
