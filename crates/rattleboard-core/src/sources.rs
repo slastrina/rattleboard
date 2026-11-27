@@ -346,6 +346,14 @@ pub struct Card {
     pub dwell: Option<u64>,
 }
 
+impl Card {
+    pub fn is_mirror_rotation_card(&self) -> bool {
+        self.reason == MIRROR_ROTATION
+    }
+}
+
+const MIRROR_ROTATION: &str = "ambient · mirror";
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum How {
@@ -1676,7 +1684,7 @@ fn card_for(i: &Inner, x: &Instance, p: &Manifest, ctx: &Ctx, skip: usize, any: 
                 return None;
             }
             let grid = data?.items.first()?.characters.clone().filter(|g| g.iter().flatten().any(|&c| c != 0))?;
-            Some(card(Face::Grid { grid }, true, "ambient · mirror"))
+            Some(card(Face::Grid { grid }, true, MIRROR_ROTATION))
         }
         ("native", builtins::WEATHER) => {
             let it = data?.items.first()?;

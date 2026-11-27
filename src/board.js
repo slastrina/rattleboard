@@ -105,7 +105,7 @@ function render() {
   stage.classList.toggle('dragging', ui.dragging);
 
   const counting = ui.visible && !stays() && !ui.flipping && ui.remaining > 0;
-  const paused = counting && s.pauseOnHover && ui.hover;
+  const paused = counting && s.pauseOnHover && hoverHoldsCountdown();
   const name = s.boardName || 'Rattleboard', stopped = checkingPaused() && !ui.dragging && !ui.resizing;
   $('resume').style.display = stopped ? '' : 'none';
   $('statusText').textContent = (ui.resizing ? `${Math.round(ui.resizing.scale * 100)}%`
@@ -183,8 +183,6 @@ RB.listen('rb://present', e => {
   // A source's card may pop up for a time of its own.
   ui.popMs = p.ms || 0;
   ui.visible = true; ui.remaining = 0; ui.hover = false; render();
-  // Shown under a resting pointer: that's a hover too (checkHover asks where it is).
-  setTimeout(() => { if (ui.visible && !ui.hover) pointer().then(pt => { if (pt && within(pt, stage)) setHover(true); }); }, 300);
   if (p.countdown) startCountdown();
   else setTimeout(() => { if (ui.visible && !ui.flipping && ui.remaining === 0) startCountdown(); }, 500);
 });
@@ -195,12 +193,12 @@ sfb.addEventListener('flapdone', () => { ui.flipping = false; startCountdown(); 
 stage.addEventListener('mouseenter', () => setHover(true));
 stage.addEventListener('mouseleave', () => setHover(false));
 
-// Hover, double-checked. An unfocused always-on-top window (macOS, WebView2) often never gets
-// mouseleave when the pointer leaves fast or the window shows or hides under it, and a stuck
-// hover would hold the pop-up's countdown for ever. So while hovering, ask where the pointer
-// really is every 400 ms, and let go on blur, on hiding, and after long stillness.
+// An unfocused, always-on-top window can miss mouse events when it appears under the
+// pointer or the pointer leaves quickly. Check the native pointer while the board is up.
 let lastMove = Date.now(), hoverAsk = false;
 const HOVER_STILL_MS = 10000, HOVER_CAP_MS = 120000;
+const hoverStill = () => Date.now() - Math.max(lastMove, ui.hoverAt || 0);
+const hoverHoldsCountdown = () => ui.hover && hoverStill() < HOVER_CAP_MS;
 function setHover(on) {
   if (ui.hover === on) return;
   ui.hover = on; if (on) ui.hoverAt = Date.now();
@@ -210,27 +208,14 @@ const within = (pt, el) => { const r = el.getBoundingClientRect(); return pt.x >
 // The pointer's position over this window (CSS px), or null when the window is hidden or it
 // can't be told.
 const pointer = () => RB.invoke('cursor_in_window').catch(() => null);
-function checkHover() {
-  if (hoverAsk) return;
+setInterval(() => {
+  if (!ui.visible || full() || hoverAsk) return;
   hoverAsk = true;
   pointer().then(pt => {
-    // Stillness counts from the last movement or the start of this hover, whichever is later.
-    const still = Date.now() - Math.max(lastMove, ui.hoverAt || 0);
-    // Over it for real: hold, though no single pause outlasts the cap without the pointer
-    // moving. Not over it, or no answer and no movement for a while: let go.
-    if (pt && within(pt, stage)) { if (still > HOVER_CAP_MS) setHover(false); }
-    else if (pt || still > HOVER_STILL_MS) setHover(false);
+    if (!ui.visible || full()) return;
+    if (pt) setHover(within(pt, stage));
+    else if (hoverStill() > HOVER_STILL_MS) setHover(false);
   }).finally(() => { hoverAsk = false; });
-}
-setInterval(() => {
-  if (!S || full() || !ui.visible) return;
-  // Native transparent windows can miss mouseenter/mousemove when they are presented under
-  // the pointer. Ask the OS for the pointer location as well, so the toolbar wakes reliably.
-  if (!ui.hover) {
-    if (hoverAsk) return;
-    hoverAsk = true;
-    pointer().then(pt => { if (pt && within(pt, stage)) setHover(true); }).finally(() => { hoverAsk = false; });
-  } else checkHover();
 }, 400);
 document.addEventListener('mousemove', () => { lastMove = Date.now(); }, true);
 addEventListener('blur', () => setHover(false));
@@ -241,7 +226,7 @@ setInterval(() => {
   if (!S) return;
   const s = S.settings;
   if (full()) return idle();
-  if (ui.visible && !stays() && !ui.flipping && ui.remaining > 0 && !(s.pauseOnHover && ui.hover) && !ui.dragging && !ui.resizing) {
+  if (ui.visible && !stays() && !ui.flipping && ui.remaining > 0 && !(s.pauseOnHover && hoverHoldsCountdown()) && !ui.dragging && !ui.resizing) {
     ui.remaining -= 100;
     if (ui.remaining <= 0) return hide();
     render();

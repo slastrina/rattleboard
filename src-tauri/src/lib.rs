@@ -86,6 +86,8 @@ struct Runtime {
     last_change_at: Option<i64>,
     unread: bool,
     history: Vec<HistoryEntry>,
+    /// A mirror card in the Sources rotation can be newer than the message history.
+    last_mirror_card: Option<Grid>,
     /// The last message read from the mirrored board, kept apart from what's on screen
     /// so a message sent to the API server isn't mistaken for a change on the real board.
     remote_id: Option<String>,
@@ -128,6 +130,15 @@ struct Secrets {
     local_key: String,
     cloud_token: String,
     server_key: String,
+}
+
+impl Runtime {
+    fn last_replay(&self) -> Option<(&Grid, Option<&str>)> {
+        if let Some(grid) = &self.last_mirror_card {
+            return Some((grid, None));
+        }
+        self.history.first().map(|h| (&h.layout, h.link.as_deref()))
+    }
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -216,6 +227,7 @@ struct Snapshot {
     cols: usize,
     display: Grid,
     has_layout: bool,
+    last_replay: Option<Grid>,
     transition: Transition,
     seq: u64,
     conn: String,
@@ -352,6 +364,7 @@ fn snapshot(st: &AppState) -> Snapshot {
         link: if rt.display.is_some() { rt.display_link.clone() } else { rt.link.clone() },
         display,
         has_layout: rt.layout.is_some(),
+        last_replay: rt.last_replay().map(|(grid, _)| grid.clone()),
         transition: rt.transition.clone(),
         rows,
         cols,
@@ -586,6 +599,8 @@ enum Shown {
     Message,
     /// The rotation's next card, or a live card re-drawn: no pop-up, no history
     Ambient,
+    /// A mirror in the rotation, available for replay without adding a history entry.
+    Mirror,
     /// A source's alert, or its once-a-day message: pops up and goes in the history
     Alert,
     /// A timed notification (see `show_notice`): pops up and goes in the history like an
@@ -654,10 +669,15 @@ fn put_on_board_as(app: &AppHandle, layout: Grid, id: Option<String>, src: &str,
             rt.alert_return = None;
             rt.notice = None;
         }
-        if how == Shown::Ambient {
+        if matches!(how, Shown::Ambient | Shown::Mirror) {
             // The rotation's card replaced a notification (they kept coming, and the rotation
             // got its turn): nothing goes back when it's over.
             rt.notice = None;
+        }
+        if how == Shown::Mirror {
+            rt.last_mirror_card = Some(layout.clone());
+        } else if loud {
+            rt.last_mirror_card = None;
         }
         record(&mut rt.history, layout, src, link, how, now_ms());
         if loud {
@@ -1058,6 +1078,7 @@ fn run_actions(app: &AppHandle, actions: Vec<sources::Action>) {
                         let layout = page_of(&card, page, rows, cols);
                         let shown = match how {
                             sources::How::Alert | sources::How::Message => Shown::Alert,
+                            _ if card.is_mirror_rotation_card() => Shown::Mirror,
                             _ => Shown::Ambient,
                         };
                         let (a, src, id, alert, link) = (app.clone(), format!("{} · Sources", card.name), next_id(app, "src"), how == sources::How::Alert, card.link.clone());
@@ -2847,16 +2868,23 @@ fn show_board(app: AppHandle) {
 }
 
 #[tauri::command]
-fn replay(app: AppHandle, st: State<AppState>) {
+fn replay(app: AppHandle, st: State<AppState>, last_change: Option<bool>) {
     hide_tray(&app);
     {
         let mut rt = st.rt.lock().unwrap();
-        // Replay the newest message recorded from any source (including a mirrored real
-        // board). The live layout can be absent or stale while a source has supplied a
-        // display override, so use history as the authoritative "last message".
-        if let Some(last) = rt.history.first().cloned() {
-            rt.display = if rt.layout.as_ref() == Some(&last.layout) { None } else { Some(last.layout) };
-            rt.display_link = last.link;
+        // The tray replays the last message even after an alert ends or the rotation moves on.
+        // The button on the board replays the picture the user is looking at.
+        if last_change == Some(true) {
+            if let Some((grid, link)) = rt.last_replay().map(|(g, l)| (g.clone(), l.map(str::to_owned))) {
+                if rt.layout.as_ref() != Some(&grid) || rt.link != link {
+                    rt.display = Some(grid);
+                    rt.display_link = link;
+                    rt.transition = Transition::default();
+                } else {
+                    rt.display = None;
+                    rt.display_link = None;
+                }
+            }
         }
         rt.seq += 1;
     }

@@ -43,6 +43,11 @@ function render() {
   const kbd = (m, w) => (mac ? m : w);
   // The board (or group) last sent to from Compose or Message History, for a one-click resend.
   const src = S.sources || {};
+  const useLast = S.lastReplay && !S.display.some(row => row.some(Boolean));
+  const preview = useLast ? S.lastReplay : S.display;
+  const previewSize = useLast && s.adaptive
+    ? { ...S, rows: preview.length, cols: preview[0]?.length }
+    : S;
   const to = s.sendTarget !== 'this' && RB.targets(S).some(t => t[0] === s.sendTarget) && { name: RB.targetName(S, s.sendTarget) };
   const groups = [
     [['show', 'Show board', kbd('⌘B', 'Ctrl+B')], ...(S.link ? [['openLink', 'Open current link ↗', '']] : []), ...(src.active ? [['next', src.showing ? `Next source <span style="color:#8a8c91">· now ${RB.esc(src.showing)}</span>` : 'Next source', kbd('⌘→', 'Ctrl+→')]] : []), ['replay', 'Replay last change', ''], ...(to ? [['resend', `Send this to ${RB.esc(to.name)}`, '']] : [])],
@@ -69,8 +74,8 @@ function render() {
         <div style="width:7px; height:7px; border-radius:50%; background:${connDot}; flex:none"></div><span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${RB.esc(status)}</span>
       </div>
       ${focusLine()}
-      <div data-act="show" style="background:${fin.frame}; padding:8px; border-radius:6px; display:flex; flex-direction:column; gap:3px; align-items:center; cursor:pointer">
-        ${RB.mini(S.display, S)}
+      <div data-act="${useLast ? 'replay' : 'show'}" style="background:${fin.frame}; padding:8px; border-radius:6px; display:flex; flex-direction:column; gap:3px; align-items:center; cursor:pointer">
+        ${RB.mini(preview, previewSize)}
       </div>
       ${playing()}
     </div>
@@ -118,7 +123,7 @@ function playing() {
 const act = {
   show: () => RB.invoke('show_board'),
   next: () => RB.invoke('sources_next'),
-  replay: () => RB.invoke('replay'),
+  replay: () => RB.invoke('replay', { lastChange: true }),
   openLink: () => { RB.invoke('open_link', { url: S.link }).catch(() => {}); RB.invoke('close_window', { label: 'tray' }); },
   resend: () => { RB.invoke('send_message', { target: S.settings.sendTarget, message: { characters: S.display } }).catch(() => {}); RB.invoke('close_window', { label: 'tray' }); },
   pin: () => { RB.invoke('update_settings', { patch: { mode: S.settings.mode === 'float' ? 'toast' : 'float' } }); RB.invoke('show_board'); },
