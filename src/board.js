@@ -192,7 +192,7 @@ RB.listen('rb://present', e => {
 sfb.addEventListener('flaplayout', measure);
 sfb.addEventListener('flapstart', () => { ui.flipping = true; render(); });
 sfb.addEventListener('flapdone', () => { ui.flipping = false; startCountdown(); });
-stage.addEventListener('mouseenter', () => { ui.hover = true; ui.hoverAt = Date.now(); render(); });
+stage.addEventListener('mouseenter', () => setHover(true));
 stage.addEventListener('mouseleave', () => setHover(false));
 
 // Hover, double-checked. An unfocused always-on-top window (macOS, WebView2) often never gets
@@ -222,7 +222,16 @@ function checkHover() {
     else if (pt || still > HOVER_STILL_MS) setHover(false);
   }).finally(() => { hoverAsk = false; });
 }
-setInterval(() => { if (ui.hover) checkHover(); }, 400);
+setInterval(() => {
+  if (!S || full() || !ui.visible) return;
+  // Native transparent windows can miss mouseenter/mousemove when they are presented under
+  // the pointer. Ask the OS for the pointer location as well, so the toolbar wakes reliably.
+  if (!ui.hover) {
+    if (hoverAsk) return;
+    hoverAsk = true;
+    pointer().then(pt => { if (pt && within(pt, stage)) setHover(true); }).finally(() => { hoverAsk = false; });
+  } else checkHover();
+}, 400);
 document.addEventListener('mousemove', () => { lastMove = Date.now(); }, true);
 addEventListener('blur', () => setHover(false));
 document.addEventListener('visibilitychange', () => { if (document.hidden) setHover(false); });

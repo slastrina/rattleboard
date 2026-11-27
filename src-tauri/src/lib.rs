@@ -2849,7 +2849,17 @@ fn show_board(app: AppHandle) {
 #[tauri::command]
 fn replay(app: AppHandle, st: State<AppState>) {
     hide_tray(&app);
-    st.rt.lock().unwrap().seq += 1;
+    {
+        let mut rt = st.rt.lock().unwrap();
+        // Replay the newest message recorded from any source (including a mirrored real
+        // board). The live layout can be absent or stale while a source has supplied a
+        // display override, so use history as the authoritative "last message".
+        if let Some(last) = rt.history.first().cloned() {
+            rt.display = if rt.layout.as_ref() == Some(&last.layout) { None } else { Some(last.layout) };
+            rt.display_link = last.link;
+        }
+        rt.seq += 1;
+    }
     broadcast(&app);
     present_board(&app, false);
 }
