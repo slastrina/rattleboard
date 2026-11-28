@@ -24,7 +24,7 @@ Vestaboard is a trademark of Vestaboard, Inc. Rattleboard is not affiliated with
 - **Real split-flap motion.** The flaps spin through a full drum: blank, A–Z, 0–9, punctuation, then the colour chips, in black or white finish.
 - **Any message size.** By default the board shows each message at the size it was sent at, from 1 × 1 up to 12 × 40, and the pop-up or widget resizes to fit. Or fix it at Standard (6 × 22), Compact (3 × 15), Large (8 × 30) or a custom size. See [Board sizes](#board-sizes).
 - **Transitions.** Messages can flip in all at once, or in a wave: by column, reverse column, from the edges to the centre, by row, diagonally or at random. See [Transitions](#transitions).
-- **Flap sound.** An optional mechanical clatter, synthesized live while the flaps turn.
+- **Flap sound.** Optional **Classic** and **Departure board** sounds, synthesized live while the flaps turn. Choose a style under **Settings → Behavior**.
 - **Three ways to show it.**
   - **Pop-up:** a toast that flips into view in the corner of your choice whenever the message changes, then hides after a countdown. The countdown pauses while your pointer is over the board. Drag it toward another corner and it snaps there.
   - **Pinned widget:** stays on screen wherever you drop it, either on the desktop below your windows or above them. Rattleboard remembers its spot.
@@ -184,7 +184,7 @@ Rattleboard comes with a screen saver. While Rattleboard is running, it shows wh
 
 ## Rattleboard Web (Docker)
 
-Rattleboard Web is a Rattleboard that runs in a container on a home server, a NAS or a Raspberry Pi, and shows the board in any browser: a wall tablet, a TV's browser, a Home Assistant dashboard. It has the same API as every Rattleboard, so scripts, the phone apps and the desktop's **Send to** all talk to it the same way, and it runs [Sources](#sources-and-plugins) by itself on the server.
+Rattleboard Web is a Rattleboard that runs in a container on a home server, a NAS or a Raspberry Pi, and shows the board in any browser: a wall tablet, a TV's browser, a Home Assistant dashboard. It has the same API as every Rattleboard, so scripts, the phone apps and the desktop's **Send to** all talk to it the same way, and it runs [Sources](#sources-and-plugins) by itself on the server. Click **Flap sound** on the board page to enable the synthesized departure-board sound for that viewer.
 
 ```sh
 docker run -d --name rattleboard --restart unless-stopped \

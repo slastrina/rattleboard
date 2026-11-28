@@ -267,7 +267,8 @@ function composeAfter() {
   const { rows, cols } = dims(), s = S.settings;
   const set = (k, v) => { if (preview.getAttribute(k) !== String(v)) preview.setAttribute(k, v); };
   set('rows', rows); set('cols', cols); set('tile', previewTile(cols)); set('finish', s.finish);
-  set('speed', s.speed); set('sound', s.sound ? 'on' : 'off');
+  const flapSound = s.soundStyle === 'departure' ? 'departure' : 'on';
+  set('speed', s.speed); set('sound', s.sound ? flapSound : 'off');
   slot.appendChild(preview);
   if (!C.preview) showCurrent();
 }

@@ -6,6 +6,16 @@
 (() => {
   const sfb = document.getElementById('sfb'), note = document.getElementById('note'), dot = document.getElementById('dot');
   const root = document.documentElement;
+  const sound = document.getElementById('sound');
+  sound.addEventListener('click', async () => {
+    const enable = sound.getAttribute('aria-pressed') !== 'true';
+    if (enable) {
+      try { await sfb.unlockSound(); }
+      catch { say('Flap sound is unavailable in this browser.', 3000); return; }
+    }
+    sfb.sound = enable ? 'departure' : 'off';
+    sound.setAttribute('aria-pressed', String(enable));
+  });
   const token = new URLSearchParams(location.hash.slice(1)).get('v') || '';
   const q = token ? '?v=' + encodeURIComponent(token) : '';
   let V = null;
@@ -32,7 +42,7 @@
     root.dataset.finish = V.finish === 'white' ? 'white' : 'black';
     document.title = V.name || 'Rattleboard';
     set('rows', V.rows); set('cols', V.cols); set('tile', fitTile(V.rows, V.cols));
-    set('finish', V.finish); set('speed', 1); set('sound', 'off');
+    set('finish', V.finish); set('speed', 1);
     set('transition', JSON.stringify(V.transition || null));
     set('seq', V.seq); set('message', JSON.stringify(fit(V.display || [], V.rows, V.cols)));
     sfb.classList.add('on');
@@ -83,7 +93,7 @@
   const canFull = !!(root.requestFullscreen || root.webkitRequestFullscreen);
   const isFull = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
   document.addEventListener('click', e => {
-    if (e.target.closest('a') || !canFull || isFull()) return;
+    if (e.target.closest('a, button') || !canFull || isFull()) return;
     (root.requestFullscreen || root.webkitRequestFullscreen).call(root).catch(() => {});
   });
   if (canFull && !isFull()) setTimeout(() => { if (!isFull()) say('Tap for full screen', 4000); }, 600);

@@ -31,10 +31,13 @@
   #note.on { opacity: 1; transform: translate(-50%, 0); }
   #dot { position: fixed; left: 14px; top: 14px; width: 8px; height: 8px; border-radius: 50%; background: #e0553f; opacity: 0; transition: opacity .3s; }
   #dot.on { opacity: .8; }
+  #sound { position: fixed; left: 12px; bottom: 12px; padding: 7px 11px; border: 1px solid var(--soft);
+    border-radius: 8px; color: var(--ink); background: var(--ov); font: inherit; font-size: 13px; }
 </style>
 </head>
 <body>
 <split-flap-board id="sfb"></split-flap-board>
+<button id="sound" type="button" aria-pressed="false">Flap sound</button>
 <a id="credit" href="https://www.iokig.com/rattleboard" target="_blank" rel="noopener">iokig.com</a>
 <div id="note" role="status"></div>
 <div id="dot" title="Reconnecting"></div>

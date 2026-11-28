@@ -247,6 +247,7 @@ function viewSettings() {
       <div style="display:flex; align-items:center; gap:10px">${range(0.5, 2, 0.1, s.speed, 'speed')}<span id="speedLabel" style="font-variant-numeric:tabular-nums">${speedLabel(s.speed)}</span></div>
       <div class="lbl">Flap sound</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.sound, 'sound')}<span class="hint">Mechanical clatter while flaps turn</span></div>
+      ${s.sound ? `<div class="lbl">Sound style</div>${seg([['classic', 'Classic'], ['departure', 'Departure board']], s.soundStyle || 'classic', 'soundStyle')}` : ''}
       <div class="lbl">Start at login</div>
       <div style="display:flex; align-items:center; gap:10px">${tog(s.launchLogin, 'launchLogin')}<span class="hint">Start Rattleboard when I log in</span></div>
       <div class="lbl">Updates</div>
@@ -1100,6 +1101,7 @@ RB.delegate(root, 'click', {
   notifyQuiet: () => save({ notifyQuiet: !S.settings.notifyQuiet }),
   notifyReturn: el => save({ notifyReturnSec: +el.dataset.v }),
   sound: () => save({ sound: !S.settings.sound }),
+  soundStyle: el => save({ soundStyle: el.dataset.v }),
   focusMode: el => { save({ focusMode: el.dataset.v }); if (el.dataset.v !== 'ignore') RB.invoke('focus_request_access'); },
   focusAlerts: () => save({ focusAlerts: S.settings.focusAlerts === false }),
   focusFullscreen: () => save({ focusFullscreen: !S.settings.focusFullscreen }),

@@ -37,6 +37,8 @@ pub struct Settings {
     /// Board size relative to the default tile size (resizable by dragging the board's corner)
     pub scale: f64,
     pub sound: bool,
+    /// "classic" | "departure"
+    pub sound_style: String,
     pub speed: f64,
     pub hide_sec: u32,
     pub pause_on_hover: bool,
@@ -138,6 +140,7 @@ impl Default for Settings {
             cols: 22,
             scale: 1.0,
             sound: false,
+            sound_style: "classic".into(),
             speed: 1.0,
             hide_sec: 10,
             pause_on_hover: true,
@@ -220,6 +223,9 @@ impl Settings {
             self.scale = 1.0;
         }
         self.scale = self.scale.clamp(0.4, 3.0);
+        if self.sound_style != "departure" {
+            self.sound_style = "classic".into();
+        }
         if self.pause_until < -1 {
             self.pause_until = 0;
         }
@@ -376,6 +382,19 @@ mod tests {
         std::fs::write(&path, r#"{"boardName": "Kitchen Vestaboard"}"#).unwrap();
         assert_eq!(Settings::load(&path).board_name, "Kitchen Vestaboard");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flap_sound_style_preserves_existing_sound_settings() {
+        let old: Settings = serde_json::from_str(r#"{"sound":true}"#).unwrap();
+        assert!(old.sound);
+        assert_eq!(old.sound_style, "classic");
+
+        let departure = old.merge(serde_json::json!({"soundStyle":"departure"})).unwrap();
+        let muted = departure.merge(serde_json::json!({"sound":false})).unwrap();
+        assert!(!muted.sound);
+        assert_eq!(muted.sound_style, "departure");
+        assert_eq!(muted.merge(serde_json::json!({"soundStyle":"unknown"})).unwrap().sound_style, "classic");
     }
 
     #[test]

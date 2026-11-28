@@ -60,7 +60,9 @@ function render() {
   const set = (k, v) => { if (sfb.getAttribute(k) !== String(v)) sfb.setAttribute(k, v); };
   set('tile', tile); set('speed', s.speed); set('finish', s.finish);
   // A Focus may silence the flaps (Settings → Behavior → While Focus is on).
-  set('sound', s.sound && !(S.focus && S.focus.muted) ? 'on' : 'off'); set('transition', JSON.stringify(S.transition || null));
+  const flapSound = s.soundStyle === 'departure' ? 'departure' : 'on';
+  set('sound', s.sound && !(S.focus && S.focus.muted) ? flapSound : 'off');
+  set('transition', JSON.stringify(S.transition || null));
   const geom = rows + 'x' + cols;
   if (geom !== shownGeom && shownGeom) {
     // Resize the (blank) board and its window, then flip the message in, so the flaps never

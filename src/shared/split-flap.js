@@ -38,6 +38,65 @@
     diagonal: (r, c) => r + c
   };
 
+  // Bandpass resonances fitted to the click transients of the Frankfurt Airport
+  // board (iainmccurdy, freesound.org/s/546828/) after subtracting the noise spectrum.
+  const DEPARTURE_BANDS = [
+    [2000, 2.3, 0.52], [3050, 3.8, 0.13], [3610, 4, 1],
+    [6310, 4, 0.73], [7490, 5, 0.53], [8690, 3.6, 0.18]
+  ];
+  const DEPARTURE_INTERVAL = 0.0745;
+  const DEPARTURE_REFLECTIONS = [
+    // Delay and level for each stereo reflection. Later reflections lose more high end.
+    [0.0087, 0.34], [0.0139, -0.30], [0.0210, 0.27], [0.0292, -0.23],
+    [0.0381, 0.28], [0.0475, -0.27], [0.0590, 0.24], [0.0715, -0.19],
+    [0.0850, 0.16], [0.1000, -0.11]
+  ];
+
+  function synthesizeDepartureRoom(samples, sampleRate, channel) {
+    for (const [index, [delay, level]] of DEPARTURE_REFLECTIONS.entries()) {
+      const side = (index % 2 ? -1 : 1) * (channel === 0 ? 1 : -1);
+      const start = Math.round((delay + side * (0.0006 + index * 0.00016)) * sampleRate);
+      const cutoff = 6600 / (1 + delay * 19);
+      const decay = Math.exp(-2 * Math.PI * cutoff / sampleRate);
+      let value = level * (1 + 0.19 * side) * (1 - decay);
+      for (let i = start; i < samples.length && Math.abs(value) > 0.00001; i++) {
+        samples[i] += value;
+        value *= decay;
+      }
+    }
+  }
+
+  function synthesizeDepartureClack(samples, sampleRate) {
+    for (const [frequency, quality, level] of DEPARTURE_BANDS) {
+      if (frequency >= sampleRate / 2) continue;
+      const angle = 2 * Math.PI * frequency / sampleRate;
+      const alpha = Math.sin(angle) / (2 * quality);
+      const inputGain = alpha / (1 + alpha);
+      const feedback1 = 2 * Math.cos(angle) / (1 + alpha);
+      const feedback2 = (alpha - 1) / (1 + alpha);
+      let input1 = 0, input2 = 0, output1 = 0, output2 = 0;
+      for (let i = 0; i < samples.length; i++) {
+        const input = Math.random() * 2 - 1;
+        const output = inputGain * (input - input2) + feedback1 * output1 + feedback2 * output2;
+        samples[i] += level * output;
+        input2 = input1; input1 = input;
+        output2 = output1; output1 = output;
+      }
+    }
+    let peak = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const time = i / sampleRate;
+      const attack = Math.min(1, time / 0.002);
+      const decay = 0.42 * Math.exp(-time / 0.003) + 0.58 * Math.exp(-time / 0.011);
+      const tail = Math.min(1, (samples.length - 1 - i) / (sampleRate * 0.006));
+      samples[i] *= attack * decay * tail;
+      peak = Math.max(peak, Math.abs(samples[i]));
+    }
+    if (!peak) return;
+    const gain = 0.65 / peak;
+    for (let i = 0; i < samples.length; i++) samples[i] *= gain;
+  }
+
   class SplitFlapBoard extends HTMLElement {
     static get observedAttributes() { return PROPS; }
     constructor() {
@@ -139,20 +198,27 @@
       for (const t of this.tiles) { if (t.cur !== t.target) { t.cur = t.target; moved = true; } this._settle(t); }
       if (moved) this._emit('flapdone');
     }
+    // Browsers require a user gesture before a web board can play audio.
+    async unlockSound() {
+      const C = SplitFlapBoard;
+      const ctx = C.ctx || (C.ctx = new (window.AudioContext || window.webkitAudioContext)());
+      if (ctx.state === 'suspended') await ctx.resume();
+    }
     _emit(n) { this.dispatchEvent(new CustomEvent(n, { bubbles: true, composed: true })); }
     _tick = now => {
       const d = 62 / Math.max(0.25, +this._p.speed || 1);
-      let active = false, flips = 0;
+      let moving = 0, flips = 0, flipDuration = 0;
       for (const t of this.tiles) {
         if (t.cur === t.target) continue;
-        active = true;
+        moving++;
         if (now >= t.nextAt) {
-          const dd = d * t.v; this._step(t, dd); flips++;
+          const dd = d * t.v; this._step(t, dd); flips++; flipDuration = dd;
           t.nextAt += dd; if (t.nextAt < now) t.nextAt = now + dd * 0.5;
         }
       }
+      if (flips && this._p.sound === 'departure') this._departureClack(flips, moving === 1 ? flipDuration : 0);
       if (flips && this._p.sound === 'on') this._clack(flips);
-      if (active) this._raf = requestAnimationFrame(this._tick);
+      if (moving) this._raf = requestAnimationFrame(this._tick);
       else { this._running = false; setTimeout(() => this._emit('flapdone'), d); }
     };
     _step(t, d) {
@@ -181,6 +247,61 @@
         const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1700 + Math.random() * 1800; f.Q.value = 0.9;
         const g = ctx.createGain(); g.gain.value = Math.min(0.5, 0.06 * Math.sqrt(n));
         src.connect(f).connect(g).connect(ctx.destination); src.start();
+      } catch (e) {}
+    }
+    _departureClack(n, singleStepMs) {
+      try {
+        const C = SplitFlapBoard;
+        const ctx = C.ctx || (C.ctx = new (window.AudioContext || window.webkitAudioContext)());
+        if (ctx.state !== 'running') {
+          if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+          return;
+        }
+        const now = ctx.currentTime;
+        const start = singleStepMs ? now : Math.max(now, this._nextDepartureClack || 0);
+        // A short lookahead keeps the rhythm even despite display-frame and audio-clock jitter.
+        if (start - now > 0.020) return;
+        if (!C.departureBuffers) {
+          C.departureBuffers = Array.from({ length: 6 }, () => {
+            const buffer = ctx.createBuffer(1, Math.round(ctx.sampleRate * 0.036), ctx.sampleRate);
+            synthesizeDepartureClack(buffer.getChannelData(0), ctx.sampleRate);
+            return buffer;
+          });
+          const room = ctx.createConvolver();
+          const impulse = ctx.createBuffer(2, Math.round(ctx.sampleRate * 0.115), ctx.sampleRate);
+          for (let channel = 0; channel < impulse.numberOfChannels; channel++) {
+            synthesizeDepartureRoom(impulse.getChannelData(channel), ctx.sampleRate, channel);
+          }
+          room.normalize = false;
+          room.buffer = impulse;
+          room.connect(ctx.destination);
+          C.departureRoom = room;
+        }
+        const src = ctx.createBufferSource();
+        src.buffer = C.departureBuffers[Math.floor(Math.random() * C.departureBuffers.length)];
+        const gain = ctx.createGain();
+        const level = singleStepMs ? 0.14 : Math.min(0.52, 0.09 * Math.sqrt(n));
+        gain.gain.value = level;
+        src.connect(gain);
+        gain.connect(ctx.destination);
+        if (singleStepMs) {
+          // A lone digit sounds every step and leaves space for the next impact at high speed.
+          if (this._departureSingleSource) this._departureSingleSource.stop(start);
+          const duration = Math.min(src.buffer.duration, singleStepMs * 0.0008);
+          if (duration < src.buffer.duration) {
+            gain.gain.setValueAtTime(level, start + duration - 0.002);
+            gain.gain.linearRampToValueAtTime(0, start + duration);
+          }
+          src.start(start, 0, duration);
+          this._departureSingleSource = src;
+          src.onended = () => {
+            if (this._departureSingleSource === src) this._departureSingleSource = null;
+          };
+        } else {
+          gain.connect(C.departureRoom);
+          src.start(start);
+        }
+        this._nextDepartureClack = start + DEPARTURE_INTERVAL + (Math.random() - 0.5) * 0.012;
       } catch (e) {}
     }
   }
